@@ -1,0 +1,25 @@
+name: myserver
+distro: debian:bookworm
+
+resources:
+  cpus: 2
+  memory: 2G
+  memory_high: 1.5G
+  swap: 512M
+  tasks: 512
+
+network:
+  mode: host
+
+volumes:
+  - host: /mnt/data
+    mount: /data
+    readonly: false
+
+security:
+  no_new_privileges: true
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+  drop_capabilities:
+    - CAP_SYS_RAWIO
+    - CAP_MKNOD

@@ -1,0 +1,29 @@
+name: debian-base
+distro: debian:bookworm
+
+resources:
+  cpus: 1
+  memory: 512M
+
+network:
+  mode: host
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Update system
+      apt-get update
+      apt-get upgrade -y
+      
+      # Install common utilities
+      apt-get install -y curl wget vim htop net-tools

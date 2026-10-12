@@ -1,0 +1,91 @@
+name: docker-host
+distro: debian:bookworm
+
+resources:
+  cpus: 2
+  memory: 2G
+  tasks: infinity
+
+network:
+  mode: adaptive
+  interface: auto
+
+security:
+  seccomp: false
+  capabilities:
+    - CAP_NET_ADMIN
+    - CAP_NET_RAW
+    - CAP_SYS_ADMIN
+    - CAP_BPF
+
+hooks:
+  pre_start: |
+    #!/bin/bash
+    set -euo pipefail
+    echo 1 > /proc/sys/net/ipv4/ip_forward
+    modprobe br_netfilter || true
+    echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables 2>/dev/null || true
+
+  post_start: |
+    #!/bin/bash
+    set -euo pipefail
+    # Wait for container to be ready
+    sleep 2
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Install Docker
+      apt-get update
+      apt-get install -y ca-certificates curl gnupg
+      install -m 0755 -d /etc/apt/keyrings
+      
+      # Download and install Docker GPG key
+      rm -f /etc/apt/keyrings/docker.gpg
+      curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc
+      gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg.asc
+      rm -f /tmp/docker.gpg.asc
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list
+      
+      apt-get update
+      apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      
+      # Configure Docker to use cgroupfs instead of systemd (required for Docker-in-container)
+      mkdir -p /etc/docker
+      cat > /etc/docker/daemon.json <<'EOF'
+      {
+        "exec-opts": ["native.cgroupdriver=cgroupfs"],
+        "storage-driver": "overlay2"
+      }
+      EOF
+      
+      # Enable Docker to start on boot (systemctl enable doesn't need D-Bus)
+      systemctl enable docker || true
+
+probes:
+  - mode: readiness
+    description: "Docker daemon to be running"
+    script: |
+      #!/bin/bash
+      # Start Docker manually if not running (nsenter can't use systemctl start)
+      if ! pidof dockerd >/dev/null; then
+        dockerd >/var/log/docker.log 2>&1 &
+        sleep 3
+        # Fix socket permissions
+        chmod 666 /var/run/docker.sock 2>/dev/null || true
+      fi
+      until docker info >/dev/null 2>&1; do sleep 2; done
+    hint: |
+      Docker may not have started. Check: journalctl -M {{.Name}} -u docker

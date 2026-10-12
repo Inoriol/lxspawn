@@ -1,0 +1,73 @@
+name: fileserver
+distro: debian:bookworm
+
+resources:
+  cpus: 2
+  memory: 2G
+
+network:
+  mode: adaptive
+  interface: auto
+
+volumes:
+  - host: /mnt/data
+    mount: /data
+
+security:
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+    - CAP_DAC_OVERRIDE
+
+hooks:
+  pre_start: |
+    #!/bin/bash
+    set -euo pipefail
+    # Create data directory if it doesn't exist
+    mkdir -p /mnt/data
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: data
+    path: /etc/samba/smb.conf
+    content: |
+      [global]
+      workgroup = WORKGROUP
+      server string = LXSpawn File Server
+      security = user
+      map to guest = Bad User
+      
+      [data]
+      path = /data
+      browseable = yes
+      read only = no
+      guest ok = yes
+      create mask = 0664
+      directory mask = 0775
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      apt-get update
+      apt-get install -y samba samba-common-bin
+      
+      # Create samba user (password: samba)
+      echo -e "samba\nsamba" | smbpasswd -s -a nobody
+      
+      systemctl enable --now smbd nmbd
+
+probes:
+  - mode: readiness
+    description: "Samba to be serving"
+    script: |
+      #!/bin/bash
+      until smbclient -L localhost -N 2>/dev/null | grep -q data; do sleep 2; done
+    hint: |
+      Samba may not have started. Check: journalctl -M {{.Name}} -u smbd

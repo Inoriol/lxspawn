@@ -1,0 +1,91 @@
+name: nextcloud
+distro: debian:bookworm
+
+resources:
+  cpus: 2
+  memory: 2G
+
+network:
+  mode: adaptive
+  interface: auto
+
+volumes:
+  - host: /var/lib/nextcloud
+    mount: /var/www/html/data
+
+security:
+  capabilities:
+    - CAP_NET_BIND_SERVICE
+
+hooks:
+  pre_start: |
+    #!/bin/bash
+    set -euo pipefail
+    # Create data directory if it doesn't exist
+    mkdir -p /var/lib/nextcloud
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      apt-get update
+      apt-get install -y apache2 libapache2-mod-php php php-gd php-mysql \
+        php-xml php-mbstring php-curl php-zip php-intl php-bz2 php-fileinfo \
+        mariadb-server wget bzip2
+      
+      # Download Nextcloud
+      cd /var/www/html
+      wget -q https://download.nextcloud.com/server/releases/latest.tar.bz2
+      tar -xjf latest.tar.bz2
+      chown -R www-data:www-data /var/www/html
+      
+      # Setup database
+      systemctl start mariadb
+      mysql -e "CREATE DATABASE nextcloud;"
+      mysql -e "CREATE USER 'nextcloud'@'localhost' IDENTIFIED BY 'nextcloud';"
+      mysql -e "GRANT ALL PRIVILEGES ON nextcloud.* TO 'nextcloud'@'localhost';"
+      mysql -e "FLUSH PRIVILEGES;"
+      
+      # Install Nextcloud
+      sudo -u www-data php /var/www/html/nextcloud/occ maintenance:install \
+        --database "mysql" --database-name "nextcloud" \
+        --database-user "nextcloud" --database-pass "nextcloud" \
+        --admin-user "admin" --admin-pass "admin"
+      
+      # Configure Apache
+      cat > /etc/apache2/sites-available/nextcloud.conf <<EOF
+      <VirtualHost *:80>
+          DocumentRoot /var/www/html/nextcloud
+          ServerName localhost
+          
+          <Directory /var/www/html/nextcloud>
+              Require all granted
+              AllowOverride All
+              Options FollowSymLinks MultiViews
+          </Directory>
+      </VirtualHost>
+      EOF
+      
+      a2dissite 000-default
+      a2ensite nextcloud
+      a2enmod rewrite headers env dir mime
+      
+      systemctl enable --now apache2 mariadb
+
+probes:
+  - mode: readiness
+    description: "Nextcloud web interface"
+    script: |
+      #!/bin/bash
+      until curl -sf http://localhost/ > /dev/null; do sleep 2; done
+    hint: |
+      Nextcloud may not have started. Check: journalctl -M {{.Name}} -u apache2

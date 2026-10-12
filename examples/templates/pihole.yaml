@@ -1,0 +1,70 @@
+name: pihole
+distro: debian:bookworm
+
+resources:
+  cpus: 1
+  memory: 512M
+
+network:
+  mode: adaptive
+  interface: auto
+
+param:
+  pihole_ip: "192.168.0.100/24"
+  gateway: "192.168.0.1"
+  dns1: "8.8.8.8"
+  dns2: "8.8.4.4"
+  web_password: "admin"
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: data
+    path: /etc/systemd/network/10-eth.network
+    content: |
+      [Match]
+      Name=mv-enp2s0
+
+      [Network]
+      Address={{.Param.pihole_ip}}
+      Gateway={{.Param.gateway}}
+      DNS={{.Param.dns1}}
+      DNS={{.Param.dns2}}
+
+  - mode: data
+    path: /etc/pihole/setupVars.conf
+    content: |
+      PIHOLE_INTERFACE=mv-enp2s0
+      IPV4_ADDRESS={{.Param.pihole_ip}}
+      PIHOLE_DNS_1={{.Param.dns1}}
+      PIHOLE_DNS_2={{.Param.dns2}}
+      WEBPASSWORD={{.Param.web_password}}
+      INSTALL_WEB_INTERFACE=true
+      LIGHTTPD_ENABLED=true
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      apt-get update
+      apt-get install -y curl iproute2 dnsutils
+      
+      # Install Pi-hole unattended
+      curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
+      
+      systemctl enable --now pihole-FTL
+
+probes:
+  - mode: readiness
+    description: "Pi-hole to be serving DNS"
+    script: |
+      #!/bin/bash
+      until dig @localhost example.com +short | grep -q .; do sleep 2; done
+    hint: |
+      Pi-hole may not have started. Check: journalctl -M {{.Name}} -u pihole-FTL

@@ -1,0 +1,28 @@
+name: fedora-base
+distro: fedora:44
+
+resources:
+  cpus: 1
+  memory: 512M
+
+network:
+  mode: host
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Update system
+      dnf upgrade -y
+      
+      # Install common utilities
+      dnf install -y curl wget vim htop net-tools

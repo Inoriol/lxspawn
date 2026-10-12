@@ -1,0 +1,57 @@
+name: adguard
+distro: debian:bookworm
+
+resources:
+  cpus: 1
+  memory: 512M
+
+network:
+  mode: adaptive
+  interface: auto
+
+param:
+  adguard_ip: "192.168.0.101/24"
+  gateway: "192.168.0.1"
+  dns1: "8.8.8.8"
+  dns2: "8.8.4.4"
+
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      # Mask unnecessary services
+      systemctl mask systemd-udevd
+      systemctl mask systemd-modules-load.service
+
+  - mode: data
+    path: /etc/systemd/network/10-eth.network
+    content: |
+      [Match]
+      Name=mv-enp2s0
+
+      [Network]
+      Address={{.Param.adguard_ip}}
+      Gateway={{.Param.gateway}}
+      DNS={{.Param.dns1}}
+      DNS={{.Param.dns2}}
+
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      apt-get update
+      apt-get install -y curl iproute2 dnsutils
+      
+      # Install AdGuard Home
+      curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
+      systemctl enable --now AdGuardHome
+
+probes:
+  - mode: readiness
+    description: "AdGuard Home to be serving DNS"
+    script: |
+      #!/bin/bash
+      until dig @localhost example.com +short | grep -q .; do sleep 2; done
+    hint: |
+      AdGuard may not have started. Check: journalctl -M {{.Name}} -u AdGuardHome
