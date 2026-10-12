@@ -290,7 +290,7 @@ func TestValidateMissingDistro(t *testing.T) {
 func TestValidateNameWithSpaces(t *testing.T) {
 	cfg := &Config{Name: "my box", Distro: "debian:bookworm"}
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "spaces") {
+	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
 		t.Errorf("expected name error, got: %v", err)
 	}
 }
@@ -298,7 +298,7 @@ func TestValidateNameWithSpaces(t *testing.T) {
 func TestValidateNameWithSlash(t *testing.T) {
 	cfg := &Config{Name: "my/box", Distro: "debian:bookworm"}
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "slashes") {
+	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
 		t.Errorf("expected name error, got: %v", err)
 	}
 }
@@ -306,7 +306,7 @@ func TestValidateNameWithSlash(t *testing.T) {
 func TestValidateNameWithBackslash(t *testing.T) {
 	cfg := &Config{Name: `my\box`, Distro: "debian:bookworm"}
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "backslashes") {
+	if err == nil || !strings.Contains(err.Error(), "alphanumeric") {
 		t.Errorf("expected name error, got: %v", err)
 	}
 }
@@ -480,6 +480,164 @@ func TestValidateVolumeRelativeMount(t *testing.T) {
 	err := Validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "mount point must be absolute") {
 		t.Errorf("expected absolute path error, got: %v", err)
+	}
+}
+
+func TestValidatePortRangeInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:  NetworkPrivate,
+			Ports: []string{"tcp:99999:80"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "out of valid range") {
+		t.Errorf("expected port range error, got: %v", err)
+	}
+}
+
+func TestValidatePortRangeContainerInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:  NetworkPrivate,
+			Ports: []string{"tcp:8080:70000"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "out of valid range") {
+		t.Errorf("expected port range error, got: %v", err)
+	}
+}
+
+func TestValidatePortRangeZero(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:  NetworkPrivate,
+			Ports: []string{"tcp:0:80"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "out of valid range") {
+		t.Errorf("expected port range error, got: %v", err)
+	}
+}
+
+func TestValidatePortRangeValid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:  NetworkPrivate,
+			Ports: []string{"tcp:8080:80", "udp:443:443"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateVolumeSensitivePathShadow(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/etc/shadow", Mount: "/data/shadow"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "sensitive system directory") {
+		t.Errorf("expected sensitive path error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeSensitivePathProc(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/proc", Mount: "/data/proc"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "sensitive system directory") {
+		t.Errorf("expected sensitive path error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeSensitivePathSys(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/sys/kernel", Mount: "/data/sys"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "sensitive system directory") {
+		t.Errorf("expected sensitive path error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeSensitivePathDev(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/dev/sda", Mount: "/data/dev"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "sensitive system directory") {
+		t.Errorf("expected sensitive path error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeNonSensitivePath(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/mnt/data", Mount: "/data"},
+			{Host: "/home/user/documents", Mount: "/docs"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateGPUDevicePathInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/etc/passwd"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must start with /dev/") {
+		t.Errorf("expected GPU device path error, got: %v", err)
+	}
+}
+
+func TestValidateGPUDevicePathValid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0", "/dev/dri/renderD128"},
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

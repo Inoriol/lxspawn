@@ -21,7 +21,10 @@ func NewYQProvisioner(rootfsPath string) *YQProvisioner {
 }
 
 func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, fileHandler *FileHandler, baseDir string) error {
-	targetPath := filepath.Join(y.rootfsPath, prov.Path)
+	targetPath, err := validatePath(y.rootfsPath, prov.Path)
+	if err != nil {
+		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
+	}
 
 	// Read existing file
 	data, err := os.ReadFile(targetPath)

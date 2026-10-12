@@ -25,7 +25,7 @@ var httpClient = &http.Client{
 }
 
 var downloadClient = &http.Client{
-	Timeout: 0,
+	Timeout: 30 * time.Minute,
 }
 
 type Fetcher struct {

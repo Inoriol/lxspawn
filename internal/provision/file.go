@@ -29,7 +29,7 @@ func NewFileHandler() (*FileHandler, error) {
 	}
 
 	cacheDir := filepath.Join(home, ".cache", "lxspawn", "scripts")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		return nil, err
 	}
 

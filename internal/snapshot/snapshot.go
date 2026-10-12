@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -41,14 +42,20 @@ func NewSnapshotState() *SnapshotState {
 	}
 }
 
+var validSnapshotNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}[a-zA-Z0-9]$`)
+
 func ValidateSnapshotName(name string) error {
 	if name == "" {
 		return fmt.Errorf("snapshot name cannot be empty")
 	}
-	for _, c := range name {
-		if c == '/' || c == '\\' || c == ' ' || c == '\t' || c == '\n' {
-			return fmt.Errorf("snapshot name cannot contain spaces, slashes, or special characters: %q", name)
+	if len(name) == 1 {
+		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(name) {
+			return fmt.Errorf("snapshot name must be alphanumeric")
 		}
+		return nil
+	}
+	if !validSnapshotNameRegex.MatchString(name) {
+		return fmt.Errorf("snapshot name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, underscores, and dots, and be between 2 and 64 characters")
 	}
 	return nil
 }

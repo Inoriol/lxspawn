@@ -328,3 +328,81 @@ func TestDataProvisionerTemplateRendering(t *testing.T) {
 		t.Errorf("content = %q, want %q", string(content), expected)
 	}
 }
+
+func TestValidatePath(t *testing.T) {
+	rootfs := "/var/lib/machines/test"
+
+	tests := []struct {
+		name         string
+		relativePath string
+		wantErr      bool
+		errContains  string
+	}{
+		{
+			name:         "valid absolute path",
+			relativePath: "/etc/config.yaml",
+			wantErr:      false,
+		},
+		{
+			name:         "valid nested path",
+			relativePath: "/a/b/c/d/file.txt",
+			wantErr:      false,
+		},
+		{
+			name:         "path traversal with ..",
+			relativePath: "/etc/../../../etc/passwd",
+			wantErr:      true,
+			errContains:  "escapes rootfs",
+		},
+		{
+			name:         "relative path not absolute",
+			relativePath: "etc/config.yaml",
+			wantErr:      true,
+			errContains:  "must be absolute",
+		},
+		{
+			name:         "path with .. in middle",
+			relativePath: "/etc/../config.yaml",
+			wantErr:      false,
+		},
+		{
+			name:         "root path",
+			relativePath: "/",
+			wantErr:      false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := validatePath(rootfs, tt.relativePath)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("validatePath() expected error containing %q, got nil", tt.errContains)
+				} else if tt.errContains != "" && !contains(err.Error(), tt.errContains) {
+					t.Errorf("validatePath() error = %v, want error containing %v", err, tt.errContains)
+				}
+			} else {
+				if err != nil {
+					t.Errorf("validatePath() unexpected error: %v", err)
+				}
+				expected := filepath.Join(rootfs, tt.relativePath)
+				if result != expected {
+					t.Errorf("validatePath() = %v, want %v", result, expected)
+				}
+			}
+		})
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && (s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || findSubstring(s, substr)))
+}
+
+func findSubstring(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}

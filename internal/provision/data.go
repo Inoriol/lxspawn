@@ -38,7 +38,10 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		return fmt.Errorf("failed to render template: %w", err)
 	}
 
-	targetPath := filepath.Join(d.rootfsPath, prov.Path)
+	targetPath, err := validatePath(d.rootfsPath, prov.Path)
+	if err != nil {
+		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
+	}
 
 	// Check if file exists and overwrite is false
 	overwrite := true
@@ -175,4 +178,20 @@ func lookupGID(name string) int {
 	default:
 		return -1
 	}
+}
+
+func validatePath(rootfsPath, relativePath string) (string, error) {
+	if !filepath.IsAbs(relativePath) {
+		return "", fmt.Errorf("path must be absolute")
+	}
+
+	targetPath := filepath.Join(rootfsPath, relativePath)
+	cleanTarget := filepath.Clean(targetPath)
+	cleanRootfs := filepath.Clean(rootfsPath)
+
+	if !strings.HasPrefix(cleanTarget, cleanRootfs+string(os.PathSeparator)) && cleanTarget != cleanRootfs {
+		return "", fmt.Errorf("path escapes rootfs directory")
+	}
+
+	return targetPath, nil
 }

@@ -157,3 +157,8 @@ func (m *Manager) DeleteSnapshot(snapName string) error {
 func (m *Manager) BackendType() BackendType {
 	return m.backend.Type()
 }
+
+func (m *Manager) Close() {
+	// Currently no resources to release, but provided for API consistency
+	// with machine.Manager and to allow future resource management
+}

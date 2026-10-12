@@ -67,6 +67,8 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 			if err != nil {
 				return fmt.Errorf("failed to build nsenter command: %w", err)
 			}
+		default:
+			return fmt.Errorf("unsupported provision mode for exec: %s", prov.Mode)
 		}
 		retryCmd.Stdout = os.Stdout
 		retryCmd.Stderr = os.Stderr

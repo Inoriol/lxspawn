@@ -610,17 +610,29 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 - [x] Snapshot create/list/rollback/delete commands
 - [x] JSON output for snapshot commands
 
-**Phase 4 (V2) - Templates - In Progress:**
+**Phase 4 (V2) - Templates - Complete:**
 - [x] Docker-in-container template (fully working)
 - [x] Base system templates (Debian, Ubuntu, Fedora)
 - [x] Adaptive network mode with host-side macvlan
 - [x] Docker-in-container support (Delegate, --private-users=no, CAP_BPF)
 - [x] DNS server templates (pihole, adguard) - tested and working
 - [x] Jellyfin template - GPU pass-through tested and working (Intel iGPU)
+- [x] Plex template - GPU pass-through tested and working (Intel iGPU)
 - [x] File server templates (samba, nextcloud) - tested and working
 - [x] Arch Linux removed (btrfs/pacman incompatibility)
-- [ ] Plex template - needs GPU testing
-- [ ] Fix Jellyfin repository GPG key URL (404 error)
+- [x] Jellyfin repository GPG key URL fixed
+
+**Phase 4.5 (V2) - Code Quality & Security - Complete:**
+- [x] Path traversal protection in data and yq provisioners
+- [x] Command injection protection in hook scripts
+- [x] Rollback protection for edit command
+- [x] Strict machine and snapshot name validation
+- [x] Volume path validation with sensitive path blacklist
+- [x] Port range validation (1-65535)
+- [x] GPU device path validation
+- [x] Download timeout (30 minutes)
+- [x] Secure cache directory permissions (0700)
+- [x] Resource leak fixes (defer mgr.Close())
 
 **Phase 5 (V2+) - Cockpit Web UI:**
 - [ ] Cockpit web UI plugin

@@ -836,16 +836,16 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 
 ### Unit Tests
 
-**332 tests across 19 test files, all passing:**
+**373 tests across 19 test files, all passing:**
 
-- `internal/config/parser_test.go` - Config parsing and validation (40 tests)
+- `internal/config/parser_test.go` - Config parsing and validation (51 tests) - NEW: port range, sensitive paths, GPU device validation
 - `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
 - `internal/deploy/state_test.go` - State management: register, unregister, persistence, list sorting (18 tests)
 - `internal/deploy/filesystem_test.go` - Path helpers, WriteFileAtomic, RemoveAll (21 tests)
 - `internal/provision/template_test.go` - Template rendering with all variables, params, edge cases (20 tests)
 - `internal/provision/yq_test.go` - YQ provisioner: expression parsing, format detection, value types (20 tests)
 - `internal/provision/boot_test.go` - Boot provisioner: script writing, service install, numbering (8 tests)
-- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions (11 tests)
+- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions, path validation (18 tests) - NEW: validatePath tests
 - `internal/provision/file_test.go` - File handler: digest validation, local file resolution (12 tests)
 - `internal/provision/exec_test.go` - Exec provisioner: env export, provisioner modes, param handling (13 tests)
 - `internal/image/fetcher_test.go` - Image fetcher: URL building, tar extraction, path traversal (8 tests)
@@ -877,6 +877,128 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 - Test with different images (Debian, Ubuntu, Fedora, Arch)
 - Test edge cases (large rootfs, many machines, concurrent operations)
 - GPU pass-through tested on Intel iGPU (Gemini Lake UHD Graphics 600)
+
+## Input Validation and Security Hardening
+
+### 20. Path Traversal Protection
+
+The `validatePath()` function in `internal/provision/data.go` prevents path traversal attacks in data and yq provisioners:
+
+**Implementation:**
+- Validates that paths are absolute
+- Cleans the path to resolve `..` components
+- Verifies the resolved path stays under the rootfs directory
+- Returns an error if the path escapes the rootfs
+
+**Why this matters:**
+- Prevents malicious YAML configs from writing files outside the container rootfs
+- Protects against attacks like `path: /etc/../../../etc/passwd`
+- Applied to both `data` and `yq` provision modes
+
+### 21. Command Injection Protection
+
+Interface names in hook scripts are validated with regex `^[a-zA-Z0-9_-]+$`:
+
+**Implementation:**
+- `internal/compiler/slice.go` validates interface names before using them in shell commands
+- Invalid interface names produce safe error messages instead of executing shell commands
+- Prevents attacks like `interface: eth0; rm -rf /`
+
+**Why this matters:**
+- Hook scripts run as root on the host
+- Unsanitized input could execute arbitrary commands
+- Network interface names have a well-defined character set
+
+### 22. Name Validation
+
+Machine and snapshot names are validated with strict regex patterns:
+
+**Machine names:** `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
+- Must start and end with alphanumeric character
+- Can contain hyphens and underscores in the middle
+- Length: 1-64 characters
+- Prevents dangerous characters: `;`, `|`, `&`, `$`, backticks
+
+**Snapshot names:** `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}[a-zA-Z0-9]$`
+- Same as machine names, but also allows dots
+- Dots useful for versioned snapshots (e.g., "snap.v1")
+
+**Why this matters:**
+- Names are used in file paths, systemd unit names, and D-Bus object paths
+- Special characters could break systemd or cause security issues
+- Consistent naming makes debugging easier
+
+### 23. Volume Path Validation
+
+Volume host paths are validated against a sensitive path blacklist:
+
+**Blacklisted paths:**
+- `/etc/shadow`, `/etc/gshadow`, `/etc/master.passwd`
+- `/proc`, `/sys`, `/dev`, `/run`, `/var/run`
+
+**Implementation:**
+- `internal/config/parser.go:validateVolumes()` checks if host path matches or is under a blacklisted path
+- Returns an error if a sensitive path is detected
+
+**Why this matters:**
+- Prevents accidental exposure of sensitive system files to containers
+- Protects against misconfiguration that could compromise host security
+- Containers should use bind mounts for specific data directories, not system directories
+
+### 24. Port Range Validation
+
+Port forwarding rules are validated for correct port ranges:
+
+**Implementation:**
+- `internal/config/parser.go:validatePort()` parses and validates port numbers
+- Both host and container ports must be in range 1-65535
+- Invalid ports like `tcp:99999:80` are rejected
+
+**Why this matters:**
+- Prevents invalid configurations that would fail at runtime
+- Catches typos early (e.g., `tcp:8080:88888`)
+- Provides clear error messages
+
+### 25. GPU Device Path Validation
+
+GPU device paths must start with `/dev/`:
+
+**Implementation:**
+- `internal/config/parser.go:validateGPU()` checks device path prefix
+- Rejects paths like `/etc/passwd` or `/root/.ssh`
+
+**Why this matters:**
+- GPU devices are bind-mounted into the container
+- Arbitrary host files could be exposed if validation is missing
+- Device paths have a well-defined location (`/dev/`)
+
+### 26. Edit Command Rollback Protection
+
+The `lxspawn edit` command creates a backup before making changes:
+
+**Implementation:**
+- Rootfs is renamed to `<name>.backup-<timestamp>` before deletion
+- If launch fails, the backup is automatically restored
+- Backup is cleaned up on successful launch
+
+**Why this matters:**
+- Edit is a destructive operation (delete + launch)
+- If launch fails, the machine would be permanently lost
+- Rollback protection ensures recovery from failures
+
+### 27. Resource Management
+
+Snapshot managers are properly closed to prevent resource leaks:
+
+**Implementation:**
+- All snapshot commands use `defer mgr.Close()` after creating a manager
+- `snapshot.Manager.Close()` method added for API consistency
+- Matches the pattern used by `machine.Manager`
+
+**Why this matters:**
+- Prevents file descriptor leaks
+- Ensures consistent resource management across the codebase
+- Future-proofs for when managers hold actual resources
 
 ## Future Enhancements
 

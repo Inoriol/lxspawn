@@ -5,10 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
+
+var validMachineNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`)
 
 func Parse(filename string) (*Config, error) {
 	absPath, err := filepath.Abs(filename)
@@ -55,11 +58,13 @@ func Validate(cfg *Config) error {
 	if cfg.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if strings.ContainsAny(cfg.Name, " \t/\\") {
-		return fmt.Errorf("name must not contain spaces, slashes, or backslashes")
-	}
-	if len(cfg.Name) > 64 {
-		return fmt.Errorf("name must be 64 characters or less")
+	if len(cfg.Name) == 1 {
+		// Single character names are allowed if alphanumeric
+		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(cfg.Name) {
+			return fmt.Errorf("name must start and end with an alphanumeric character")
+		}
+	} else if !validMachineNameRegex.MatchString(cfg.Name) {
+		return fmt.Errorf("name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, and underscores, and be between 2 and 64 characters")
 	}
 	if isReservedName(cfg.Name) {
 		return fmt.Errorf("name %q conflicts with a systemd reserved name", cfg.Name)
@@ -169,13 +174,43 @@ func validateNetwork(cfg *Config) error {
 var portRegex = regexp.MustCompile(`^(tcp|udp):(\d+):(\d+)$`)
 
 func validatePort(port string) error {
-	if !portRegex.MatchString(port) {
+	matches := portRegex.FindStringSubmatch(port)
+	if matches == nil {
 		return fmt.Errorf("invalid port format %q: expected <proto>:<host>:<container> (e.g., tcp:8080:80)", port)
 	}
+	
+	hostPort, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return fmt.Errorf("invalid host port: %w", err)
+	}
+	if hostPort < 1 || hostPort > 65535 {
+		return fmt.Errorf("host port %d is out of valid range (1-65535)", hostPort)
+	}
+	
+	containerPort, err := strconv.Atoi(matches[3])
+	if err != nil {
+		return fmt.Errorf("invalid container port: %w", err)
+	}
+	if containerPort < 1 || containerPort > 65535 {
+		return fmt.Errorf("container port %d is out of valid range (1-65535)", containerPort)
+	}
+	
 	return nil
 }
 
 func validateVolumes(cfg *Config) error {
+	// Sensitive paths that should not be exposed to containers
+	sensitivePaths := []string{
+		"/etc/shadow",
+		"/etc/gshadow",
+		"/etc/master.passwd",
+		"/proc",
+		"/sys",
+		"/dev",
+		"/run",
+		"/var/run",
+	}
+
 	for i, v := range cfg.Volumes {
 		if v.Type == "tmpfs" {
 			if v.Mount == "" {
@@ -194,6 +229,14 @@ func validateVolumes(cfg *Config) error {
 		}
 		if !filepath.IsAbs(v.Mount) {
 			return fmt.Errorf("volumes[%d]: mount point must be absolute: %s", i, v.Mount)
+		}
+
+		// Check for sensitive paths
+		cleanHost := filepath.Clean(v.Host)
+		for _, sensitive := range sensitivePaths {
+			if cleanHost == sensitive || strings.HasPrefix(cleanHost, sensitive+"/") {
+				return fmt.Errorf("volumes[%d]: host path %q exposes sensitive system directory", i, v.Host)
+			}
 		}
 	}
 	return nil
@@ -264,6 +307,9 @@ func validateGPU(cfg *Config) error {
 	for i, device := range cfg.GPU.Devices {
 		if device == "" {
 			return fmt.Errorf("gpu.devices[%d]: device path cannot be empty", i)
+		}
+		if !strings.HasPrefix(device, "/dev/") {
+			return fmt.Errorf("gpu.devices[%d]: device path must start with /dev/: %s", i, device)
 		}
 	}
 

@@ -2,11 +2,14 @@ package compiler
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/gpu"
 )
+
+var validIfaceNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 func compileSlice(cfg *config.Config) string {
 	var b strings.Builder
@@ -171,6 +174,13 @@ func generateHostAccessScript(cfg *config.Config) string {
 	hostIface := cfg.Network.HostAccess.Interface
 	ip := cfg.Network.HostAccess.IP
 
+	if !validIfaceNameRegex.MatchString(iface) {
+		return fmt.Sprintf("echo 'Invalid interface name: %s'", iface)
+	}
+	if !validIfaceNameRegex.MatchString(hostIface) {
+		return fmt.Sprintf("echo 'Invalid host interface name: %s'", hostIface)
+	}
+
 	script := fmt.Sprintf(`# Create host-side macvlan for container visibility
 ip link add %s link %s type macvlan mode bridge`, hostIface, iface)
 
@@ -187,6 +197,10 @@ ip link set %s up`, hostIface)
 
 func generateHostAccessCleanupScript(cfg *config.Config) string {
 	hostIface := cfg.Network.HostAccess.Interface
+
+	if !validIfaceNameRegex.MatchString(hostIface) {
+		return fmt.Sprintf("echo 'Invalid host interface name: %s'", hostIface)
+	}
 
 	return fmt.Sprintf(`# Remove host-side macvlan
 ip link del %s 2>/dev/null || true`, hostIface)

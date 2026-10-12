@@ -48,8 +48,8 @@ provision:
       apt-get update
       apt-get install -y curl gnupg software-properties-common intel-media-va-driver vainfo
       
-      # Add Jellyfin repository (using correct URL structure)
-      curl -fsSL https://repo.jellyfin.org/debian/jellyfin.gpg | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/jellyfin.gpg
+      # Add Jellyfin repository
+      curl -fsSL https://repo.jellyfin.org/jellyfin.gpg | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/jellyfin.gpg
       echo "deb [signed-by=/usr/share/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list
       
       apt-get update
