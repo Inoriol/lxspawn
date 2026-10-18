@@ -93,3 +93,15 @@ func TestSnapshotInfo(t *testing.T) {
 		t.Errorf("Backend = %v, want btrfs", info.Backend)
 	}
 }
+
+func TestLVMBackendIsSnapshotMerging(t *testing.T) {
+	backend, err := NewLVMBackend("test-machine")
+	if err != nil {
+		t.Fatalf("NewLVMBackend() error = %v", err)
+	}
+
+	result := backend.isSnapshotMerging("nonexistent-vg", "nonexistent-snap")
+	if result {
+		t.Errorf("isSnapshotMerging() = true for non-existent snapshot, want false")
+	}
+}

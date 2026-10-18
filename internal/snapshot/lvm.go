@@ -21,7 +21,15 @@ func (l *LVMBackend) Type() BackendType {
 	return BackendLVM
 }
 
-func (l *LVMBackend) getLVInfo(rootfsPath string) (vgName, lvName string, err error) {
+func findLVMBinary(name string) string {
+	path, err := exec.LookPath(name)
+	if err == nil {
+		return path
+	}
+	return "/usr/sbin/" + name
+}
+
+func (l *LVMBackend) getMachineLVInfo(rootfsPath string) (vgName, lvName string, err error) {
 	out, err := exec.Command("df", "--output=source", rootfsPath).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get device for %s: %w", rootfsPath, err)
@@ -32,9 +40,10 @@ func (l *LVMBackend) getLVInfo(rootfsPath string) (vgName, lvName string, err er
 		return "", "", fmt.Errorf("unexpected df output")
 	}
 
-	device := lines[len(lines)-1]
+	device := strings.TrimSpace(lines[len(lines)-1])
 
-	out, err = exec.Command("lvs", "--noheadings", "-o", "vg_name,lv_name", device).Output()
+	lvsPath := findLVMBinary("lvs")
+	out, err = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name,lv_name", device).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get LVM info for %s: %w", device, err)
 	}
@@ -50,19 +59,21 @@ func (l *LVMBackend) getLVInfo(rootfsPath string) (vgName, lvName string, err er
 func (l *LVMBackend) CreateSnapshot(machine, snapName, rootfsPath string) error {
 	logger.Action(fmt.Sprintf("Creating LVM snapshot '%s' for machine '%s'", snapName, machine))
 
-	vgName, lvName, err := l.getLVInfo(rootfsPath)
+	vgName, lvName, err := l.getMachineLVInfo(rootfsPath)
 	if err != nil {
 		return err
 	}
 
 	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
 
-	existing, err := exec.Command("lvs", "--noheadings", "-o", "lv_name", fmt.Sprintf("%s/%s", vgName, snapLVName)).CombinedOutput()
+	lvsPath := findLVMBinary("lvs")
+	existing, err := exec.Command("sudo", lvsPath, "--noheadings", "-o", "lv_name", fmt.Sprintf("%s/%s", vgName, snapLVName)).CombinedOutput()
 	if err == nil && strings.TrimSpace(string(existing)) != "" {
 		return fmt.Errorf("snapshot '%s' already exists", snapName)
 	}
 
-	cmd := exec.Command("sudo", "lvcreate", "--snapshot", "--name", snapLVName, "--size", "1G", fmt.Sprintf("%s/%s", vgName, lvName))
+	lvcreatePath := findLVMBinary("lvcreate")
+	cmd := exec.Command("sudo", lvcreatePath, "--snapshot", "--name", snapLVName, "--size", "512M", fmt.Sprintf("%s/%s", vgName, lvName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create LVM snapshot: %w (%s)", err, string(output))
 	}
@@ -72,12 +83,13 @@ func (l *LVMBackend) CreateSnapshot(machine, snapName, rootfsPath string) error 
 }
 
 func (l *LVMBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo, error) {
-	vgName, lvName, err := l.getLVInfo(rootfsPath)
+	vgName, lvName, err := l.getMachineLVInfo(rootfsPath)
 	if err != nil {
 		return nil, err
 	}
 
-	out, err := exec.Command("lvs", "--noheadings", "-o", "lv_name,lv_time,lv_size", "--select", fmt.Sprintf("vg_name=%s", vgName)).Output()
+	lvsPath := findLVMBinary("lvs")
+	out, err := exec.Command("sudo", lvsPath, "--noheadings", "-o", "lv_name,lv_time,lv_size", "--select", fmt.Sprintf("vg_name=%s", vgName)).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list LVM snapshots: %w", err)
 	}
@@ -124,14 +136,15 @@ func (l *LVMBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo, 
 func (l *LVMBackend) RollbackSnapshot(machine, snapName, rootfsPath string) error {
 	logger.Action(fmt.Sprintf("Rolling back machine '%s' to LVM snapshot '%s'", machine, snapName))
 
-	vgName, lvName, err := l.getLVInfo(rootfsPath)
+	vgName, lvName, err := l.getMachineLVInfo(rootfsPath)
 	if err != nil {
 		return err
 	}
 
 	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
 
-	cmd := exec.Command("sudo", "lvconvert", "--merge", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	lvconvertPath := findLVMBinary("lvconvert")
+	cmd := exec.Command("sudo", lvconvertPath, "--merge", fmt.Sprintf("%s/%s", vgName, snapLVName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to merge LVM snapshot: %w (%s)", err, string(output))
 	}
@@ -140,19 +153,46 @@ func (l *LVMBackend) RollbackSnapshot(machine, snapName, rootfsPath string) erro
 	return nil
 }
 
+func (l *LVMBackend) isSnapshotMerging(vgName, snapLVName string) bool {
+	lvsPath := findLVMBinary("lvs")
+	cmd := exec.Command("sudo", lvsPath, "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	out, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	attrs := strings.TrimSpace(string(out))
+	if len(attrs) < 1 {
+		return false
+	}
+
+	return attrs[0] == 'v'
+}
+
 func (l *LVMBackend) DeleteSnapshot(machine, snapName, rootfsPath string) error {
 	logger.Action(fmt.Sprintf("Deleting LVM snapshot '%s' for machine '%s'", snapName, machine))
 
-	vgName, lvName, err := l.getLVInfo(rootfsPath)
+	vgName, lvName, err := l.getMachineLVInfo(rootfsPath)
 	if err != nil {
 		return err
 	}
 
 	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
 
-	cmd := exec.Command("sudo", "lvremove", "-f", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	if l.isSnapshotMerging(vgName, snapLVName) {
+		return fmt.Errorf("snapshot '%s' is currently merging and cannot be deleted. "+
+			"Wait for merge to complete (machine restart required), then retry", snapName)
+	}
+
+	lvremovePath := findLVMBinary("lvremove")
+	cmd := exec.Command("sudo", lvremovePath, "-f", fmt.Sprintf("%s/%s", vgName, snapLVName))
 	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to delete LVM snapshot: %w (%s)", err, string(output))
+		outputStr := string(output)
+		if strings.Contains(outputStr, "merging") || strings.Contains(outputStr, "merge") {
+			return fmt.Errorf("snapshot '%s' is currently merging and cannot be deleted. "+
+				"Wait for merge to complete (machine restart required), then retry", snapName)
+		}
+		return fmt.Errorf("failed to delete LVM snapshot: %w (%s)", err, outputStr)
 	}
 
 	logger.Success(fmt.Sprintf("LVM snapshot '%s' deleted", snapName))

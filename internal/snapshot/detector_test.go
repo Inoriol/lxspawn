@@ -14,7 +14,7 @@ func TestGetBackend(t *testing.T) {
 	}{
 		{"btrfs backend", BackendBtrfs, "test-machine", false, BackendBtrfs},
 		{"zfs backend disabled", BackendZFS, "test-machine", true, ""},
-		{"lvm backend disabled", BackendLVM, "test-machine", true, ""},
+		{"lvm backend", BackendLVM, "test-machine", false, BackendLVM},
 		{"unsupported backend", BackendType("unsupported"), "test-machine", true, ""},
 	}
 

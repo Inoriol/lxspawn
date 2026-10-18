@@ -26,6 +26,7 @@ type Config struct {
 	Name      string            `yaml:"name"`
 	Distro    string            `yaml:"distro"`
 	Resources Resources         `yaml:"resources"`
+	Storage   Storage           `yaml:"storage"`
 	Network   Network           `yaml:"network"`
 	Volumes   []Volume          `yaml:"volumes"`
 	Provision []Provision       `yaml:"provision"`
@@ -45,6 +46,10 @@ type Resources struct {
 	Swap       string  `yaml:"swap"`
 	Tasks      string  `yaml:"tasks"`
 	IOWeight   int     `yaml:"io_weight"`
+}
+
+type Storage struct {
+	Size string `yaml:"size"`
 }
 
 type Network struct {

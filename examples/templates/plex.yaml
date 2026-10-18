@@ -10,10 +10,10 @@ network:
   interface: auto
 
 volumes:
-  - host: /mnt/media
+  - host: /mnt/media  # Create this directory on host or change path
     mount: /media
     readonly: true
-  - host: /var/lib/plex
+  - host: /var/lib/plex  # Create this directory on host or change path
     mount: /var/lib/plex
 
 security:
@@ -46,15 +46,18 @@ provision:
       #!/bin/bash
       set -eux -o pipefail
       apt-get update
-      apt-get install -y curl gnupg software-properties-common
+      apt-get install -y curl gnupg software-properties-common vainfo
       
-      # Install GPU drivers (auto-detected based on host)
-      # Intel: intel-media-va-driver non-free intel-compute-runtime
-      # AMD: mesa-va-drivers
-      # NVIDIA: nvidia-driver (must match host version)
+      # Install GPU drivers (install both Intel and AMD for compatibility)
+      # Intel iGPU/dGPU:
+      apt-get install -y intel-media-va-driver intel-compute-runtime
+      # AMD iGPU/dGPU:
+      apt-get install -y mesa-va-drivers rocm-opencl-runtime || true
+      # NVIDIA: requires proprietary driver matching host version exactly
+      # apt-get install -y nvidia-driver-XXX
       
       # Add Plex repository
-      curl -fsSL https://downloads.plex.tv/plex-keys/PlexSign.key | gpg --dearmor -o /usr/share/keyrings/plex.gpg
+      curl -fsSL https://downloads.plex.tv/plex-keys/PlexSign.key | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/plex.gpg
       echo "deb [signed-by=/usr/share/keyrings/plex.gpg] https://downloads.plex.tv/repo/deb public main" > /etc/apt/sources.list.d/plexmediaserver.list
       
       apt-get update

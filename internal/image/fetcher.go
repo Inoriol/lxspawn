@@ -86,6 +86,16 @@ func (f *Fetcher) Fetch() error {
 }
 
 func (f *Fetcher) prepareTargetDir() error {
+	// Check if directory already exists (created by storage backend)
+	if _, err := os.Stat(f.TargetDir); err == nil {
+		// Directory exists, chown to current user so extraction works
+		cmd := exec.Command("sudo", "chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), f.TargetDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("chown failed: %w (%s)", err, string(output))
+		}
+		return nil
+	}
+
 	parentDir := filepath.Dir(f.TargetDir)
 	
 	if kernel.IsBtrfs(parentDir) {
@@ -111,6 +121,14 @@ func createBtrfsSubvolume(path string) error {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
 	
+	return nil
+}
+
+func fixRootfsOwnership(rootfsPath string) error {
+	cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
+	}
 	return nil
 }
 

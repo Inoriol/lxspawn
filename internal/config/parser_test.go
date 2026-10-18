@@ -871,3 +871,99 @@ func TestValidateProbeMissingScript(t *testing.T) {
 		t.Errorf("expected script required error, got: %v", err)
 	}
 }
+
+func TestParseStorageDefault(t *testing.T) {
+	path := writeTempYAML(t, `
+name: testbox
+distro: debian:bookworm
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Storage.Size != "10G" {
+		t.Errorf("storage.size = %q, want %q", cfg.Storage.Size, "10G")
+	}
+}
+
+func TestParseStorageCustom(t *testing.T) {
+	path := writeTempYAML(t, `
+name: testbox
+distro: debian:bookworm
+storage:
+  size: 20G
+`)
+	cfg, err := Parse(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Storage.Size != "20G" {
+		t.Errorf("storage.size = %q, want %q", cfg.Storage.Size, "20G")
+	}
+}
+
+func TestValidateStorageInvalidSize(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Storage: Storage{
+			Size: "invalid",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "storage.size") {
+		t.Errorf("expected storage.size error, got: %v", err)
+	}
+}
+
+func TestValidateStorageNegativeSize(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Storage: Storage{
+			Size: "-5G",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "storage.size") {
+		t.Errorf("expected storage.size error, got: %v", err)
+	}
+}
+
+func TestParseSizeToGB(t *testing.T) {
+	tests := []struct {
+		name    string
+		size    string
+		want    int
+		wantErr bool
+	}{
+		{"10 gigabytes", "10G", 10, false},
+		{"5 gigabytes lowercase", "5g", 5, false},
+		{"1 terabyte", "1T", 1024, false},
+		{"500 megabytes rounds up", "500M", 1, false},
+		{"2048 megabytes", "2048M", 2, false},
+		{"1.5 gigabytes", "1.5G", 1, false},
+		{"2.5 gigabytes", "2.5G", 2, false},
+		{"empty string", "", 0, true},
+		{"no unit", "10", 0, true},
+		{"invalid unit", "10X", 0, true},
+		{"negative", "-5G", 0, true},
+		{"zero", "0G", 0, true},
+		{"invalid number", "abcG", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseSizeToGB(tt.size)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ParseSizeToGB(%q) error = %v, wantErr %v", tt.size, err, tt.wantErr)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("ParseSizeToGB(%q) = %d, want %d", tt.size, got, tt.want)
+			}
+		})
+	}
+}

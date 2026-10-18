@@ -10,8 +10,15 @@ network:
   interface: auto
 
 volumes:
-  - host: /var/lib/nextcloud
+  - host: /var/lib/nextcloud  # Create this directory on host or change path
     mount: /var/www/html/data
+
+param:
+  db_name: "nextcloud"
+  db_user: "nextcloud"
+  db_pass: "nextcloud"      # Change this!
+  admin_user: "admin"
+  admin_pass: "admin"       # Change this!
 
 security:
   capabilities:
@@ -50,16 +57,16 @@ provision:
       
       # Setup database
       systemctl start mariadb
-      mysql -e "CREATE DATABASE nextcloud;"
-      mysql -e "CREATE USER 'nextcloud'@'localhost' IDENTIFIED BY 'nextcloud';"
-      mysql -e "GRANT ALL PRIVILEGES ON nextcloud.* TO 'nextcloud'@'localhost';"
+      mysql -e "CREATE DATABASE {{.Param.db_name}};"
+      mysql -e "CREATE USER '{{.Param.db_user}}'@'localhost' IDENTIFIED BY '{{.Param.db_pass}}';"
+      mysql -e "GRANT ALL PRIVILEGES ON {{.Param.db_name}}.* TO '{{.Param.db_user}}'@'localhost';"
       mysql -e "FLUSH PRIVILEGES;"
       
-      # Install Nextcloud
-      sudo -u www-data php /var/www/html/nextcloud/occ maintenance:install \
-        --database "mysql" --database-name "nextcloud" \
-        --database-user "nextcloud" --database-pass "nextcloud" \
-        --admin-user "admin" --admin-pass "admin"
+      # Install Nextcloud (occ must run as www-data user)
+      su - www-data -s /bin/bash -c "php /var/www/html/nextcloud/occ maintenance:install \
+        --database 'mysql' --database-name '{{.Param.db_name}}' \
+        --database-user '{{.Param.db_user}}' --database-pass '{{.Param.db_pass}}' \
+        --admin-user '{{.Param.admin_user}}' --admin-pass '{{.Param.admin_pass}}'"
       
       # Configure Apache
       cat > /etc/apache2/sites-available/nextcloud.conf <<EOF

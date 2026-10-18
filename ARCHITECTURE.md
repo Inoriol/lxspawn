@@ -97,12 +97,21 @@ lxspawn/
 │   ├── machine/              # Machine lifecycle management
 │   │   └── manager.go        # Create, start, stop, delete, shell, exec, status
 │   │
+│   ├── storage/              # Storage backend abstraction
+│   │   ├── backend.go        # StorageBackend interface
+│   │   ├── btrfs.go          # Btrfs subvolume backend
+│   │   ├── lvm_thin.go       # LVM thin provisioning backend
+│   │   ├── directory.go      # Directory-based fallback backend
+│   │   ├── detector.go       # Automatic backend detection
+│   │   └── storage_test.go   # Tests for storage backends
+│   │
 │   ├── snapshot/             # Snapshot management
 │   │   ├── snapshot.go       # Core types and interfaces
 │   │   ├── detector.go       # Filesystem type detection
 │   │   ├── btrfs.go          # btrfs subvolume operations
 │   │   ├── zfs.go            # zfs snapshot operations
 │   │   ├── lvm.go            # LVM snapshot operations
+│   │   ├── directory.go      # Directory-based snapshot operations (rsync)
 │   │   └── manager.go        # Snapshot orchestration and state
 │   │
 │   ├── network/              # Network detection and configuration
@@ -587,13 +596,20 @@ share the host kernel, so we bind-mount device nodes and configure cgroup device
 Snapshots provide point-in-time copies of machine rootfs for backup, testing, and rollback.
 
 **Implementation:**
-- `internal/snapshot/detector.go` - Detects filesystem type (btrfs only; zfs/lvm disabled)
+- `internal/snapshot/detector.go` - Detects filesystem type and selects appropriate backend
 - `internal/snapshot/btrfs.go` - btrfs subvolume snapshot operations
 - `internal/snapshot/zfs.go` - ZFS snapshot operations (disabled, untested)
-- `internal/snapshot/lvm.go` - LVM snapshot operations (disabled, untested)
+- `internal/snapshot/lvm.go` - LVM snapshot operations
+- `internal/snapshot/directory.go` - Directory-based snapshot operations (rsync)
 - `internal/snapshot/manager.go` - Orchestrates snapshot operations and state tracking
+- `internal/machine/lvm.go` - LVM volume creation, formatting, and mounting
 
-**Current status:** Only btrfs is supported and tested. ZFS and LVM backends are disabled pending testing on appropriate VMs (see Phase 6 in TODO.md).
+**Current status:** btrfs, LVM, and directory backends are supported. ZFS backend is disabled pending testing.
+
+**Backend selection:**
+- btrfs: Used when machine rootfs is on btrfs filesystem
+- LVM: Used when machine rootfs is on a dedicated LVM logical volume (thin pool)
+- Directory: Used when machine rootfs is a regular directory (fallback for ext4, xfs, etc.)
 
 **Btrfs implementation:**
 - Machine rootfs automatically created as btrfs subvolume when host is btrfs
@@ -603,12 +619,47 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - Delete: recursively deletes child subvolumes (deepest first) before deleting parent
 - List: parses `btrfs subvolume list -o` output
 
+**LVM implementation:**
+- Machine rootfs automatically created as a dedicated logical volume when host uses LVM thin pool
+- LV naming: `<vg-name>/lxspawn-<machine-name>` (e.g., `debian-vg/lxspawn-myserver`)
+- LV size: 4GB (hardcoded in `internal/machine/manager.go`)
+- Formatted with ext4 and mounted at `/var/lib/machines/<name>/`
+- Snapshots created with `lvcreate --snapshot --size 512M` (copy-on-write)
+- Snapshot naming: `<lv-name>-snap-<snap-name>` (e.g., `lxspawn-myserver-snap-snap1`)
+- Rollback: uses `lvconvert --merge` to merge snapshot back to origin (requires next activation)
+- Delete: uses `lvremove -f` to remove snapshot LV
+- List: parses `lvs --select vg_name=<vg>` output
+- Machine deletion: unmounts LV, removes LV with `lvremove -f`
+
+**LVM limitations:**
+- Cannot create new snapshots while a merge is pending (LVM restriction)
+- Merge completes on next activation (mount) of the origin LV
+- Snapshot size is fixed at 512MB (may need adjustment for heavy write workloads)
+- Machine LV size is fixed at 4GB (may need adjustment for large rootfs)
+
+**Directory implementation:**
+- Used when machine rootfs is a regular directory (no btrfs or LVM thin pool)
+- Snapshots created with `rsync -a --delete --exclude=.snapshots` (preserves permissions, handles large files)
+- Snapshots stored in `<rootfs>/.snapshots/<name>`
+- Rollback: uses `rsync -a --delete --checksum --exclude=.snapshots` to restore from snapshot
+- Delete: uses `sudo rm -rf` to remove snapshot directory
+- List: reads `<rootfs>/.snapshots/` directory entries
+- Uses `--checksum` flag to ensure files are compared by content, not just size/mtime
+
+**Directory limitations:**
+- Slower than btrfs or LVM snapshots (file-level copy instead of block-level)
+- Requires more disk space (full copy instead of copy-on-write)
+- No atomic snapshot creation (rsync is not atomic)
+- Suitable for testing and small machines, not recommended for production with large rootfs
+
 **State tracking:**
 - Snapshot metadata stored in `~/.local/share/lxspawn/<name>/snapshots.json`
 - Tracks snapshot name, backend, creation time, and location
 
 **Sudoers requirements:**
-- `btrfs`, `chown`, `mv` commands
+- btrfs: `btrfs`, `chown`, `mv` commands
+- LVM: `lvs`, `lvcreate`, `lvconvert`, `lvremove`, `mkfs.ext4`, `mount`, `umount`, `mountpoint`, `chown`, `chmod`
+- Directory: `rsync`, `rm`, `findmnt` commands
 - Added to `/etc/sudoers.d/lxspawn` by `lxspawn setup`
 
 ### 17. Docker-in-Container Support
@@ -737,6 +788,235 @@ The previous approach used an ExecStart override in the drop-in to add `-U` or `
 
 The `chown` command is still required in sudoers for fixing ownership of btrfs subvolumes after creation (during image extraction), but the recursive `fixRootfsOwnership` function (which chowned the entire rootfs) has been removed since idmapped mounts handle UID translation at runtime.
 
+### 20. Hybrid Storage Backend System
+
+lxspawn uses a hybrid storage backend system that automatically selects the best storage method based on the host filesystem, following Proxmox's approach for LVM.
+
+**The Problem:**
+
+The original LVM implementation used thick logical volumes (10GB per machine), which wasted space and required the volume group to have free space before creating machines. This didn't scale well and was inefficient.
+
+**The Solution:**
+
+Implement a storage backend abstraction layer that automatically selects the best backend:
+
+1. **Btrfs Backend** (when `/var/lib/machines/` is on btrfs)
+   - Uses btrfs subvolumes for machine storage
+   - Uses btrfs snapshots for efficient copy-on-write snapshots
+   - Best performance on btrfs filesystems
+
+2. **LVM Thin Backend** (when LVM thin pool exists)
+   - Uses LVM thin provisioning (like Proxmox)
+   - Creates thin volumes from a thin pool
+   - Supports over-provisioning (volumes larger than available space)
+   - Efficient thin snapshots with copy-on-write
+   - Space is allocated on-demand, not upfront
+
+3. **Directory Backend** (fallback)
+   - Simple directory-based storage in `/var/lib/machines/<name>/`
+   - Works on any filesystem (ext4, xfs, etc.)
+   - Uses file copying for snapshots (less efficient but universal)
+   - Used when no advanced backend is available
+
+**Implementation:**
+
+- `internal/storage/backend.go` - Defines `StorageBackend` interface
+- `internal/storage/btrfs.go` - Btrfs subvolume backend
+- `internal/storage/lvm_thin.go` - LVM thin provisioning backend
+- `internal/storage/directory.go` - Directory-based fallback backend
+- `internal/storage/detector.go` - Automatic backend detection and selection
+- `internal/machine/manager.go` - Integrates storage backend
+
+**Backend Selection Logic:**
+
+```
+1. Detect filesystem type of /var/lib/machines/
+   ↓
+2. If btrfs → Use BtrfsBackend
+   ↓
+3. If LVM:
+   a. Check for thin pool (lvs --noheadings -o lv_attr)
+   b. If thin pool exists → Use LVMThinBackend
+   c. If no thin pool → Use DirectoryBackend (with warning)
+   ↓
+4. Otherwise → Use DirectoryBackend
+```
+
+**LVM Thin Pool Setup:**
+
+If no thin pool is found on LVM, lxspawn warns the user and suggests creating one:
+
+```bash
+# Create a 50GB thin pool
+sudo lvcreate -L 50G -n lxspawn-pool <vg-name>
+sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool
+```
+
+**Why This Approach:**
+
+- **Efficient space usage:** Thin volumes allocated on-demand
+- **Universal compatibility:** Works on any filesystem with graceful fallback
+- **Best performance:** Uses native filesystem features when available
+- **Proxmox-like:** Follows industry best practices for virtualization storage
+- **Clean separation:** Storage backend is independent of machine lifecycle
+
+**Trade-offs:**
+
+- More complex than single-backend approach (but hidden from users via auto-detection)
+- Directory backend snapshots are less efficient (but it's a fallback)
+- Requires LVM thin pool setup for best LVM experience (one-time)
+
+### 21. Directory Backend Root-Owned File Handling
+
+The directory backend uses `sudo rm -rf` instead of `os.RemoveAll` for machine and snapshot deletion.
+
+**The Problem:**
+
+When containers run with `PrivateUsers=identity` (the default for btrfs and host networking), files created inside the container are owned by root on the host. When the container is stopped and the user attempts to delete the machine, `os.RemoveAll` fails with "permission denied" because the user doesn't have permission to delete root-owned files.
+
+**The Solution:**
+
+Use `sudo rm -rf` for all deletion operations in the directory backend:
+- `DeleteMachine` - Removes the machine directory
+- `DeleteSnapshot` - Removes snapshot directories
+- `RollbackSnapshot` - Removes the backup directory after rollback
+
+**Implementation:**
+
+- `internal/storage/directory.go:DeleteMachine` - Uses `sudo rm -rf <path>` instead of `os.RemoveAll`
+- `internal/storage/directory.go:DeleteSnapshot` - Same approach for snapshot deletion
+- `internal/storage/directory.go:RollbackSnapshot` - Uses `sudo rm -rf` for backup cleanup
+
+**Sudoers requirements:**
+
+The `rm` command is already allowed in sudoers for `/var/lib/machines/*`:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/bin/rm -rf /var/lib/machines/*
+```
+
+### 22. Rootfs Population Check
+
+The machine creation flow checks whether the rootfs directory is populated before skipping image download.
+
+**The Problem:**
+
+When the storage backend creates an empty directory for the machine, `deploy.FileExists(rootfsPath)` returns `true` (the directory exists), causing the image fetch step to be skipped. This results in an empty rootfs that systemd-nspawn refuses to start ("os-release file is missing").
+
+**The Solution:**
+
+Add an `isPopulatedRootfs` check that verifies the presence of `/etc/os-release` in the rootfs directory:
+
+```go
+if !deploy.FileExists(rootfsPath) || !isPopulatedRootfs(rootfsPath) {
+    // Download and extract image
+}
+```
+
+**Implementation:**
+
+- `internal/machine/manager.go:isPopulatedRootfs` - Checks for `/etc/os-release` in the rootfs
+- This ensures that even if the directory exists but is empty, the image will be downloaded
+
+**Why `/etc/os-release`:**
+
+- Present in all modern Linux distributions
+- Required by systemd-nspawn to validate the rootfs
+- Reliable indicator that the image was successfully extracted
+
+### 23. Rootfs Ownership Fix
+
+The machine creation flow fixes rootfs ownership after pre-boot provisioning to ensure files have correct uid/gid.
+
+**The Problem:**
+
+When the storage backend creates a btrfs subvolume or LVM volume, it sets ownership to `root:lxspawn` with group-writable permissions. This allows the current user (in the `lxspawn` group) to extract the rootfs tarball and run pre-boot provisioning. However, files extracted from the tarball inherit the current user's UID (e.g., 1000) instead of root (0). This breaks operations inside the container that expect files to be owned by root, such as `sudo` commands.
+
+**The Solution:**
+
+After pre-boot provisioning completes, run `sudo chown -R 0:0` on the rootfs to fix ownership:
+
+```go
+func fixRootfsOwnership(rootfsPath string) error {
+    cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
+    if output, err := cmd.CombinedOutput(); err != nil {
+        return fmt.Errorf("chown failed: %w (%s)", err, string(output))
+    }
+    return nil
+}
+```
+
+**Implementation:**
+
+- `internal/machine/manager.go:fixRootfsOwnership` - Recursively chowns rootfs to root:root
+- Called in `Create()` after pre-boot provisioning completes
+- Uses `sudo` because the user can't modify root-owned files
+
+**Why After Pre-Boot Provisioning:**
+
+- Pre-boot provisioning needs to write files to the rootfs (boot scripts, config files)
+- The directory is group-writable, so the current user can write during provisioning
+- After provisioning, all files (including those created by provisioning) need root ownership
+- Running chown after provisioning ensures both extracted files and provisioned files have correct ownership
+
+**Sudoers Requirements:**
+
+The `chown` command is already allowed in sudoers for `/var/lib/machines/*`:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/bin/chown * /var/lib/machines/*
+```
+
+### 24. systemd-resolved DNS Handling
+
+Fedora containers with systemd-resolved require special handling to configure DNS.
+
+**The Problem:**
+
+Fedora images include systemd-resolved, which manages `/etc/resolv.conf`. Even if you mask the service in boot scripts, systemd-resolved starts before boot scripts run and overwrites `/etc/resolv.conf` with its own configuration (pointing to 127.0.0.53). This breaks DNS resolution in containers.
+
+**The Solution:**
+
+Overwrite `/etc/resolv.conf` in the system provision script (post-boot), after systemd-resolved has started:
+
+```yaml
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      systemctl mask systemd-resolved.service
+      rm -f /etc/resolv.conf
+      
+  - mode: system
+    script: |
+      #!/bin/bash
+      # Overwrite resolv.conf AFTER systemd-resolved has started
+      cat > /etc/resolv.conf << 'EOF'
+      nameserver 8.8.8.8
+      nameserver 1.1.1.1
+      nameserver 8.8.4.4
+      EOF
+```
+
+**Why This Works:**
+
+- Boot scripts run before systemd starts, so masking doesn't prevent systemd-resolved from starting
+- systemd-resolved starts during boot and overwrites `/etc/resolv.conf`
+- System provision runs after the container is fully booted, so systemd-resolved has already started
+- Overwriting `/etc/resolv.conf` in system provision happens after systemd-resolved has written its config
+
+**Alternative Approaches:**
+
+1. **Configure systemd-resolved directly** (doesn't work in containers):
+   - `resolvectl dns` requires D-Bus, which isn't available in nsenter context
+   - `/etc/systemd/resolved.conf.d/` config is ignored if systemd-resolved isn't properly initialized
+
+2. **Mask systemd-resolved in boot scripts** (doesn't work):
+   - Boot scripts run before systemd, so masking doesn't prevent the service from starting
+   - systemd-resolved starts during boot and overwrites the config
+
+3. **Use data mode to write resolv.conf** (doesn't work):
+   - Data mode runs during pre-boot, before systemd-resolved starts
+   - systemd-resolved overwrites the file during boot
+
 ## Security Model
 
 ### Privilege Escalation Prevention
@@ -836,9 +1116,9 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 
 ### Unit Tests
 
-**373 tests across 19 test files, all passing:**
+**411 tests across 21 test files, all passing:**
 
-- `internal/config/parser_test.go` - Config parsing and validation (51 tests) - NEW: port range, sensitive paths, GPU device validation
+- `internal/config/parser_test.go` - Config parsing and validation (64 tests) - NEW: storage size parsing and validation
 - `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
 - `internal/deploy/state_test.go` - State management: register, unregister, persistence, list sorting (18 tests)
 - `internal/deploy/filesystem_test.go` - Path helpers, WriteFileAtomic, RemoveAll (21 tests)
@@ -853,9 +1133,11 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 - `internal/image/validate_test.go` - Init system detection at multiple paths (7 tests)
 - `internal/image/network_test.go` - Network config injection for all modes (10 tests)
 - `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
-- `internal/machine/manager_test.go` - Shell quoting and command building (15 tests)
+- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix (20 tests) - NEW: fixRootfsOwnership test
+- `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
 - `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
 - `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
+- `internal/snapshot/directory_test.go` - Directory backend operations (6 tests) - NEW: create, list, delete, rollback tests
 - `internal/snapshot/manager_test.go` - Snapshot state serialization, JSON fields (5 tests)
 - `internal/kernel/version_test.go` - Kernel version detection, btrfs detection (5 tests)
 - `internal/kernel/systemd_test.go` - Systemd version detection, PrivateUsers=identity support (2 tests)
@@ -999,6 +1281,45 @@ Snapshot managers are properly closed to prevent resource leaks:
 - Prevents file descriptor leaks
 - Ensures consistent resource management across the codebase
 - Future-proofs for when managers hold actual resources
+
+### 28. Machine Cleanup and Failed Service Handling
+
+When machines are deleted or stopped, especially after crashes, proper cleanup is essential to prevent lingering network interfaces and systemd-machined registrations.
+
+**The Problem:**
+When a container crashes (e.g., SIGABRT, timeout), the systemd service enters a "failed" state. Without proper cleanup:
+- The service remains in "failed" state indefinitely
+- systemd-machined keeps the machine registered in memory (visible in `machinectl list`)
+- Network interfaces (macvlan, host-side macvlan) may not be cleaned up
+- The `post_stop` hook may not execute during crashes
+
+**The Solution:**
+
+The `Delete` and `Stop` methods now perform comprehensive cleanup:
+
+1. **Stop the service** - Attempt graceful stop via D-Bus
+2. **Reset failed state** - Call `ResetFailedUnit` to clear "failed" state
+3. **Terminate via machinectl** - Call `machinectl terminate` to clean up systemd-machined registrations
+4. **Remove files** - Delete .nspawn, slice, drop-in, hooks, and rootfs
+5. **Reload systemd** - Ensure systemd picks up the changes
+6. **Unregister from state** - Remove from machines.json
+
+**Implementation:**
+
+- `internal/deploy/dbus.go:ResetFailedUnit()` - Wraps D-Bus `ResetFailedUnit` call
+- `internal/machine/manager.go:Delete()` - Comprehensive cleanup with error handling
+- `internal/machine/manager.go:Stop()` - Falls back to `ResetFailedUnit` + `machinectl terminate` if stop fails
+
+**Error handling:**
+- All cleanup steps log warnings on failure but continue with remaining steps
+- This ensures maximum cleanup even if some steps fail
+- Errors are logged with context for debugging
+
+**Why this matters:**
+- Prevents lingering network interfaces on the host
+- Prevents stale entries in `machinectl list`
+- Ensures clean state for future machine creation
+- Handles crash scenarios gracefully
 
 ## Future Enhancements
 

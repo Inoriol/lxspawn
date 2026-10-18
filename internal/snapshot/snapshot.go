@@ -9,9 +9,10 @@ import (
 type BackendType string
 
 const (
-	BackendBtrfs BackendType = "btrfs"
-	BackendZFS   BackendType = "zfs"
-	BackendLVM   BackendType = "lvm"
+	BackendBtrfs    BackendType = "btrfs"
+	BackendZFS      BackendType = "zfs"
+	BackendLVM      BackendType = "lvm"
+	BackendDirectory BackendType = "directory"
 )
 
 type SnapshotInfo struct {

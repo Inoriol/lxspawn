@@ -18,6 +18,9 @@ resources:
   tasks: 512
   io_weight: 100
 
+storage:
+  size: 10G
+
 network:
   mode: bridge
   bridge: br0
@@ -171,6 +174,31 @@ All fields are optional. When any field is set, a systemd slice unit (`machine-<
 | `swap` | string | `""` | `MemorySwapMax=` | Maximum swap usage. |
 | `tasks` | string | `""` | `TasksMax=` | Maximum number of processes and threads. Accepts numeric values (e.g. `512`) or special values like `infinity` (required for Docker-in-container). |
 | `io_weight` | int | `100` | `IOWeight=` | IO scheduling priority (1–10000). Default 100 is the systemd default; only written to the slice if set to a non-default value. |
+
+---
+
+### `storage`
+
+All fields are optional. Controls storage allocation for the machine rootfs.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `size` | string | `"10G"` | Size of the storage volume for the machine rootfs. Used for LVM thin provisioning. Accepts size suffixes: `G` (gigabytes), `M` (megabytes), `T` (terabytes). Examples: `10G`, `500M`, `1T`. |
+
+**Storage Backends:**
+
+lxspawn automatically detects and uses the best storage backend based on your filesystem:
+
+- **btrfs:** Machine rootfs is automatically created as a btrfs subvolume. The `storage.size` field has no effect. Snapshots use btrfs copy-on-write.
+- **LVM with thin pool:** Machine rootfs is created as a thin volume from the thin pool. The `storage.size` field specifies the virtual size (can be larger than available space due to over-provisioning). Snapshots use LVM thin snapshots.
+- **LVM without thin pool:** Falls back to directory mode with a warning. For efficient space usage, create a thin pool: `sudo lvcreate -L 50G -n lxspawn-pool <vg-name> && sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool`
+- **Other filesystems:** Uses directory-based storage in `/var/lib/machines/<name>/`. The `storage.size` field has no effect. Snapshots use file copying.
+
+**Notes:**
+
+- The size must be large enough to hold the rootfs image plus any additional packages or data. A typical Debian rootfs is ~200MB; allow extra space for growth.
+- On LVM thin, space is allocated on-demand, so you can specify a larger virtual size than physically available (over-provisioning).
+- The selected backend is logged at startup: `Using storage backend: <type>`
 
 ---
 
@@ -516,6 +544,27 @@ Each entry defines a provisioning step. Steps are executed in order.
 | `yq` | Pre-boot | Host edits rootfs | Edit existing config files (JSON/YAML/TOML) using yq expressions. |
 | `system` | Post-boot | `nsenter` as root | Package installation, service management. Uses `nsenter` to enter the container's namespaces directly, avoiding PTY allocation issues. |
 | `user` | Post-boot | `nsenter` as user | User-level setup, dotfiles. Uses `nsenter` with `su` to run as the specified user. |
+
+**DNS Configuration with systemd-resolved:**
+
+Some distributions (e.g., Fedora) use systemd-resolved, which manages `/etc/resolv.conf`. Masking the service in `boot` mode doesn't prevent it from overwriting DNS configuration during boot. To configure DNS in such containers, overwrite `/etc/resolv.conf` in a `system` provision script (post-boot), after systemd-resolved has started:
+
+```yaml
+provision:
+  - mode: boot
+    script: |
+      #!/bin/bash
+      systemctl mask systemd-resolved.service
+  - mode: system
+    script: |
+      #!/bin/bash
+      # Overwrite resolv.conf AFTER systemd-resolved has started
+      cat > /etc/resolv.conf << 'EOF'
+      nameserver 8.8.8.8
+      nameserver 1.1.1.1
+      nameserver 8.8.4.4
+      EOF
+```
 
 **Template variables** (available in all `script`, `content`, `hint`, and `expression` fields):
 

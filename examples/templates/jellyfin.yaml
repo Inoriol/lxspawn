@@ -10,10 +10,10 @@ network:
   interface: auto
 
 volumes:
-  - host: /mnt/media
+  - host: /mnt/media  # Create this directory on host or change path
     mount: /media
     readonly: true
-  - host: /var/lib/jellyfin
+  - host: /var/lib/jellyfin  # Create this directory on host or change path
     mount: /var/lib/jellyfin
 
 security:
@@ -46,7 +46,15 @@ provision:
       #!/bin/bash
       set -eux -o pipefail
       apt-get update
-      apt-get install -y curl gnupg software-properties-common intel-media-va-driver vainfo
+      apt-get install -y curl gnupg software-properties-common vainfo
+      
+      # Install GPU drivers (install both Intel and AMD for compatibility)
+      # Intel iGPU/dGPU:
+      apt-get install -y intel-media-va-driver intel-compute-runtime
+      # AMD iGPU/dGPU:
+      apt-get install -y mesa-va-drivers rocm-opencl-runtime || true
+      # NVIDIA: requires proprietary driver matching host version exactly
+      # apt-get install -y nvidia-driver-XXX
       
       # Add Jellyfin repository
       curl -fsSL https://repo.jellyfin.org/jellyfin.gpg | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/jellyfin.gpg

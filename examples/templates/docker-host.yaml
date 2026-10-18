@@ -71,21 +71,17 @@ provision:
       }
       EOF
       
-      # Enable Docker to start on boot (systemctl enable doesn't need D-Bus)
-      systemctl enable docker || true
+      # Start Docker manually (systemctl enable/start doesn't work reliably in containers)
+      dockerd >/var/log/docker.log 2>&1 &
+      sleep 3
+      chmod 666 /var/run/docker.sock 2>/dev/null || true
 
 probes:
   - mode: readiness
     description: "Docker daemon to be running"
     script: |
       #!/bin/bash
-      # Start Docker manually if not running (nsenter can't use systemctl start)
-      if ! pidof dockerd >/dev/null; then
-        dockerd >/var/log/docker.log 2>&1 &
-        sleep 3
-        # Fix socket permissions
-        chmod 666 /var/run/docker.sock 2>/dev/null || true
-      fi
       until docker info >/dev/null 2>&1; do sleep 2; done
     hint: |
       Docker may not have started. Check: journalctl -M {{.Name}} -u docker
+      Or check: cat /var/log/docker.log

@@ -16,11 +16,13 @@ import (
 	"github.com/Inoriol/lxspawn/internal/kernel"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/provision"
+	"github.com/Inoriol/lxspawn/internal/storage"
 )
 
 type Manager struct {
 	state   *deploy.StateManager
 	systemd *deploy.SystemdManager
+	storage storage.StorageBackend
 }
 
 func NewManager() (*Manager, error) {
@@ -34,9 +36,18 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to connect to systemd: %w", err)
 	}
 
+	// Detect and initialize storage backend
+	storageBackend, err := storage.DetectBackend(deploy.MachinesDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize storage backend: %w", err)
+	}
+
+	logger.Info(fmt.Sprintf("Using storage backend: %s", storageBackend.Type()))
+
 	return &Manager{
 		state:   state,
 		systemd: systemd,
+		storage: storageBackend,
 	}, nil
 }
 
@@ -68,13 +79,25 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	}
 
 	rootfsPath := deploy.MachineRootfsPath(cfg.Name)
-	if !deploy.FileExists(rootfsPath) {
+	if !deploy.FileExists(rootfsPath) || !isPopulatedRootfs(rootfsPath) {
+		// Use storage backend to create machine storage
+		sizeGB, err := config.ParseSizeToGB(cfg.Storage.Size)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse storage size: %w", err)
+		}
+
+		if err := m.storage.CreateMachine(cfg.Name, sizeGB); err != nil {
+			return nil, fmt.Errorf("failed to create machine storage: %w", err)
+		}
+
 		fetcher, err := image.NewFetcher(cfg.Name, cfg.Distro, rootfsPath)
 		if err != nil {
+			m.storage.DeleteMachine(cfg.Name)
 			return nil, fmt.Errorf("failed to create image fetcher: %w", err)
 		}
 
 		if err := fetcher.Fetch(); err != nil {
+			m.storage.DeleteMachine(cfg.Name)
 			return nil, fmt.Errorf("failed to fetch image: %w", err)
 		}
 
@@ -167,6 +190,10 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		}
 	}
 
+	if err := fixRootfsOwnership(rootfsPath); err != nil {
+		logger.Warn(fmt.Sprintf("rootfs ownership fix warning: %v", err))
+	}
+
 	logger.Success(fmt.Sprintf("Machine '%s' created successfully", cfg.Name))
 	return filesWritten, nil
 }
@@ -234,7 +261,16 @@ func (m *Manager) Stop(name string) error {
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
 	if err := m.systemd.StopUnit(unitName); err != nil {
-		return fmt.Errorf("failed to stop machine: %w", err)
+		logger.Warn(fmt.Sprintf("stop unit warning: %v", err))
+		
+		if err := m.systemd.ResetFailedUnit(unitName); err != nil {
+			logger.Warn(fmt.Sprintf("reset failed warning: %v", err))
+		}
+		
+		cleanupCmd := exec.Command("machinectl", "terminate", name)
+		if output, err := cleanupCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to stop machine: %w (%s)", err, string(output))
+		}
 	}
 
 	logger.Success(fmt.Sprintf("Machine '%s' stopped", name))
@@ -248,7 +284,20 @@ func (m *Manager) Delete(name string) error {
 		return fmt.Errorf("machine '%s' not found", name)
 	}
 
-	_ = m.Stop(name)
+	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
+	
+	if err := m.systemd.StopUnit(unitName); err != nil {
+		logger.Warn(fmt.Sprintf("failed to stop machine (may already be stopped): %v", err))
+	}
+	
+	if err := m.systemd.ResetFailedUnit(unitName); err != nil {
+		logger.Warn(fmt.Sprintf("failed to reset failed state (may not be in failed state): %v", err))
+	}
+	
+	cleanupCmd := exec.Command("machinectl", "terminate", name)
+	if output, err := cleanupCmd.CombinedOutput(); err != nil {
+		logger.Warn(fmt.Sprintf("machinectl terminate warning: %v (%s)", err, string(output)))
+	}
 
 	var paths []string
 	paths = append(paths, deploy.NspawnFilePath(name))
@@ -260,12 +309,9 @@ func (m *Manager) Delete(name string) error {
 		return fmt.Errorf("failed to remove files: %w", err)
 	}
 
-	rootfs := deploy.MachineRootfsPath(name)
-	if deploy.FileExists(rootfs) {
-		logger.Info(fmt.Sprintf("Removing rootfs at %s", rootfs))
-		if err := removeRootfs(rootfs); err != nil {
-			return fmt.Errorf("failed to remove rootfs: %w", err)
-		}
+	// Use storage backend to delete machine storage
+	if err := m.storage.DeleteMachine(name); err != nil {
+		return fmt.Errorf("failed to delete machine storage: %w", err)
 	}
 
 	if err := m.systemd.ReloadDaemon(); err != nil {
@@ -562,5 +608,19 @@ func (m *Manager) Provision(cfg *config.Config, sourcePath string) error {
 	}
 
 	logger.Success("Provisioning complete")
+	return nil
+}
+
+func isPopulatedRootfs(path string) bool {
+	osRelease := filepath.Join(path, "etc", "os-release")
+	_, err := os.Stat(osRelease)
+	return err == nil
+}
+
+func fixRootfsOwnership(rootfsPath string) error {
+	cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
+	}
 	return nil
 }

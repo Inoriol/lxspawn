@@ -5,13 +5,16 @@ resources:
   cpus: 1
   memory: 512M
 
+# Network: Uses adaptive mode (falls back to macvlan if no bridge exists)
+# The container will get a static IP on your LAN for DNS service
+# Adjust the IP/gateway in params below to match your network
 network:
   mode: adaptive
   interface: auto
 
 param:
-  adguard_ip: "192.168.0.101/24"
-  gateway: "192.168.0.1"
+  adguard_ip: "192.168.0.101/24"  # Static IP for AdGuard (customize for your network)
+  gateway: "192.168.0.1"          # Your network gateway
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
 
@@ -28,8 +31,9 @@ provision:
     path: /etc/systemd/network/10-eth.network
     content: |
       [Match]
-      Name=mv-enp2s0
-
+      # Match any ethernet or macvlan interface (works with adaptive mode)
+      Name=eth* mv-*
+      
       [Network]
       Address={{.Param.adguard_ip}}
       Gateway={{.Param.gateway}}

@@ -91,6 +91,13 @@ func (s *SystemdManager) StopUnit(unitName string) error {
 	return nil
 }
 
+func (s *SystemdManager) ResetFailedUnit(unitName string) error {
+	if err := s.conn.ResetFailedUnit(unitName); err != nil {
+		return fmt.Errorf("failed to reset failed state for unit %s: %w", unitName, err)
+	}
+	return nil
+}
+
 func (s *SystemdManager) RestartUnit(unitName string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), unitStopTimeout)
 	defer cancel()

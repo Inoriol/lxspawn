@@ -7,6 +7,15 @@ import (
 )
 
 func DetectFilesystem(path string) (BackendType, error) {
+	// Check if path is a mount point (indicates dedicated LV per machine)
+	if isMountPoint(path) {
+		lvm, err := detectLVM(path)
+		if err == nil && lvm {
+			return BackendLVM, nil
+		}
+	}
+
+	// Check filesystem type
 	out, err := exec.Command("stat", "-f", "-c", "%T", path).Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to detect filesystem type for %s: %w", path, err)
@@ -20,12 +29,18 @@ func DetectFilesystem(path string) (BackendType, error) {
 	case "zfs":
 		return "", fmt.Errorf("ZFS snapshots are not yet supported (untested) for %s - please use btrfs", path)
 	default:
-		lvm, err := detectLVM(path)
-		if err == nil && lvm {
-			return "", fmt.Errorf("LVM snapshots are not yet supported (untested) for %s - please use btrfs", path)
-		}
-		return "", fmt.Errorf("unsupported filesystem type %q for %s (supported: btrfs)", fsType, path)
+		// Not a dedicated mount point, use directory mode (file-based snapshots)
+		return BackendDirectory, nil
 	}
+}
+
+func isMountPoint(path string) bool {
+	// Check if path is a mount point by comparing device IDs
+	out, err := exec.Command("findmnt", "-n", "-o", "SOURCE", path).Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) != ""
 }
 
 func detectLVM(path string) (bool, error) {
@@ -39,11 +54,16 @@ func detectLVM(path string) (bool, error) {
 		return false, fmt.Errorf("unexpected df output")
 	}
 
-	device := lines[len(lines)-1]
+	device := strings.TrimSpace(lines[len(lines)-1])
 
-	out, err = exec.Command("pvs", "--noheadings", "-o", "vg_name", device).Output()
+	lvsPath, err := exec.LookPath("lvs")
 	if err != nil {
-		return false, err
+		lvsPath = "/usr/sbin/lvs"
+	}
+
+	out, err = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name", device).CombinedOutput()
+	if err != nil {
+		return false, nil
 	}
 
 	return strings.TrimSpace(string(out)) != "", nil
@@ -56,9 +76,11 @@ func GetBackend(backendType BackendType, machineName string) (SnapshotBackend, e
 	case BackendZFS:
 		return nil, fmt.Errorf("ZFS snapshots are not yet supported (untested) - please use btrfs")
 	case BackendLVM:
-		return nil, fmt.Errorf("LVM snapshots are not yet supported (untested) - please use btrfs")
+		return NewLVMBackend(machineName)
+	case BackendDirectory:
+		return NewDirectoryBackend(machineName)
 	default:
-		return nil, fmt.Errorf("unsupported backend type: %s (supported: btrfs)", backendType)
+		return nil, fmt.Errorf("unsupported backend type: %s (supported: btrfs, lvm, directory)", backendType)
 	}
 }
 

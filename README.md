@@ -36,7 +36,7 @@ This creates:
 - `lxspawn` group for passwordless management
 - Directory permissions for `/var/lib/lxspawn`, `/etc/systemd/nspawn`, etc.
 - Polkit rules for systemd unit management
-- Sudoers rules for `rm`, `nsenter`, `btrfs`, `zfs`, `lvcreate`, `lvconvert`, `lvremove`, `chown`, and `mv` (used for rootfs management, post-boot provisioning, and snapshots)
+- Sudoers rules for `rm`, `nsenter`, `btrfs`, `zfs`, `lvcreate`, `lvconvert`, `lvremove`, `chown`, `mv`, `rsync`, and `findmnt` (used for rootfs management, post-boot provisioning, and snapshots)
 
 Add your user to the group:
 
@@ -127,7 +127,12 @@ lxspawn rollback <name> <snap>         # Rollback to snapshot
 lxspawn delete-snapshot <name> <snap>  # Delete snapshot
 ```
 
-Note: Snapshots require btrfs, zfs, or LVM filesystem. Machine rootfs is automatically created as a btrfs subvolume when the host filesystem is btrfs.
+Note: Snapshots require btrfs or LVM filesystem. 
+- **btrfs**: Machine rootfs is automatically created as a btrfs subvolume when the host filesystem is btrfs. Snapshots use btrfs copy-on-write.
+- **LVM with thin pool**: Machine rootfs is created as a thin volume from the thin pool. Snapshots use LVM thin snapshots. Efficient space usage with over-provisioning support.
+- **LVM without thin pool**: Falls back to directory mode with a warning. For efficient space usage, create a thin pool: `sudo lvcreate -L 50G -n lxspawn-pool <vg-name> && sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool`
+- **Other filesystems**: Uses directory-based storage in `/var/lib/machines/<name>/`. Snapshots use file copying.
+- **zfs**: Not yet tested/supported.
 
 ### Status
 
@@ -163,6 +168,9 @@ resources:                       # Resource limits (optional)
   swap: 512M                     # Swap limit (→ MemorySwapMax=512M)
   tasks: 512                     # Max processes (→ TasksMax=512)
   io_weight: 100                 # IO priority (→ IOWeight=100)
+
+storage:                         # Storage configuration (optional)
+  size: 10G                      # Volume size for LVM thin (default: 10G)
 
 network:                         # Network configuration (optional)
   mode: host                     # host | private | bridge | zone | macvlan | ipvlan
@@ -565,6 +573,41 @@ Commands that work without group:
 - **SELinux:** If enforcing, hook scripts are automatically labeled with `bin_t` context
 - **Images:** systemd-based distributions (Debian, Ubuntu, Fedora, etc.). Note: Arch Linux is not supported on btrfs hosts due to filesystem compatibility issues.
 
+## Storage Backends
+
+lxspawn automatically detects and uses the best storage backend based on your filesystem:
+
+### Btrfs (Recommended)
+- **Detection:** Automatic when `/var/lib/machines/` is on btrfs
+- **Features:** Subvolumes for machines, copy-on-write snapshots
+- **Requirements:** Kernel 5.12+ for idmapped mounts support
+
+### LVM Thin (Proxmox-style)
+- **Detection:** Automatic when LVM thin pool exists in the volume group
+- **Features:** Thin provisioning, over-provisioning, efficient snapshots
+- **Setup:** Create a thin pool:
+  ```bash
+  sudo lvcreate -L 50G -n lxspawn-pool <vg-name>
+  sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool
+  ```
+- **Benefits:** Space-efficient, supports over-provisioning, fast snapshots
+
+### Directory (Universal Fallback)
+- **Detection:** Used when no advanced backend is available
+- **Features:** Simple directory-based storage, file-copy snapshots
+- **Works on:** Any filesystem (ext4, xfs, etc.)
+- **Limitations:** No block-level snapshots, less efficient
+- **Note:** Uses `sudo rm -rf` for deletion (handles root-owned files from container namespace)
+
+### Automatic Selection
+lxspawn selects the backend automatically:
+1. If btrfs → Btrfs backend
+2. If LVM with thin pool → LVM thin backend
+3. If LVM without thin pool → Directory backend (with warning)
+4. Otherwise → Directory backend
+
+The selected backend is logged at startup: `Using storage backend: <type>`
+
 ## Known Issues
 
 ### machinectl Shell PTY Errors
@@ -604,8 +647,8 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 - [x] Machine state queried via D-Bus (machine1 interface)
 - [x] Lock file workaround (`SYSTEMD_NSPAWN_LOCK=0`)
 
-**Phase 3 (V2) - Snapshots - Complete (btrfs only):**
-- [x] Snapshot support (btrfs only; zfs/lvm disabled pending testing)
+**Phase 3 (V2) - Snapshots - Complete (btrfs + LVM):**
+- [x] Snapshot support (btrfs + LVM; zfs disabled pending testing)
 - [x] Automatic btrfs subvolume creation
 - [x] Snapshot create/list/rollback/delete commands
 - [x] JSON output for snapshot commands
@@ -640,9 +683,11 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 **Phase 6 (V2+) - ZFS/LVM Snapshots:**
 - [ ] Set up VM with ZFS filesystem
 - [ ] Test ZFS snapshots
-- [ ] Set up VM with LVM (XFS) filesystem
-- [ ] Test LVM snapshots
-- [ ] Re-enable ZFS and LVM backends
+- [x] Set up VM with LVM (ext4) filesystem
+- [x] Test LVM snapshots (create, list, rollback, delete)
+- [x] Implement per-machine LV creation for LVM backend
+- [x] Re-enable LVM backend
+- [ ] Re-enable ZFS backend
 
 ## License
 

@@ -1,8 +1,73 @@
 package machine
 
 import (
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 )
+
+func TestIsPopulatedRootfs(t *testing.T) {
+	tests := []struct {
+		name     string
+		setup    func(string) error
+		expected bool
+	}{
+		{
+			name: "empty directory",
+			setup: func(path string) error {
+				return os.MkdirAll(path, 0755)
+			},
+			expected: false,
+		},
+		{
+			name: "directory with etc but no os-release",
+			setup: func(path string) error {
+				etcDir := filepath.Join(path, "etc")
+				return os.MkdirAll(etcDir, 0755)
+			},
+			expected: false,
+		},
+		{
+			name: "directory with os-release",
+			setup: func(path string) error {
+				etcDir := filepath.Join(path, "etc")
+				if err := os.MkdirAll(etcDir, 0755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(etcDir, "os-release"), []byte("ID=debian"), 0644)
+			},
+			expected: true,
+		},
+		{
+			name: "directory with other files but no os-release",
+			setup: func(path string) error {
+				etcDir := filepath.Join(path, "etc")
+				if err := os.MkdirAll(etcDir, 0755); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(etcDir, "hostname"), []byte("test"), 0644)
+			},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			testPath := filepath.Join(tmpDir, "rootfs")
+
+			if err := tt.setup(testPath); err != nil {
+				t.Fatalf("setup failed: %v", err)
+			}
+
+			result := isPopulatedRootfs(testPath)
+			if result != tt.expected {
+				t.Errorf("isPopulatedRootfs() = %v, want %v", result, tt.expected)
+			}
+		})
+	}
+}
 
 func TestShellQuote(t *testing.T) {
 	tests := []struct {
@@ -112,5 +177,34 @@ func TestShellQuoteArgs(t *testing.T) {
 				t.Errorf("shellQuoteArgs(%v) = %q, want %q", tt.args, result, tt.expected)
 			}
 		})
+	}
+}
+
+func TestFixRootfsOwnership(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("requires root privileges")
+	}
+
+	tmpDir := t.TempDir()
+	testPath := filepath.Join(tmpDir, "rootfs")
+	if err := os.MkdirAll(filepath.Join(testPath, "etc"), 0755); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(testPath, "etc", "test"), []byte("test"), 0644); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	if err := fixRootfsOwnership(testPath); err != nil {
+		t.Fatalf("fixRootfsOwnership failed: %v", err)
+	}
+
+	info, err := os.Stat(testPath)
+	if err != nil {
+		t.Fatalf("stat failed: %v", err)
+	}
+
+	if info.Sys().(*syscall.Stat_t).Uid != 0 {
+		t.Errorf("expected uid 0, got %d", info.Sys().(*syscall.Stat_t).Uid)
 	}
 }

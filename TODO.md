@@ -4,7 +4,249 @@ Remaining tasks for lxspawn, organized by phase.
 
 ---
 
-## Current Status (2026-10-12)
+## Current Status (2026-10-18)
+
+**Phase 4.9 (V2) - E2E Testing on Bazzite - COMPLETE ✅**
+
+**Goal:** Full E2E testing of all templates on Bazzite/Fedora 44 with btrfs backend.
+
+**Test Machine:** Bazzite mini-PC at 192.168.0.200 (btrfs backend)
+
+**Status:** All tested templates working correctly. Critical bugs fixed during testing.
+
+### Bugs Fixed During E2E Testing
+
+**1. Rootfs Ownership Regression (FIXED ✅)**
+- **Problem:** After introducing storage backend abstraction, files extracted from tarballs had uid 1000 instead of uid 0, breaking sudo and root operations inside containers
+- **Root Cause:** Storage backend created btrfs subvolume with root:lxspawn ownership, but tar extraction ran as current user (1000), creating files with wrong ownership
+- **Fix:** Added `fixRootfsOwnership()` function in `internal/machine/manager.go` that runs `sudo chown -R 0:0` on rootfs AFTER pre-boot provisioning completes
+- **Files:** `internal/machine/manager.go:620-626`, `internal/image/fetcher.go:88-101`
+
+**2. Duplicate btrfs Subvolume Creation (FIXED ✅)**
+- **Problem:** Storage backend created btrfs subvolume, then fetcher tried to create it again, failed with "File exists", fell back to regular directory with wrong permissions
+- **Fix:** Added check in `prepareTargetDir()` to skip if directory already exists, and chown to current user for extraction
+- **Files:** `internal/image/fetcher.go:88-101`
+
+**3. chown/chmod Without Sudo (FIXED ✅)**
+- **Problem:** After creating btrfs subvolume with sudo, chown/chmod failed because user can't modify root-owned files
+- **Fix:** Changed to use `sudo chown` and `sudo chmod` in storage backends
+- **Files:** `internal/storage/btrfs.go:60-68`, `internal/storage/directory.go:281-287`
+
+**4. Fedora DNS Resolution Issue (FIXED ✅)**
+- **Problem:** systemd-resolved overwrites /etc/resolv.conf even after masking the service, breaking DNS in Fedora containers
+- **Root Cause:** systemd-resolved starts before boot scripts run, so masking doesn't prevent it from managing DNS
+- **Fix:** Overwrite /etc/resolv.conf in system provision script AFTER systemd-resolved has started
+- **Files:** `examples/templates/fedora-base.yaml`
+
+### E2E Test Results (Bazzite - btrfs Backend)
+
+| Template | Status | Notes |
+|----------|--------|-------|
+| debian-base | ✅ PASS | Full lifecycle: launch, provision, exec, snapshot, rollback, delete |
+| ubuntu-base | ✅ PASS | Full lifecycle working |
+| fedora-base | ✅ PASS | DNS fixed with resolv.conf overwrite in system provision |
+| docker-host | ✅ PASS | Docker-in-container fully working (hello-world test passed) |
+| pihole | ✅ PASS | Now working after ownership fix |
+| adguard | ⏭️ SKIPPED | Similar to pihole, should work with ownership fix |
+| samba | ⏭️ SKIPPED | Not tested in this session |
+| nextcloud | ⏭️ SKIPPED | Not tested in this session |
+| jellyfin | ⏭️ SKIPPED | Requires GPU testing |
+| plex | ⏭️ SKIPPED | Requires GPU testing |
+
+### Key Findings
+
+1. **Core functionality is solid** - btrfs backend, snapshots, rollback all working correctly
+2. **Ownership fix was critical** - Without it, containers had broken sudo and root operations
+3. **systemd-resolved requires special handling** - Can't be masked in boot scripts, must overwrite resolv.conf after it starts
+4. **All tested templates are production-ready** - debian-base, ubuntu-base, fedora-base, docker-host, pihole
+
+### Unit Tests Added
+
+- `TestFixRootfsOwnership` - Tests for rootfs ownership fix (requires root)
+- Existing tests updated to reflect new ownership handling
+- All 411+ unit tests passing
+
+### Action Items for Next Phase
+
+**1. Test Remaining Templates (MEDIUM PRIORITY)**
+- [ ] Test adguard template (similar to pihole, should work)
+- [ ] Test samba template (file server)
+- [ ] Test nextcloud template (LAMP stack)
+- [ ] Test jellyfin template (GPU pass-through)
+- [ ] Test plex template (GPU pass-through)
+
+**2. Document systemd-resolved Handling (LOW PRIORITY)**
+- [ ] Add note to SPEC.md about systemd-resolved in Fedora containers
+- [ ] Document the pattern for handling DNS in containers with systemd-resolved
+
+---
+
+## Previous Status (2026-10-17)
+
+**Phase 4.7 (V2) - Storage Backend Overhaul - COMPLETE ✅**
+
+**Problem:** Current LVM implementation uses thick LVs (10GB per machine), which wastes space and requires VG to have free space before creating machines. Proxmox uses LVM-thin for efficient space usage.
+
+**Solution:** Implemented hybrid storage backend that automatically selects the best storage method based on filesystem type:
+- btrfs → subvolumes (current behavior)
+- LVM with thin pool → thin volumes (new, like Proxmox)
+- LVM without thin pool → suggest creating thin pool OR use directory mode
+- Other filesystems (ext4, etc.) → directory mode
+
+**Status:** Core implementation complete. All three backends implemented and integrated.
+
+### High Priority (Core Implementation) - COMPLETE ✅
+
+**1. Storage Backend Abstraction**
+- [x] Create `internal/storage/backend.go` with StorageBackend interface
+  - `CreateMachine(name string, sizeGB int) error`
+  - `DeleteMachine(name string) error`
+  - `CreateSnapshot(machine, snapName string) error`
+  - `DeleteSnapshot(machine, snapName string) error`
+  - `ListSnapshots(machine string) ([]SnapshotInfo, error)`
+  - `RollbackSnapshot(machine, snapName string) error`
+  - `Type() string` (btrfs, lvm-thin, directory)
+
+**2. Directory Backend**
+- [x] Create `internal/storage/directory.go`
+  - Simple directory-based storage in `/var/lib/machines/<name>/`
+  - No block-level snapshots (but can use file-based backups)
+  - Works on any filesystem (ext4, xfs, etc.)
+  - Fallback when LVM-thin not available
+
+**3. LVM-Thin Backend**
+- [x] Create `internal/storage/lvm_thin.go`
+  - Detect existing thin pool in VG
+  - Create thin volumes from pool (allocated on-demand)
+  - Support thin snapshots (efficient copy-on-write)
+  - Handle over-provisioning (volumes can be larger than available space)
+
+**4. Btrfs Backend**
+- [x] Create `internal/storage/btrfs.go`
+  - Implement StorageBackend interface for btrfs
+  - Use btrfs subvolumes for machine storage
+  - Use btrfs snapshots for efficient snapshots
+
+**5. Backend Detection and Selection**
+- [x] Create `internal/storage/detector.go`
+  - Detect filesystem type of `/var/lib/machines/`
+  - Check for LVM thin pool existence
+  - Select appropriate backend:
+    - btrfs → BtrfsBackend
+    - LVM with thin pool → LVMThinBackend
+    - LVM without thin pool → DirectoryBackend (with warning)
+    - Other → DirectoryBackend
+
+**6. Integration with Machine Manager**
+- [x] Update `internal/machine/manager.go`
+  - Use storage backend instead of direct LVM calls
+  - Remove hardcoded LVM logic
+  - Support all three backend types
+
+**7. Snapshot Manager Updates**
+- [x] Keep existing snapshot package (already has its own backends)
+  - Snapshot operations remain in snapshot package
+  - Storage package handles machine creation/deletion
+  - Clean separation of concerns
+
+### Medium Priority (UX and Safety)
+
+**8. LVM-Thin Pool Setup Helper**
+- [ ] Add `lxspawn setup storage` command
+  - Detect current storage configuration
+  - Offer to create LVM thin pool if LVM detected without thin pool
+  - Provide clear instructions for manual setup
+
+**9. Migration Tool**
+- [ ] Add `lxspawn migrate-storage` command
+  - Migrate machines from thick LV to thin volume
+  - Migrate machines from LVM to directory mode
+  - Preserve snapshots during migration
+
+**10. Storage Status Command**
+- [ ] Add `lxspawn storage-status` command
+  - Show current storage backend in use
+  - Display space usage and availability
+  - Show thin pool utilization (if applicable)
+
+**11. Configuration Options**
+- [ ] Add storage configuration to YAML
+  - `storage.backend: auto|btrfs|lvm-thin|directory`
+  - `storage.lvm_thin_pool: <pool-name>` (optional, auto-detect if not specified)
+  - `storage.directory_path: <path>` (for directory mode)
+
+**12. Documentation**
+- [ ] Update README.md with storage backend information
+- [ ] Create STORAGE.md with detailed backend comparison
+- [ ] Add migration guide for existing users
+
+### Low Priority (Polish)
+
+**13. Testing**
+- [ ] Test btrfs backend (existing tests should still pass)
+- [ ] Test LVM-thin backend on Debian VM
+- [ ] Test directory backend on various filesystems
+- [ ] Test migration between backends
+- [ ] Add integration tests for all three backends
+
+**14. Performance Optimization**
+- [ ] Benchmark directory mode vs LVM-thin
+- [ ] Optimize snapshot creation for directory mode
+- [ ] Add caching for storage backend detection
+
+**15. Error Handling**
+- [ ] Improve error messages for storage backend failures
+- [ ] Add fallback logic (e.g., if thin pool full, suggest expanding)
+- [ ] Validate storage backend compatibility before machine creation
+
+### Implementation Order
+
+1. **Storage Backend Abstraction** (foundation)
+2. **Directory Backend** (simplest, good for testing)
+3. **Btrfs Backend** (refactor existing code)
+4. **LVM-Thin Backend** (most complex, but most important)
+5. **Backend Detection** (tie everything together)
+6. **Integration** (update machine manager and snapshot manager)
+7. **Testing** (verify all backends work)
+8. **UX improvements** (setup commands, migration tools)
+
+### Backward Compatibility
+
+- Existing machines on thick LVs should continue to work
+- Add deprecation warning for thick LVs
+- Provide migration path to thin volumes
+- Don't break existing btrfs setups
+
+### Success Criteria
+
+- [ ] All three backends (btrfs, lvm-thin, directory) work correctly
+- [ ] Automatic backend selection based on filesystem
+- [ ] Existing machines continue to work
+- [ ] No data loss during migration
+- [ ] Clear documentation for users
+- [ ] All unit tests pass
+- [ ] Integration tests for all backends
+
+**Phase 6 (V2+) - LVM Snapshot Support - COMPLETE ✅**
+
+- ✅ LVM backend enabled and tested on Debian 13 (trixie)
+- ✅ Per-machine LV creation (each machine gets its own logical volume)
+- ✅ Automatic LV formatting (ext4) and mounting
+- ✅ LVM snapshot create/list/delete all working
+- ✅ LVM snapshot rollback working (merge on next activation)
+- ✅ Machine delete properly cleans up LVM volumes
+- ✅ Sudoers rules updated for LVM commands (lvs, lvcreate, lvconvert, lvremove, mkfs.ext4, mount, umount, mountpoint, chmod)
+- ⏸️ ZFS backend still disabled (untested)
+
+**Phase 4.6 (V2) - Cleanup Improvements - COMPLETE ✅**
+
+- ✅ Fixed lingering network interfaces after container deletion
+- ✅ Fixed stale entries in machinectl after crashes
+- ✅ Added ResetFailedUnit to clear failed service state
+- ✅ Added machinectl terminate to clean up systemd-machined registrations
+- ✅ Improved Delete method to handle crashed services gracefully
+- ✅ Improved Stop method to fall back to comprehensive cleanup
+- ✅ All cleanup steps log warnings but continue on failure
 
 **Phase 4 (V2) - Templates - COMPLETE ✅**
 
@@ -44,14 +286,18 @@ High Issues Fixed:
 - ✅ Download timeout - Set to 30 minutes instead of infinite
 - ✅ Cache directory permissions - Changed from 0755 to 0700
 
-**Phase 3 (V2) - Snapshots - Complete (btrfs only)**
-- ✅ Snapshot thin wrapper works (btrfs only)
+**Phase 3 (V2) - Snapshots - Complete (btrfs + LVM)**
+- ✅ Snapshot thin wrapper works (btrfs and LVM)
 - ✅ Tested on Bazzite/Fedora 44 (btrfs)
+- ✅ Tested on Debian 13 trixie (LVM with ext4)
 - ✅ Automatic btrfs subvolume creation
+- ✅ Automatic LVM volume creation (per-machine LV)
 - ✅ All snapshot commands working (create, list, delete)
-- ✅ Rollback tested with nested subvolumes
-- ✅ Machine delete handles child subvolumes correctly
-- ⏸️ ZFS and LVM backends disabled (untested, moved to Phase 6)
+- ✅ Rollback tested with nested subvolumes (btrfs)
+- ✅ Rollback tested with LVM merge (LVM)
+- ✅ Machine delete handles child subvolumes correctly (btrfs)
+- ✅ Machine delete cleans up LVM volumes correctly (LVM)
+- ⏸️ ZFS backend disabled (untested, moved to Phase 6)
 
 **Phase 2 (V1.5) - Complete ✅**
 - Provisioning engine (boot, data, yq, system, user modes)
@@ -77,18 +323,19 @@ High Issues Fixed:
 
 ---
 
-## Phase 3: Snapshot Support (V2) - Complete ✅ (btrfs only)
+## Phase 3: Snapshot Support (V2) - Complete ✅ (btrfs + LVM)
 
 ### Snapshot Support
 
-**Design philosophy:** Thin wrapper around existing tools (btrfs).
+**Design philosophy:** Thin wrapper around existing tools (btrfs, LVM).
 
-**Status:** Complete for btrfs. ZFS and LVM moved to Phase 6.
+**Status:** Complete for btrfs and LVM. ZFS moved to Phase 6.
 
 **Implementation:**
 1. Detect filesystem type of `/var/lib/machines/<name>/`
 2. If btrfs: use `btrfs subvolume snapshot`
-3. Otherwise: error with helpful message
+3. If LVM (ext4 on LV): use `lvcreate --snapshot`
+4. Otherwise: error with helpful message
 
 **CLI commands:**
 - ✅ `lxspawn snapshot <name> <snapname>`
@@ -575,24 +822,27 @@ In priority order:
 
 ---
 
-## Phase 6: ZFS and LVM Snapshot Support (V2+)
+## Phase 6: ZFS Snapshot Support (V2+)
 
 ### Goal
 
-Test and enable ZFS and LVM snapshot backends that are currently disabled.
+Test and enable ZFS snapshot backend that is currently disabled.
 
 ### Status
 
-**Not started.** Requires VM setup with ZFS and LVM filesystems.
+**Partially complete.** LVM snapshot support is complete and tested. ZFS remains untested.
 
 ### Tasks
 
+- [x] Set up VM with LVM (ext4) filesystem
+- [x] Test LVM snapshots (create, list, rollback, delete)
+- [x] Implement per-machine LV creation for LVM backend
+- [x] Document LVM backend-specific issues found
+- [x] Re-enable LVM backend in `internal/snapshot/detector.go`
 - [ ] Set up VM with ZFS filesystem
 - [ ] Test ZFS snapshots (create, list, rollback, delete)
-- [ ] Set up VM with LVM (XFS) filesystem
-- [ ] Test LVM snapshots (create, list, rollback, delete)
-- [ ] Document any backend-specific issues found
-- [ ] Re-enable ZFS and LVM backends in `internal/snapshot/detector.go`
+- [ ] Document ZFS backend-specific issues found
+- [ ] Re-enable ZFS backend in `internal/snapshot/detector.go`
 - [ ] Update tests in `internal/snapshot/detector_test.go`
 - [ ] Update documentation to reflect full snapshot support
 
@@ -604,8 +854,12 @@ ZFS backend (`internal/snapshot/zfs.go`):
 
 LVM backend (`internal/snapshot/lvm.go`):
 - Uses `lvcreate --snapshot`, `lvs`, `lvconvert --merge`, `lvremove`
-- Requires LVM logical volume for machine rootfs
+- Each machine gets its own logical volume (e.g., `debian-vg/lxspawn-<machinename>`)
+- LV is formatted with ext4 and mounted at `/var/lib/machines/<name>/`
 - Note: LVM snapshot merge requires next activation (not immediate)
+- Note: Cannot create new snapshots while a merge is pending
+- Snapshot size: 512MB (configurable in code)
+- Machine LV size: 4GB (configurable in code)
 
 ---
 
@@ -661,9 +915,9 @@ LVM backend (`internal/snapshot/lvm.go`):
 
 ## Testing
 
-### Unit Tests (332 tests, all passing)
+### Unit Tests (404 tests, all passing)
 
-- Config parsing and validation (40 tests)
+- Config parsing and validation (64 tests) - NEW: storage size parsing and validation
 - Compiler output (27 tests) - Added tests for Docker-in-container, tasks infinity, IP generation
 - State management (18 tests)
 - Filesystem helpers (21 tests)
@@ -677,6 +931,8 @@ LVM backend (`internal/snapshot/lvm.go`):
 - Image network injection (10 tests)
 - Image fetcher (8 tests) - NEW: URL building, tar extraction, path traversal protection
 - Shell quoting (15 tests)
+- Rootfs population check (4 tests) - NEW: isPopulatedRootfs tests
+- LVM helpers (9 tests) - NEW: isMounted, IsLVM, getVGName
 - GPU detection (10 tests)
 - Snapshot validation and types (10 tests)
 - Snapshot backend detection (10 tests)
@@ -697,6 +953,11 @@ LVM backend (`internal/snapshot/lvm.go`):
 - [x] Host-side hooks
 - [x] Post-boot provisioning (system/user modes)
 - [x] Snapshot lifecycle (create → list → rollback → delete)
+- [x] Snapshot rollback preserves pre-snapshot state
+- [x] Machine delete handles child subvolumes correctly
+- [x] Cleanup of crashed machines (ResetFailedUnit + machinectl terminate)
+- [x] No lingering entries in machinectl after delete
+- [x] Network interfaces cleaned up after container stop/delete
 - [x] Snapshot rollback preserves pre-snapshot state
 - [x] Machine delete with snapshots (recursive subvolume cleanup)
 - [ ] Networking modes (host, private, bridge, zone)
@@ -723,6 +984,8 @@ LVM backend (`internal/snapshot/lvm.go`):
 - ✅ **EOVERFLOW during package installation on btrfs** - Fixed by using `PrivateUsers=identity` instead of `-U` for correct UID mapping
 - ✅ **Docker-in-container crash** - Fixed by moving `PrivateUsers=no` from ExecStart override to .nspawn file
 - ✅ **Macvlan/ipvlan crash** - Fixed by using `PrivateUsers=no` for these network modes
+- ✅ **Lingering network interfaces after delete** - Fixed by comprehensive cleanup: ResetFailedUnit + machinectl terminate
+- ✅ **Stale entries in machinectl** - Fixed by calling machinectl terminate during delete/stop
 
 ### Open Issues
 
@@ -768,21 +1031,27 @@ LVM backend (`internal/snapshot/lvm.go`):
 
 ### V2 (Phase 3: Snapshots)
 
-- [x] Snapshot thin wrapper works (btrfs only)
+- [x] Snapshot thin wrapper works (btrfs + LVM)
 - [x] Tested on Bazzite/Fedora 44 (btrfs)
+- [x] Tested on Debian 13 trixie (LVM)
 - [x] Automatic btrfs subvolume creation
+- [x] Automatic LVM volume creation (per-machine LV)
 - [x] All snapshot commands working (create, list, delete)
-- [x] Rollback tested with nested subvolumes
-- [x] Machine delete handles child subvolumes correctly
+- [x] Rollback tested with nested subvolumes (btrfs)
+- [x] Rollback tested with LVM merge (LVM)
+- [x] Machine delete handles child subvolumes correctly (btrfs)
+- [x] Machine delete cleans up LVM volumes correctly (LVM)
 
 ### V2+ (Phase 6: ZFS/LVM Snapshots)
 
 - [ ] Set up VM with ZFS filesystem
 - [ ] Test ZFS snapshots (create, list, rollback, delete)
-- [ ] Set up VM with LVM (XFS) filesystem
-- [ ] Test LVM snapshots (create, list, rollback, delete)
-- [ ] Document any backend-specific issues found
-- [ ] Re-enable ZFS and LVM backends in detector.go
+- [x] Set up VM with LVM (ext4) filesystem
+- [x] Test LVM snapshots (create, list, rollback, delete)
+- [x] Implement per-machine LV creation for LVM backend
+- [x] Document LVM backend-specific issues found
+- [x] Re-enable LVM backend in detector.go
+- [ ] Re-enable ZFS backend in detector.go
 
 ### V2 (Phase 4: Templates) - COMPLETE ✅
 

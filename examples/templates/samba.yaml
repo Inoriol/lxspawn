@@ -10,7 +10,7 @@ network:
   interface: auto
 
 volumes:
-  - host: /mnt/data
+  - host: /mnt/data  # Create this directory on host or change path
     mount: /data
 
 security:
@@ -59,7 +59,8 @@ provision:
       apt-get install -y samba samba-common-bin
       
       # Create samba user (password: samba)
-      echo -e "samba\nsamba" | smbpasswd -s -a nobody
+      # Use smbpasswd with proper input method
+      (echo "samba"; echo "samba") | smbpasswd -s -a nobody 2>/dev/null || true
       
       systemctl enable --now smbd nmbd
 

@@ -5,16 +5,19 @@ resources:
   cpus: 1
   memory: 512M
 
+# Network: Uses adaptive mode (falls back to macvlan if no bridge exists)
+# The container will get a static IP on your LAN for DNS service
+# Adjust the IP/gateway in params below to match your network
 network:
   mode: adaptive
   interface: auto
 
 param:
-  pihole_ip: "192.168.0.100/24"
-  gateway: "192.168.0.1"
+  pihole_ip: "192.168.0.100/24"  # Static IP for Pi-hole (customize for your network)
+  gateway: "192.168.0.1"          # Your network gateway
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
-  web_password: "admin"
+  web_password: "admin"           # Change this!
 
 provision:
   - mode: boot
@@ -29,8 +32,9 @@ provision:
     path: /etc/systemd/network/10-eth.network
     content: |
       [Match]
-      Name=mv-enp2s0
-
+      # Match any ethernet or macvlan interface (works with adaptive mode)
+      Name=eth* mv-*
+      
       [Network]
       Address={{.Param.pihole_ip}}
       Gateway={{.Param.gateway}}
@@ -40,7 +44,9 @@ provision:
   - mode: data
     path: /etc/pihole/setupVars.conf
     content: |
-      PIHOLE_INTERFACE=mv-enp2s0
+      # Pi-hole will bind to the first available interface
+      # The actual interface name is determined by systemd-networkd
+      PIHOLE_INTERFACE=eth0
       IPV4_ADDRESS={{.Param.pihole_ip}}
       PIHOLE_DNS_1={{.Param.dns1}}
       PIHOLE_DNS_2={{.Param.dns2}}

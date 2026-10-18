@@ -51,6 +51,10 @@ func Parse(filename string) (*Config, error) {
 		cfg.Resources.IOWeight = 100
 	}
 
+	if cfg.Storage.Size == "" {
+		cfg.Storage.Size = "10G"
+	}
+
 	return &cfg, nil
 }
 
@@ -91,6 +95,10 @@ func Validate(cfg *Config) error {
 	}
 
 	if err := validateGPU(cfg); err != nil {
+		return err
+	}
+
+	if err := validateStorage(cfg); err != nil {
 		return err
 	}
 
@@ -314,4 +322,62 @@ func validateGPU(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func validateStorage(cfg *Config) error {
+	if cfg.Storage.Size == "" {
+		return nil
+	}
+
+	_, err := ParseSizeToGB(cfg.Storage.Size)
+	if err != nil {
+		return fmt.Errorf("storage.size: %w", err)
+	}
+
+	return nil
+}
+
+func ParseSizeToGB(size string) (int, error) {
+	size = strings.TrimSpace(size)
+	if size == "" {
+		return 0, fmt.Errorf("size cannot be empty")
+	}
+
+	size = strings.ToUpper(size)
+
+	var multiplier int
+	var numStr string
+
+	if strings.HasSuffix(size, "G") {
+		multiplier = 1
+		numStr = strings.TrimSuffix(size, "G")
+	} else if strings.HasSuffix(size, "M") {
+		multiplier = 0
+		numStr = strings.TrimSuffix(size, "M")
+	} else if strings.HasSuffix(size, "T") {
+		multiplier = 1024
+		numStr = strings.TrimSuffix(size, "T")
+	} else {
+		return 0, fmt.Errorf("size must end with G, M, or T: %s", size)
+	}
+
+	num, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size number: %s", numStr)
+	}
+
+	if num <= 0 {
+		return 0, fmt.Errorf("size must be positive: %s", size)
+	}
+
+	gb := int(num * float64(multiplier))
+
+	if multiplier == 0 {
+		gb = int(num / 1024)
+		if gb == 0 && num > 0 {
+			gb = 1
+		}
+	}
+
+	return gb, nil
 }
