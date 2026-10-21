@@ -113,52 +113,68 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	var filesWritten []string
 
 	if err := deploy.WriteFileAtomic(compiled.NspawnPath, []byte(compiled.Nspawn), 0644); err != nil {
+		m.storage.DeleteMachine(cfg.Name)
 		return nil, fmt.Errorf("failed to write .nspawn file: %w", err)
 	}
 	filesWritten = append(filesWritten, compiled.NspawnPath)
-	logger.Info(fmt.Sprintf("Wrote %s", compiled.NspawnPath))
+	logger.Debug(fmt.Sprintf("Wrote %s", compiled.NspawnPath))
 
 	if compiled.Slice != "" {
 		if err := deploy.WriteFileAtomic(compiled.SlicePath, []byte(compiled.Slice), 0644); err != nil {
+			deploy.RemoveAll(compiled.NspawnPath)
+			m.storage.DeleteMachine(cfg.Name)
 			return nil, fmt.Errorf("failed to write slice file: %w", err)
 		}
 		filesWritten = append(filesWritten, compiled.SlicePath)
-		logger.Info(fmt.Sprintf("Wrote %s", compiled.SlicePath))
+		logger.Debug(fmt.Sprintf("Wrote %s", compiled.SlicePath))
 	}
 
 	if err := deploy.WriteFileAtomic(compiled.DropInPath, []byte(compiled.DropIn), 0644); err != nil {
+		deploy.RemoveAll(compiled.NspawnPath)
+		if compiled.Slice != "" {
+			deploy.RemoveAll(compiled.SlicePath)
+		}
+		m.storage.DeleteMachine(cfg.Name)
 		return nil, fmt.Errorf("failed to write drop-in file: %w", err)
 	}
 	filesWritten = append(filesWritten, compiled.DropInPath)
-	logger.Info(fmt.Sprintf("Wrote %s", compiled.DropInPath))
+	logger.Debug(fmt.Sprintf("Wrote %s", compiled.DropInPath))
 
 	if len(compiled.HookScripts) > 0 {
 		hooksDir := deploy.HooksDir(cfg.Name)
 		if err := os.MkdirAll(hooksDir, 0755); err != nil {
+			cleanupCreatedFiles(filesWritten, compiled)
+			m.storage.DeleteMachine(cfg.Name)
 			return nil, fmt.Errorf("failed to create hooks directory: %w", err)
 		}
 
 		for name, content := range compiled.HookScripts {
 			scriptPath := hooksDir + "/" + name
 			if err := deploy.WriteFileAtomic(scriptPath, []byte(content), 0755); err != nil {
+				cleanupCreatedFiles(filesWritten, compiled)
+				m.storage.DeleteMachine(cfg.Name)
 				return nil, fmt.Errorf("failed to write hook script %s: %w", name, err)
 			}
 			if err := deploy.SetSELinuxContext(scriptPath, "bin_t"); err != nil {
 				logger.Warn(fmt.Sprintf("failed to set SELinux context on %s: %v", scriptPath, err))
 			}
 			filesWritten = append(filesWritten, scriptPath)
-			logger.Info(fmt.Sprintf("Wrote hook %s", scriptPath))
+			logger.Debug(fmt.Sprintf("Wrote hook %s", scriptPath))
 		}
 
 		if err := deploy.WriteFileAtomic(compiled.HooksPath, []byte(compiled.HooksDropIn), 0644); err != nil {
+			cleanupCreatedFiles(filesWritten, compiled)
+			m.storage.DeleteMachine(cfg.Name)
 			return nil, fmt.Errorf("failed to write hooks drop-in: %w", err)
 		}
 		filesWritten = append(filesWritten, compiled.HooksPath)
-		logger.Info(fmt.Sprintf("Wrote %s", compiled.HooksPath))
+		logger.Debug(fmt.Sprintf("Wrote %s", compiled.HooksPath))
 	}
 
 	lxspawnDir := deploy.LxspawnMachineDir(cfg.Name)
 	if err := os.MkdirAll(lxspawnDir, 0755); err != nil {
+		cleanupCreatedFiles(filesWritten, compiled)
+		m.storage.DeleteMachine(cfg.Name)
 		return nil, fmt.Errorf("failed to create machine data directory: %w", err)
 	}
 
@@ -176,6 +192,9 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	}
 
 	if err := m.state.RegisterMachine(machineInfo); err != nil {
+		cleanupCreatedFiles(filesWritten, compiled)
+		deploy.RemoveAll(lxspawnDir)
+		m.storage.DeleteMachine(cfg.Name)
 		return nil, fmt.Errorf("failed to register machine in state: %w", err)
 	}
 
@@ -331,7 +350,7 @@ func removeRootfs(rootfsPath string) error {
 		return removeBtrfsSubvolumeTree(rootfsPath)
 	}
 
-	cmd := exec.Command("sudo", "rm", "-rf", rootfsPath)
+	cmd := deploy.SudoHelper("rm-rf", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("rm -rf failed: %w (%s)", err, string(output))
 	}
@@ -365,7 +384,7 @@ func removeBtrfsSubvolumeTree(rootfsPath string) error {
 		sort.Sort(sort.Reverse(sort.StringSlice(subvols)))
 		for _, subvol := range subvols {
 			logger.Info(fmt.Sprintf("Deleting child subvolume: %s", subvol))
-			cmd := exec.Command("sudo", "btrfs", "subvolume", "delete", subvol)
+			cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", subvol)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to delete child subvolume %s: %w (%s)", subvol, err, string(output))
 			}
@@ -373,7 +392,7 @@ func removeBtrfsSubvolumeTree(rootfsPath string) error {
 	}
 
 	logger.Info(fmt.Sprintf("Deleting root subvolume: %s", rootfsPath))
-	cmd := exec.Command("sudo", "btrfs", "subvolume", "delete", rootfsPath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete root subvolume: %w (%s)", err, string(output))
 	}
@@ -445,6 +464,47 @@ func (m *Manager) Logs(name string) error {
 	return cmd.Run()
 }
 
+type LogEntry struct {
+	Timestamp string
+	Priority  int
+	Message   string
+}
+
+func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
+	if _, exists := m.state.GetMachine(name); !exists {
+		return nil, fmt.Errorf("machine '%s' not found", name)
+	}
+
+	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
+	cmd := deploy.SudoHelper("journalctl", "-u", unitName, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get logs: %w", err)
+	}
+
+	var entries []LogEntry
+	for _, line := range strings.Split(string(output), "\n") {
+		if line == "" {
+			continue
+		}
+
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) < 3 {
+			continue
+		}
+
+		entry := LogEntry{
+			Timestamp: parts[0],
+			Priority:  6,
+			Message:   parts[2],
+		}
+
+		entries = append(entries, entry)
+	}
+
+	return entries, nil
+}
+
 type MachineStatus struct {
 	Name      string
 	Distro    string
@@ -455,6 +515,8 @@ type MachineStatus struct {
 	CreatedAt string
 	SourcePath string
 	Files     []string
+	Ephemeral bool
+	ReadOnly  bool
 }
 
 func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
@@ -471,6 +533,13 @@ func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
 		CreatedAt:  info.CreatedAt,
 		SourcePath: info.SourcePath,
 		Files:      info.Files,
+	}
+
+	if info.SourcePath != "" {
+		if cfg, err := config.Parse(info.SourcePath); err == nil {
+			status.Ephemeral = cfg.Advanced.Ephemeral
+			status.ReadOnly = cfg.Advanced.ReadOnly
+		}
 	}
 
 	state, addrs, err := m.systemd.GetMachineState(name)
@@ -618,9 +687,171 @@ func isPopulatedRootfs(path string) bool {
 }
 
 func fixRootfsOwnership(rootfsPath string) error {
-	cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
+	cmd := deploy.SudoHelper("chown", "-R", "0:0", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
 	return nil
+}
+
+type MachineStats struct {
+	Name              string
+	State             string
+	CPUUsagePercent   float64
+	MemoryUsedBytes   int64
+	MemoryTotalBytes  int64
+	MemoryUsagePercent float64
+	DiskUsedBytes     int64
+	DiskTotalBytes    int64
+}
+
+func (m *Manager) GetStats(name string) (*MachineStats, error) {
+	info, exists := m.state.GetMachine(name)
+	if !exists {
+		return nil, fmt.Errorf("machine '%s' not found", name)
+	}
+
+	state, _, err := m.systemd.GetMachineState(name)
+	if err != nil {
+		state = "stopped"
+	}
+
+	stats := &MachineStats{
+		Name:  name,
+		State: state,
+	}
+
+	if state != "running" {
+		return stats, nil
+	}
+
+	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/machine.slice/machine-%s.slice", name)
+
+	if cpuUsage, err := readCPUUsage(cgroupPath); err == nil {
+		stats.CPUUsagePercent = cpuUsage
+	}
+
+	if memUsed, memTotal, err := readMemoryUsage(cgroupPath); err == nil {
+		stats.MemoryUsedBytes = memUsed
+		stats.MemoryTotalBytes = memTotal
+		if memTotal > 0 {
+			stats.MemoryUsagePercent = float64(memUsed) / float64(memTotal) * 100
+		}
+	}
+
+	if diskUsed, diskTotal, err := readDiskUsage(deploy.MachineRootfsPath(name)); err == nil {
+		stats.DiskUsedBytes = diskUsed
+		stats.DiskTotalBytes = diskTotal
+	}
+
+	_ = info
+
+	return stats, nil
+}
+
+func readCPUUsage(cgroupPath string) (float64, error) {
+	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
+	
+	data1, err := os.ReadFile(cpuStatPath)
+	if err != nil {
+		return 0, err
+	}
+
+	var usageUsec1 int64
+	for _, line := range strings.Split(string(data1), "\n") {
+		if strings.HasPrefix(line, "usage_usec") {
+			fmt.Sscanf(line, "usage_usec %d", &usageUsec1)
+			break
+		}
+	}
+
+	if usageUsec1 == 0 {
+		return 0, nil
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	data2, err := os.ReadFile(cpuStatPath)
+	if err != nil {
+		return 0, err
+	}
+
+	var usageUsec2 int64
+	for _, line := range strings.Split(string(data2), "\n") {
+		if strings.HasPrefix(line, "usage_usec") {
+			fmt.Sscanf(line, "usage_usec %d", &usageUsec2)
+			break
+		}
+	}
+
+	deltaUsec := usageUsec2 - usageUsec1
+	if deltaUsec < 0 {
+		return 0, nil
+	}
+
+	intervalUsec := int64(100000)
+	cpuPercent := float64(deltaUsec) / float64(intervalUsec) * 100.0
+
+	return cpuPercent, nil
+}
+
+func readMemoryUsage(cgroupPath string) (int64, int64, error) {
+	memoryCurrentPath := filepath.Join(cgroupPath, "memory.current")
+	memoryMaxPath := filepath.Join(cgroupPath, "memory.max")
+
+	memCurrentData, err := os.ReadFile(memoryCurrentPath)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	var memCurrent int64
+	fmt.Sscanf(strings.TrimSpace(string(memCurrentData)), "%d", &memCurrent)
+
+	var memMax int64
+	if memMaxData, err := os.ReadFile(memoryMaxPath); err == nil {
+		memMaxStr := strings.TrimSpace(string(memMaxData))
+		if memMaxStr != "max" {
+			fmt.Sscanf(memMaxStr, "%d", &memMax)
+		}
+	}
+
+	return memCurrent, memMax, nil
+}
+
+func readDiskUsage(path string) (int64, int64, error) {
+	cmd := exec.Command("df", "-B1", path)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0, fmt.Errorf("df command failed for path %s: %w", path, err)
+	}
+
+	lines := strings.Split(string(output), "\n")
+	if len(lines) < 2 {
+		return 0, 0, fmt.Errorf("unexpected df output for path %s: %q", path, string(output))
+	}
+
+	fields := strings.Fields(lines[1])
+	if len(fields) < 3 {
+		return 0, 0, fmt.Errorf("unexpected df output format for path %s: %q", path, string(output))
+	}
+
+	var total, used int64
+	fmt.Sscanf(fields[1], "%d", &total)
+	fmt.Sscanf(fields[2], "%d", &used)
+
+	return used, total, nil
+}
+
+func cleanupCreatedFiles(filesWritten []string, compiled *compiler.CompiledFiles) {
+	for _, f := range filesWritten {
+		deploy.RemoveAll(f)
+	}
+	if compiled.HooksDropIn != "" {
+		deploy.RemoveAll(compiled.HooksPath)
+	}
+	deploy.RemoveAll(compiled.DropInPath)
+	if compiled.Slice != "" {
+		deploy.RemoveAll(compiled.SlicePath)
+	}
+	deploy.RemoveAll(compiled.NspawnPath)
 }

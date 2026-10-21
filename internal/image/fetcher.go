@@ -6,14 +6,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/kernel"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
@@ -24,8 +25,19 @@ var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
 
-var downloadClient = &http.Client{
-	Timeout: 30 * time.Minute,
+func getDownloadTimeout() time.Duration {
+	if v := os.Getenv("LXSPAWN_DOWNLOAD_TIMEOUT"); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil && minutes > 0 {
+			return time.Duration(minutes) * time.Minute
+		}
+	}
+	return 30 * time.Minute
+}
+
+func newDownloadClient() *http.Client {
+	return &http.Client{
+		Timeout: getDownloadTimeout(),
+	}
 }
 
 type Fetcher struct {
@@ -89,7 +101,7 @@ func (f *Fetcher) prepareTargetDir() error {
 	// Check if directory already exists (created by storage backend)
 	if _, err := os.Stat(f.TargetDir); err == nil {
 		// Directory exists, chown to current user so extraction works
-		cmd := exec.Command("sudo", "chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), f.TargetDir)
+		cmd := deploy.SudoHelper("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), f.TargetDir)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 		}
@@ -111,12 +123,12 @@ func (f *Fetcher) prepareTargetDir() error {
 }
 
 func createBtrfsSubvolume(path string) error {
-	cmd := exec.Command("sudo", "btrfs", "subvolume", "create", path)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "create", path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("btrfs subvolume create failed: %w (%s)", err, string(output))
 	}
 	
-	cmd = exec.Command("sudo", "chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), path)
+	cmd = deploy.SudoHelper("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
@@ -125,7 +137,7 @@ func createBtrfsSubvolume(path string) error {
 }
 
 func fixRootfsOwnership(rootfsPath string) error {
-	cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
+	cmd := deploy.SudoHelper("chown", "-R", "0:0", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
@@ -181,7 +193,7 @@ func (f *Fetcher) getLatestDate() (string, error) {
 }
 
 func (f *Fetcher) download(url string) (string, error) {
-	resp, err := downloadClient.Get(url)
+	resp, err := newDownloadClient().Get(url)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
 	}

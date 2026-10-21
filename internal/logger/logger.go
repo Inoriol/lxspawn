@@ -92,6 +92,13 @@ func Info(msg string) {
 	fmt.Println(colorize(cyan, "lxspawn: "+msg))
 }
 
+func Debug(msg string) {
+	if !IsVerbose() || IsQuiet() || output.IsJSONMode() {
+		return
+	}
+	fmt.Println(colorize(cyan, "lxspawn: [debug] "+msg))
+}
+
 func Success(msg string) {
 	if IsQuiet() || output.IsJSONMode() {
 		return

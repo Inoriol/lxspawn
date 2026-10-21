@@ -1,8 +1,10 @@
 package provision
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 )
@@ -142,5 +144,44 @@ func TestExecProvisionerModeValidation(t *testing.T) {
 				t.Errorf("mode %s: expected valid=%v, got %v", tt.mode, tt.valid, isExec)
 			}
 		})
+	}
+}
+
+func TestGetExecTimeoutDefault(t *testing.T) {
+	os.Unsetenv("LXSPAWN_EXEC_TIMEOUT")
+	timeout := getExecTimeout()
+	if timeout != defaultExecTimeout {
+		t.Errorf("expected default timeout %v, got %v", defaultExecTimeout, timeout)
+	}
+}
+
+func TestGetExecTimeoutFromEnv(t *testing.T) {
+	os.Setenv("LXSPAWN_EXEC_TIMEOUT", "60")
+	defer os.Unsetenv("LXSPAWN_EXEC_TIMEOUT")
+
+	timeout := getExecTimeout()
+	expected := 60 * time.Minute
+	if timeout != expected {
+		t.Errorf("expected timeout %v, got %v", expected, timeout)
+	}
+}
+
+func TestGetExecTimeoutInvalidEnv(t *testing.T) {
+	os.Setenv("LXSPAWN_EXEC_TIMEOUT", "invalid")
+	defer os.Unsetenv("LXSPAWN_EXEC_TIMEOUT")
+
+	timeout := getExecTimeout()
+	if timeout != defaultExecTimeout {
+		t.Errorf("expected default timeout %v for invalid env, got %v", defaultExecTimeout, timeout)
+	}
+}
+
+func TestGetExecTimeoutNegativeEnv(t *testing.T) {
+	os.Setenv("LXSPAWN_EXEC_TIMEOUT", "-5")
+	defer os.Unsetenv("LXSPAWN_EXEC_TIMEOUT")
+
+	timeout := getExecTimeout()
+	if timeout != defaultExecTimeout {
+		t.Errorf("expected default timeout %v for negative env, got %v", defaultExecTimeout, timeout)
 	}
 }

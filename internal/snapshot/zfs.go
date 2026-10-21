@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
 
@@ -44,7 +45,7 @@ func (z *ZFSBackend) CreateSnapshot(machine, snapName, rootfsPath string) error 
 		return fmt.Errorf("snapshot '%s' already exists", snapName)
 	}
 
-	cmd := exec.Command("sudo", "zfs", "snapshot", snapFullName)
+	cmd := deploy.SudoHelper("zfs", "snapshot", snapFullName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create ZFS snapshot: %w (%s)", err, string(output))
 	}
@@ -122,7 +123,7 @@ func (z *ZFSBackend) RollbackSnapshot(machine, snapName, rootfsPath string) erro
 		return fmt.Errorf("snapshot '%s' does not exist", snapName)
 	}
 
-	cmd := exec.Command("sudo", "zfs", "rollback", "-r", snapFullName)
+	cmd := deploy.SudoHelper("zfs", "rollback", "-r", snapFullName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to rollback ZFS snapshot: %w (%s)", err, string(output))
 	}
@@ -141,7 +142,7 @@ func (z *ZFSBackend) DeleteSnapshot(machine, snapName, rootfsPath string) error 
 
 	snapFullName := fmt.Sprintf("%s@%s", dataset, snapName)
 
-	cmd := exec.Command("sudo", "zfs", "destroy", snapFullName)
+	cmd := deploy.SudoHelper("zfs", "destroy", snapFullName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete ZFS snapshot: %w (%s)", err, string(output))
 	}

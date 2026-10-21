@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	NspawnDir     = "/etc/systemd/nspawn"
-	SystemdDir    = "/etc/systemd/system"
-	MachinesDir   = "/var/lib/machines"
+	NspawnDir      = "/etc/systemd/nspawn"
+	SystemdDir     = "/etc/systemd/system"
+	MachinesDir    = "/var/lib/machines"
 	LxspawnDataDir = "/var/lib/lxspawn"
+	SudoHelperPath = "/usr/libexec/lxspawn/sudo-helper"
 )
 
 func NspawnFilePath(name string) string {
@@ -114,4 +115,9 @@ func SetSELinuxContext(path, context string) error {
 		return nil
 	}
 	return exec.Command("chcon", "-t", context, path).Run()
+}
+
+func SudoHelper(args ...string) *exec.Cmd {
+	helperArgs := append([]string{SudoHelperPath}, args...)
+	return exec.Command("sudo", helperArgs...)
 }

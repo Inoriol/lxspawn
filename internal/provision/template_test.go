@@ -247,3 +247,64 @@ func TestRenderTemplateParamWithSpaces(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestShellEscape(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"empty string", "", "''"},
+		{"simple alphanumeric", "hello", "hello"},
+		{"with spaces", "hello world", "'hello world'"},
+		{"with single quote", "it's", "'it'\"'\"'s'"},
+		{"with semicolon", "cmd1; cmd2", "'cmd1; cmd2'"},
+		{"with dollar sign", "$HOME", "'$HOME'"},
+		{"with backtick", "test`cmd`", "'test`cmd`'"},
+		{"path is safe", "/usr/bin/test", "/usr/bin/test"},
+		{"equals is safe", "KEY=value", "KEY=value"},
+		{"with pipe", "a | b", "'a | b'"},
+		{"with newline", "line1\nline2", "'line1\nline2'"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ShellEscape(tt.input)
+			if result != tt.expected {
+				t.Errorf("ShellEscape(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}
+
+func TestRenderTemplateShellEscapeFunc(t *testing.T) {
+	ctx := &TemplateContext{
+		Name: "test",
+		Param: map[string]string{
+			"value": "hello world",
+		},
+	}
+	got, err := RenderTemplate(`echo {{shellEscape .Param.value}}`, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "echo 'hello world'" {
+		t.Errorf("got %q, want %q", got, "echo 'hello world'")
+	}
+}
+
+func TestRenderTemplateShellEscapeFuncSafe(t *testing.T) {
+	ctx := &TemplateContext{
+		Name: "test",
+		Param: map[string]string{
+			"value": "simple",
+		},
+	}
+	got, err := RenderTemplate(`echo {{shellEscape .Param.value}}`, ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "echo simple" {
+		t.Errorf("got %q, want %q", got, "echo simple")
+	}
+}

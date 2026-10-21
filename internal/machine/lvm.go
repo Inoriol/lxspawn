@@ -23,12 +23,8 @@ func IsLVM(path string) bool {
 
 	device := strings.TrimSpace(lines[len(lines)-1])
 
-	lvsPath, err := exec.LookPath("lvs")
-	if err != nil {
-		lvsPath = "/usr/sbin/lvs"
-	}
 
-	out, err = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name", device).CombinedOutput()
+	out, err = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device).CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -49,12 +45,8 @@ func getVGName(path string) (string, error) {
 
 	device := strings.TrimSpace(lines[len(lines)-1])
 
-	lvsPath, err := exec.LookPath("lvs")
-	if err != nil {
-		lvsPath = "/usr/sbin/lvs"
-	}
 
-	out, err = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name", device).Output()
+	out, err = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device).Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get VG name for %s: %w", device, err)
 	}
@@ -68,12 +60,8 @@ func getVGName(path string) (string, error) {
 }
 
 func getVGFreeSpaceGB(vgName string) (int, error) {
-	vgsPath, err := exec.LookPath("vgs")
-	if err != nil {
-		vgsPath = "/usr/sbin/vgs"
-	}
 
-	cmd := exec.Command("sudo", vgsPath, "--noheadings", "--nosuffix", "--units", "g", "-o", "vg_free", vgName)
+	cmd := deploy.SudoHelper("lvs", "--noheadings", "--nosuffix", "--units", "g", "-o", "vg_free", vgName)
 	out, err := cmd.Output()
 	if err != nil {
 		return 0, fmt.Errorf("failed to get VG free space: %w", err)
@@ -89,12 +77,8 @@ func getVGFreeSpaceGB(vgName string) (int, error) {
 }
 
 func validateVGConfiguration(vgName string) error {
-	pvsPath, err := exec.LookPath("pvs")
-	if err != nil {
-		pvsPath = "/usr/sbin/pvs"
-	}
 
-	cmd := exec.Command("sudo", pvsPath, "--noheadings", "-o", "pv_name", vgName)
+	cmd := deploy.SudoHelper("lvs", "--noheadings", "-o", "pv_name", vgName)
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -133,12 +117,8 @@ func CreateLVMVolume(machineName string, sizeGB int) error {
 
 	lvName := fmt.Sprintf("lxspawn-%s", machineName)
 
-	lvcreatePath, err := exec.LookPath("lvcreate")
-	if err != nil {
-		lvcreatePath = "/usr/sbin/lvcreate"
-	}
 
-	cmd := exec.Command("sudo", lvcreatePath, "--name", lvName, "--size", fmt.Sprintf("%dG", sizeGB), "--yes", vgName)
+	cmd := deploy.SudoHelper("lvcreate", "--name", lvName, "--size", fmt.Sprintf("%dG", sizeGB), "--yes", vgName)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create LV %s: %w (%s)", lvName, err, string(output))
 	}
@@ -161,12 +141,7 @@ func FormatAndMountLV(machineName string) error {
 	lvPath := fmt.Sprintf("/dev/%s/%s", vgName, lvName)
 	mountPath := deploy.MachineRootfsPath(machineName)
 
-	mkfsPath, err := exec.LookPath("mkfs.ext4")
-	if err != nil {
-		mkfsPath = "/usr/sbin/mkfs.ext4"
-	}
-
-	cmd := exec.Command("sudo", mkfsPath, "-q", lvPath)
+	cmd := deploy.SudoHelper("mkfs-ext4", "-q", lvPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to format %s: %w (%s)", lvPath, err, string(output))
 	}
@@ -175,17 +150,17 @@ func FormatAndMountLV(machineName string) error {
 		return fmt.Errorf("failed to create mount point %s: %w", mountPath, err)
 	}
 
-	cmd = exec.Command("sudo", "mount", lvPath, mountPath)
+	cmd = deploy.SudoHelper("mount", lvPath, mountPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to mount %s at %s: %w (%s)", lvPath, mountPath, err, string(output))
 	}
 
-	cmd = exec.Command("sudo", "chown", "root:lxspawn", mountPath)
+	cmd = deploy.SudoHelper("chown", "root:lxspawn", mountPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to chown %s: %w (%s)", mountPath, err, string(output))
 	}
 
-	cmd = exec.Command("sudo", "chmod", "2775", mountPath)
+	cmd = deploy.SudoHelper("chmod", "2775", mountPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to chmod %s: %w (%s)", mountPath, err, string(output))
 	}
@@ -213,19 +188,15 @@ func CleanupLVMVolume(machineName string) error {
 	lvPath := fmt.Sprintf("/dev/%s/%s", vgName, lvName)
 	mountPath := deploy.MachineRootfsPath(machineName)
 
-	cmd := exec.Command("sudo", "umount", mountPath)
+	cmd := deploy.SudoHelper("umount", mountPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if !strings.Contains(string(output), "not mounted") {
 			logger.Warn(fmt.Sprintf("failed to unmount %s: %v (%s)", mountPath, err, string(output)))
 		}
 	}
 
-	lvremovePath, err := exec.LookPath("lvremove")
-	if err != nil {
-		lvremovePath = "/usr/sbin/lvremove"
-	}
 
-	cmd = exec.Command("sudo", lvremovePath, "-f", lvPath)
+	cmd = deploy.SudoHelper("lvremove", "-f", lvPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove LV %s: %w (%s)", lvPath, err, string(output))
 	}

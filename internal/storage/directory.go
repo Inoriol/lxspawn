@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
 
@@ -50,9 +51,10 @@ func (d *DirectoryBackend) CreateMachine(name string, sizeGB int) error {
 		logger.Warn(fmt.Sprintf("failed to set ownership on %s: %v", machinePath, err))
 	}
 
-	// Set group-writable permissions
-	if err := os.Chmod(machinePath, 0775); err != nil {
-		logger.Warn(fmt.Sprintf("failed to set permissions on %s: %v", machinePath, err))
+	// Set group-writable permissions (use sudo since directory is now owned by root)
+	cmd := deploy.SudoHelper("chmod", "0775", machinePath)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		logger.Warn(fmt.Sprintf("failed to set permissions on %s: %v (%s)", machinePath, err, string(output)))
 	}
 
 	logger.Info(fmt.Sprintf("Created directory storage at %s", machinePath))
@@ -69,12 +71,7 @@ func (d *DirectoryBackend) DeleteMachine(name string) error {
 	}
 
 	// Use sudo rm -rf to handle files owned by root (from container namespace)
-	rmPath, err := exec.LookPath("rm")
-	if err != nil {
-		rmPath = "/usr/bin/rm"
-	}
-
-	cmd := exec.Command("sudo", rmPath, "-rf", machinePath)
+	cmd := deploy.SudoHelper("rm-rf", "-rf", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove machine directory %s: %w (%s)", machinePath, err, string(output))
 	}
@@ -149,12 +146,7 @@ func (d *DirectoryBackend) DeleteSnapshot(machine, snapName string) error {
 	}
 
 	// Use sudo rm -rf to handle files owned by root
-	rmPath, err := exec.LookPath("rm")
-	if err != nil {
-		rmPath = "/usr/bin/rm"
-	}
-
-	cmd := exec.Command("sudo", rmPath, "-rf", snapshotPath)
+	cmd := deploy.SudoHelper("rm-rf", "-rf", snapshotPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove snapshot %s: %w (%s)", snapName, err, string(output))
 	}
@@ -226,11 +218,7 @@ func (d *DirectoryBackend) RollbackSnapshot(machine, snapName string) error {
 	}
 
 	// Remove backup using sudo rm -rf
-	rmPath, err := exec.LookPath("rm")
-	if err != nil {
-		rmPath = "/usr/bin/rm"
-	}
-	cmd = exec.Command("sudo", rmPath, "-rf", backupPath)
+	cmd = deploy.SudoHelper("rm-rf", backupPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("failed to remove backup %s: %v (%s)", backupPath, err, string(output)))
 	}
@@ -279,7 +267,7 @@ func (d *DirectoryBackend) getSnapshotsDir(machine string) string {
 
 // setOwnership sets the ownership of a path
 func setOwnership(path, user, group string) error {
-	cmd := exec.Command("sudo", "chown", fmt.Sprintf("%s:%s", user, group), path)
+	cmd := deploy.SudoHelper("chown", fmt.Sprintf("%s:%s", user, group), path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}

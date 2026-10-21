@@ -63,7 +63,21 @@ lxspawn/
 │   ├── snapshot.go           # Create snapshot
 │   ├── list_snapshots.go     # List snapshots
 │   ├── rollback.go           # Rollback to snapshot
-│   └── delete_snapshot.go    # Delete snapshot
+│   ├── delete_snapshot.go    # Delete snapshot
+│   ├── stats.go              # Runtime CPU/memory/disk stats
+│   ├── config.go             # Show detailed configuration
+│   ├── provision_status.go   # Show provisioning status
+│   ├── list_distros.go       # List available distributions
+│   ├── list_templates.go     # List available templates
+│   ├── validate.go           # Validate YAML configuration
+│   ├── edit_resources.go     # Edit CPU/memory limits
+│   ├── edit_network.go       # Edit network configuration
+│   ├── add_volume.go         # Add bind mount
+│   ├── edit_volume.go        # Edit bind mount
+│   └── remove_volume.go      # Remove bind mount
+│
+├── cmd/lxspawn-sudo-helper/  # Privileged helper binary
+│   └── main.go               # Validates all sudo arguments before execution
 │
 ├── internal/
 │   ├── config/               # YAML parsing and validation
@@ -599,17 +613,21 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - `internal/snapshot/detector.go` - Detects filesystem type and selects appropriate backend
 - `internal/snapshot/btrfs.go` - btrfs subvolume snapshot operations
 - `internal/snapshot/zfs.go` - ZFS snapshot operations (disabled, untested)
-- `internal/snapshot/lvm.go` - LVM snapshot operations
-- `internal/snapshot/directory.go` - Directory-based snapshot operations (rsync)
+- `internal/snapshot/lvm.go` - LVM snapshot operations (disabled, untested)
 - `internal/snapshot/manager.go` - Orchestrates snapshot operations and state tracking
 - `internal/machine/lvm.go` - LVM volume creation, formatting, and mounting
 
-**Current status:** btrfs, LVM, and directory backends are supported. ZFS backend is disabled pending testing.
+**Current status:** Only btrfs backend is supported. LVM and ZFS backends are disabled pending proper testing infrastructure.
+
+**Why only btrfs?**
+- btrfs provides instant, space-efficient copy-on-write snapshots
+- Other backends (directory mode with rsync) were unreliable and slow
+- Proper testing requires SSD-backed VMs (current test environment uses HDD RAID)
+- LVM and ZFS support deferred to after Phase 5 (Cockpit Web UI)
 
 **Backend selection:**
 - btrfs: Used when machine rootfs is on btrfs filesystem
-- LVM: Used when machine rootfs is on a dedicated LVM logical volume (thin pool)
-- Directory: Used when machine rootfs is a regular directory (fallback for ext4, xfs, etc.)
+- Other filesystems: Snapshots not supported (error returned)
 
 **Btrfs implementation:**
 - Machine rootfs automatically created as btrfs subvolume when host is btrfs
@@ -619,7 +637,7 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - Delete: recursively deletes child subvolumes (deepest first) before deleting parent
 - List: parses `btrfs subvolume list -o` output
 
-**LVM implementation:**
+**LVM implementation (disabled):**
 - Machine rootfs automatically created as a dedicated logical volume when host uses LVM thin pool
 - LV naming: `<vg-name>/lxspawn-<machine-name>` (e.g., `debian-vg/lxspawn-myserver`)
 - LV size: 4GB (hardcoded in `internal/machine/manager.go`)
@@ -631,16 +649,16 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - List: parses `lvs --select vg_name=<vg>` output
 - Machine deletion: unmounts LV, removes LV with `lvremove -f`
 
-**LVM limitations:**
+**LVM limitations (when re-enabled):**
 - Cannot create new snapshots while a merge is pending (LVM restriction)
 - Merge completes on next activation (mount) of the origin LV
 - Snapshot size is fixed at 512MB (may need adjustment for heavy write workloads)
 - Machine LV size is fixed at 4GB (may need adjustment for large rootfs)
 
-**Directory implementation:**
-- Used when machine rootfs is a regular directory (no btrfs or LVM thin pool)
-- Snapshots created with `rsync -a --delete --exclude=.snapshots` (preserves permissions, handles large files)
-- Snapshots stored in `<rootfs>/.snapshots/<name>`
+**Directory implementation (removed):**
+- Previously used rsync for file-based snapshots
+- Removed due to unreliability (non-atomic, slow, not true snapshots)
+- Snapshots of running machines were inconsistent
 - Rollback: uses `rsync -a --delete --checksum --exclude=.snapshots` to restore from snapshot
 - Delete: uses `sudo rm -rf` to remove snapshot directory
 - List: reads `<rootfs>/.snapshots/` directory entries
@@ -1017,6 +1035,69 @@ provision:
    - Data mode runs during pre-boot, before systemd-resolved starts
    - systemd-resolved overwrites the file during boot
 
+### 25. Runtime Stats Implementation
+
+The `lxspawn stats` command reads runtime CPU, memory, and disk statistics from cgroup v2 files.
+
+**Cgroup Path:**
+
+For systemd-nspawn containers, the cgroup path is:
+```
+/sys/fs/cgroup/machine.slice/machine-<name>.slice/
+```
+
+Note: The path uses `.slice` not `.scope`. The `.slice` directory contains resource stats for the entire machine.
+
+**CPU Usage:**
+
+CPU usage is calculated by sampling `cpu.stat` twice with a 100ms interval:
+1. Read `usage_usec` at time T1
+2. Wait 100ms
+3. Read `usage_usec` at time T2
+4. Calculate: `(T2 - T1) / 100000 * 100` to get percentage
+
+The cgroup files are world-readable (mode `r--r--r--`), so no sudo is required.
+
+**Memory Usage:**
+
+Memory stats are read from:
+- `memory.current` - Current memory usage in bytes
+- `memory.max` - Memory limit in bytes (or "max" for unlimited)
+
+**Disk Usage:**
+
+Disk stats are read using `df -B1 <rootfs-path>` which returns usage in bytes.
+
+**Permissions:**
+
+All cgroup files are world-readable, so the stats command works without sudo or special permissions.
+
+### 26. Logs Implementation
+
+The `lxspawn logs --json` command reads container logs using `journalctl`.
+
+**Approach:**
+
+Instead of using `journalctl -M <name>` (which requires special machine access permissions), we use:
+```bash
+sudo journalctl -u systemd-nspawn@<name>.service -n <lines> -o short-iso
+```
+
+This reads logs from the systemd service unit, which is more reliable and doesn't require machine-specific journal access.
+
+**Sudoers Rule:**
+
+The setup command adds a sudoers rule for journalctl:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/bin/journalctl
+```
+
+This allows users in the lxspawn group to read logs without a password prompt.
+
+**Output Format:**
+
+The `-o short-iso` format provides ISO 8601 timestamps with timezone information, which is parsed into structured JSON output.
+
 ## Security Model
 
 ### Privilege Escalation Prevention
@@ -1037,18 +1118,44 @@ provision:
    - Map container UIDs to unprivileged host UIDs
    - Prevents container root from being host root
 
-### Sudoers Requirements
+### Sudo Helper (Privileged Operations)
 
-The `lxspawn setup` command creates sudoers rules for the `lxspawn` group:
-- `/usr/bin/rm -rf /var/lib/machines/*` - For deleting machine rootfs
-- `/usr/bin/nsenter` - For post-boot provisioning (executing scripts inside running containers)
-- `/usr/bin/btrfs` - For btrfs subvolume snapshot operations
-- `/usr/bin/zfs` - For ZFS snapshot operations
-- `/usr/sbin/lvcreate`, `/usr/sbin/lvconvert`, `/usr/sbin/lvremove` - For LVM snapshot operations
-- `/usr/bin/chown` - For fixing ownership of btrfs subvolume after creation
-- `/usr/bin/mv` - For renaming subvolumes during rollback
+The `lxspawn setup` command installs a single sudoers rule:
 
-These rules allow non-root users in the `lxspawn` group to perform these operations without a password prompt.
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/libexec/lxspawn/sudo-helper
+```
+
+All privileged operations (storage management, provisioning, snapshots) go through the `lxspawn-sudo-helper` binary. This binary validates all arguments before executing system commands:
+
+**Path Restrictions:**
+- All paths must be under allowed directories:
+  - `/var/lib/machines/` (machine rootfs)
+  - `/var/lib/lxspawn/` (machine metadata)
+  - `/etc/systemd/nspawn/` (container configs)
+  - `/etc/systemd/system/` (systemd units)
+- Paths containing `..` are rejected (prevents path traversal)
+
+**Machine Name Validation:**
+- Names must match: `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
+- Prevents injection via machine names
+
+**PID Ownership Validation (nsenter):**
+- Verifies target PID belongs to an lxspawn machine
+- Checks `/proc/<pid>/exe` contains `systemd`
+- Checks `/proc/<pid>/cmdline` contains `systemd-nspawn`
+- Checks `/proc/<pid>/cgroup` contains `machine-*.slice`
+
+**LVM Name Restrictions:**
+- LV names must start with `lxspawn-`
+- Prevents operating on non-lxspawn volumes
+
+**Subcommand Restrictions:**
+- `btrfs`: only allows `subvolume` and `filesystem usage`
+- `zfs`: only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
+- `mount`/`umount`: only allows mounting lxspawn devices under allowed paths
+
+This design ensures that even if an attacker gains membership in the `lxspawn` group, they can only perform validated operations on lxspawn-managed resources.
 
 ### Filesystem Isolation
 
@@ -1116,7 +1223,7 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 
 ### Unit Tests
 
-**411 tests across 21 test files, all passing:**
+**320 tests across 22 test files, all passing (1 skipped, requires root):**
 
 - `internal/config/parser_test.go` - Config parsing and validation (64 tests) - NEW: storage size parsing and validation
 - `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
@@ -1133,14 +1240,14 @@ These rules allow non-root users in the `lxspawn` group to perform these operati
 - `internal/image/validate_test.go` - Init system detection at multiple paths (7 tests)
 - `internal/image/network_test.go` - Network config injection for all modes (10 tests)
 - `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
-- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix (20 tests) - NEW: fixRootfsOwnership test
+- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests) - NEW: readCPUUsage, readMemoryUsage, readDiskUsage tests
 - `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
 - `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
 - `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
-- `internal/snapshot/directory_test.go` - Directory backend operations (6 tests) - NEW: create, list, delete, rollback tests
 - `internal/snapshot/manager_test.go` - Snapshot state serialization, JSON fields (5 tests)
 - `internal/kernel/version_test.go` - Kernel version detection, btrfs detection (5 tests)
 - `internal/kernel/systemd_test.go` - Systemd version detection, PrivateUsers=identity support (2 tests)
+- `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests) - NEW
 
 ### Integration Tests
 
@@ -1320,6 +1427,46 @@ The `Delete` and `Stop` methods now perform comprehensive cleanup:
 - Prevents stale entries in `machinectl list`
 - Ensures clean state for future machine creation
 - Handles crash scenarios gracefully
+
+### 29. Sudo Helper for Privileged Operations
+
+All privileged operations (storage management, provisioning, snapshots) go through a single privileged helper binary (`lxspawn-sudo-helper`) instead of granting broad sudo access to individual commands.
+
+**The Problem:**
+
+The original design granted passwordless sudo access to individual commands like `nsenter`, `btrfs`, `mount`, `chown`, `rm`, etc. This created critical security vulnerabilities:
+
+- `sudo nsenter -t 1 -m -u -i -n -p -- /bin/bash` → Full root shell on host
+- `sudo rsync -a /etc/shadow /tmp/` → Read any file on the system
+- `sudo chown attacker:attacker /etc/shadow` → Take ownership of system files
+- `sudo mount -o bind / /tmp/chroot && sudo chroot /tmp/chroot` → Root filesystem access
+- `sudo btrfs subvolume create /anywhere` → Create subvolumes anywhere on the filesystem
+
+**The Solution:**
+
+A single sudoers rule for `/usr/libexec/lxspawn/sudo-helper`, a Go binary that validates all arguments before executing system commands:
+
+1. **Path validation** - All paths must be under allowed directories (`/var/lib/machines/`, `/var/lib/lxspawn/`, `/etc/systemd/nspawn/`, `/etc/systemd/system/`)
+2. **Path traversal prevention** - Paths containing `..` are rejected
+3. **Machine name validation** - Names must match strict regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
+4. **PID ownership validation** - `nsenter` calls verify the target PID belongs to an lxspawn machine by checking `/proc/<pid>/exe`, `/proc/<pid>/cmdline`, and `/proc/<pid>/cgroup`
+5. **LVM name restrictions** - LV names must start with `lxspawn-`
+6. **Subcommand restrictions** - `btrfs` only allows `subvolume` and `filesystem usage`; `zfs` only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
+
+**Implementation:**
+
+- `cmd/lxspawn-sudo-helper/main.go` - Privileged helper binary with argument validation
+- `internal/deploy/filesystem.go:SudoHelper()` - Helper function that wraps `sudo /usr/libexec/lxspawn/sudo-helper <subcommand> [args...]`
+- All code that previously used `exec.Command("sudo", ...)` now uses `deploy.SudoHelper(...)`
+
+**Trade-offs:**
+
+- **Pros:** Minimal attack surface, defense in depth, clear audit trail, prevents privilege escalation
+- **Cons:** Additional binary to maintain, requires `lxspawn setup` to install helper, slightly more complex architecture
+
+**Why this approach:**
+
+The sudo-helper pattern is used by other security-conscious tools (e.g., `lxc-checkpoint`, `virsh`). It provides a single point of validation that can be audited and tested independently. Even if an attacker gains membership in the `lxspawn` group, they can only perform validated operations on lxspawn-managed resources.
 
 ## Future Enhancements
 

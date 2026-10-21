@@ -17,13 +17,22 @@ import (
 
 const defaultExecTimeout = 30 * time.Minute
 
+func getExecTimeout() time.Duration {
+	if v := os.Getenv("LXSPAWN_EXEC_TIMEOUT"); v != "" {
+		if minutes, err := strconv.Atoi(v); err == nil && minutes > 0 {
+			return time.Duration(minutes) * time.Minute
+		}
+	}
+	return defaultExecTimeout
+}
+
 type ExecProvisioner struct {
 	machineName string
 	timeout     time.Duration
 }
 
 func NewExecProvisioner(machineName string) *ExecProvisioner {
-	return &ExecProvisioner{machineName: machineName, timeout: defaultExecTimeout}
+	return &ExecProvisioner{machineName: machineName, timeout: getExecTimeout()}
 }
 
 func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext, fileHandler *FileHandler, baseDir string) error {
@@ -121,8 +130,8 @@ func (e *ExecProvisioner) buildNsenterCommand(user string, script string) (*exec
 	// Set environment variables for D-Bus and systemd
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", script)
 	
-	args := []string{"-n", "nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", envScript}
-	return exec.Command("sudo", args...), nil
+	args := []string{"nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", envScript}
+	return deploy.SudoHelper(args...), nil
 }
 
 func (e *ExecProvisioner) getLeaderPID() (int, error) {

@@ -76,10 +76,10 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 	}
 
 	if err := os.WriteFile(targetPath, output, 0644); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
 	}
 
-	logger.Info(fmt.Sprintf("Modified %s", prov.Path))
+	logger.Debug(fmt.Sprintf("Modified %s", prov.Path))
 	return nil
 }
 

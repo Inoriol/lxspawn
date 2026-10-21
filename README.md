@@ -35,8 +35,8 @@ sudo lxspawn setup
 This creates:
 - `lxspawn` group for passwordless management
 - Directory permissions for `/var/lib/lxspawn`, `/etc/systemd/nspawn`, etc.
-- Polkit rules for systemd unit management
-- Sudoers rules for `rm`, `nsenter`, `btrfs`, `zfs`, `lvcreate`, `lvconvert`, `lvremove`, `chown`, `mv`, `rsync`, and `findmnt` (used for rootfs management, post-boot provisioning, and snapshots)
+- Polkit rules for systemd unit management (scoped to lxspawn machines only)
+- A single sudoers rule for `/usr/libexec/lxspawn/sudo-helper` — a privileged helper binary that validates all arguments before executing system commands (path validation, machine name validation, PID ownership checks)
 
 Add your user to the group:
 
@@ -127,12 +127,10 @@ lxspawn rollback <name> <snap>         # Rollback to snapshot
 lxspawn delete-snapshot <name> <snap>  # Delete snapshot
 ```
 
-Note: Snapshots require btrfs or LVM filesystem. 
-- **btrfs**: Machine rootfs is automatically created as a btrfs subvolume when the host filesystem is btrfs. Snapshots use btrfs copy-on-write.
-- **LVM with thin pool**: Machine rootfs is created as a thin volume from the thin pool. Snapshots use LVM thin snapshots. Efficient space usage with over-provisioning support.
-- **LVM without thin pool**: Falls back to directory mode with a warning. For efficient space usage, create a thin pool: `sudo lvcreate -L 50G -n lxspawn-pool <vg-name> && sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool`
-- **Other filesystems**: Uses directory-based storage in `/var/lib/machines/<name>/`. Snapshots use file copying.
-- **zfs**: Not yet tested/supported.
+Note: Snapshots require btrfs filesystem. 
+- **btrfs**: Machine rootfs is automatically created as a btrfs subvolume when the host filesystem is btrfs. Snapshots use btrfs copy-on-write (instant, space-efficient).
+- **Other filesystems**: Snapshots are not supported. Use btrfs for snapshot functionality.
+- **LVM/ZFS**: Support planned for future release (currently disabled pending testing).
 
 ### Status
 
@@ -142,7 +140,36 @@ lxspawn list --json              # JSON output (for scripting/Cockpit)
 lxspawn status <name>            # Detailed machine info
 lxspawn status <name> --json     # JSON output
 lxspawn show <name>              # Display generated config files
+lxspawn stats <name>             # Runtime CPU/memory/disk stats
+lxspawn stats <name> --json      # JSON output
+lxspawn config <name>            # Show detailed configuration
+lxspawn config <name> --json     # JSON output
+lxspawn provision-status <name>  # Show provisioning status
+lxspawn provision-status <name> --json  # JSON output
 ```
+
+### Information
+
+```bash
+lxspawn list-distros             # List available distributions
+lxspawn list-distros --json      # JSON output
+lxspawn list-templates           # List available machine templates
+lxspawn list-templates --json    # JSON output
+lxspawn validate <yaml>          # Validate YAML configuration
+lxspawn validate <yaml> --json   # JSON output
+```
+
+### Configuration Editing
+
+```bash
+lxspawn edit-resources <name> --cpus 4 --memory 4G        # Edit CPU/memory limits
+lxspawn edit-network <name> --mode bridge --bridge br0    # Edit network config
+lxspawn add-volume <name> --host /mnt/data --mount /data  # Add bind mount
+lxspawn edit-volume <name> --mount /data --host /new/path # Edit bind mount
+lxspawn remove-volume <name> --mount /data                # Remove bind mount
+```
+
+All edit commands support `--json` for JSON output.
 
 ### Global Flags
 
@@ -543,9 +570,21 @@ All state is filesystem-based:
 
 After `lxspawn setup`, users in the `lxspawn` group can:
 - Create/start/stop/delete machines without sudo
-- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units
+- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
 - Reload the systemd daemon (required for `lxspawn start`)
 - Cannot modify other systemd units
+- Execute privileged operations only through the `sudo-helper` binary, which validates all arguments
+
+### Sudo Helper
+
+All privileged operations (storage management, provisioning, snapshots) go through a single privileged helper binary at `/usr/libexec/lxspawn/sudo-helper`. This binary validates:
+
+- **Path restrictions**: All paths must be under `/var/lib/machines/`, `/var/lib/lxspawn/`, `/etc/systemd/nspawn/`, or `/etc/systemd/system/`
+- **No path traversal**: Paths containing `..` are rejected
+- **Machine name validation**: Names must match the strict regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
+- **PID ownership**: `nsenter` calls verify the target PID belongs to an lxspawn machine (checks `/proc/<pid>/exe`, cmdline, and cgroup)
+- **LVM name restrictions**: LV names must start with `lxspawn-`
+- **Subcommand restrictions**: `btrfs` only allows `subvolume` and `filesystem usage`; `zfs` only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
 
 Commands that require group membership:
 - `create`, `launch`, `start`, `stop`, `delete`
@@ -594,10 +633,10 @@ lxspawn automatically detects and uses the best storage backend based on your fi
 
 ### Directory (Universal Fallback)
 - **Detection:** Used when no advanced backend is available
-- **Features:** Simple directory-based storage, file-copy snapshots
+- **Features:** Simple directory-based storage
 - **Works on:** Any filesystem (ext4, xfs, etc.)
-- **Limitations:** No block-level snapshots, less efficient
-- **Note:** Uses `sudo rm -rf` for deletion (handles root-owned files from container namespace)
+- **Limitations:** No snapshot support, less efficient than btrfs or LVM
+- **Note:** Uses the sudo-helper for deletion (handles root-owned files from container namespace)
 
 ### Automatic Selection
 lxspawn selects the backend automatically:
@@ -647,8 +686,8 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 - [x] Machine state queried via D-Bus (machine1 interface)
 - [x] Lock file workaround (`SYSTEMD_NSPAWN_LOCK=0`)
 
-**Phase 3 (V2) - Snapshots - Complete (btrfs + LVM):**
-- [x] Snapshot support (btrfs + LVM; zfs disabled pending testing)
+**Phase 3 (V2) - Snapshots - Complete (btrfs only):**
+- [x] Snapshot support (btrfs only; LVM/ZFS disabled pending testing)
 - [x] Automatic btrfs subvolume creation
 - [x] Snapshot create/list/rollback/delete commands
 - [x] JSON output for snapshot commands
@@ -680,14 +719,15 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 **Phase 5 (V2+) - Cockpit Web UI:**
 - [ ] Cockpit web UI plugin
 
-**Phase 6 (V2+) - ZFS/LVM Snapshots:**
-- [ ] Set up VM with ZFS filesystem
-- [ ] Test ZFS snapshots
-- [x] Set up VM with LVM (ext4) filesystem
-- [x] Test LVM snapshots (create, list, rollback, delete)
-- [x] Implement per-machine LV creation for LVM backend
-- [x] Re-enable LVM backend
+**Phase 6 (V2+) - ZFS/LVM Snapshots - DEFERRED:**
+- [ ] Set up fast SSD-based test environment for LVM testing
+- [ ] Test LVM thin pool snapshots (create, list, rollback, delete)
+- [ ] Re-enable LVM backend
+- [ ] Set up test environment with ZFS filesystem
+- [ ] Test ZFS snapshots (create, list, rollback, delete)
 - [ ] Re-enable ZFS backend
+
+**Note:** Directory mode snapshots removed (unreliable, slow). Snapshots now require btrfs filesystem. LVM/ZFS support deferred to after Phase 5 (Cockpit Web UI).
 
 ## License
 

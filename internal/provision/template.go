@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"os/user"
+	"strings"
 	"text/template"
 )
 
@@ -36,8 +37,30 @@ func NewTemplateContext(name, hostname, distro, dir string, param map[string]str
 	}, nil
 }
 
+func ShellEscape(s string) string {
+	if s == "" {
+		return "''"
+	}
+	needsQuoting := false
+	for _, c := range s {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '_' || c == '/' || c == '.' || c == '=' || c == '@' || c == '+' || c == ',') {
+			needsQuoting = true
+			break
+		}
+	}
+	if !needsQuoting {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
+}
+
+var templateFuncs = template.FuncMap{
+	"shellEscape": ShellEscape,
+}
+
 func RenderTemplate(text string, ctx *TemplateContext) (string, error) {
-	tmpl, err := template.New("provision").Parse(text)
+	tmpl, err := template.New("provision").Funcs(templateFuncs).Parse(text)
 	if err != nil {
 		return "", err
 	}

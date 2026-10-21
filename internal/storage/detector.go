@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
 
@@ -92,12 +93,8 @@ func isLVM(path string) bool {
 	device := strings.TrimSpace(lines[len(lines)-1])
 
 	// Check if device is an LVM volume
-	lvsPath, err := exec.LookPath("lvs")
-	if err != nil {
-		lvsPath = "/usr/sbin/lvs"
-	}
 
-	cmd = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name", device)
+	cmd = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -121,12 +118,8 @@ func getVGName(path string) (string, error) {
 
 	device := strings.TrimSpace(lines[len(lines)-1])
 
-	lvsPath, err := exec.LookPath("lvs")
-	if err != nil {
-		lvsPath = "/usr/sbin/lvs"
-	}
 
-	cmd = exec.Command("sudo", lvsPath, "--noheadings", "-o", "vg_name", device)
+	cmd = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device)
 	output, err = cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get VG name: %w", err)

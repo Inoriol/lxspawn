@@ -3,7 +3,6 @@ package provision
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strconv"
 	"time"
 
@@ -58,8 +57,8 @@ func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext)
 			return fmt.Errorf("failed to get leader PID: %w", err)
 		}
 
-		args := []string{"-n", "nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", script}
-		cmd := exec.Command("sudo", args...)
+		args := []string{"nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", script}
+		cmd := deploy.SudoHelper(args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 

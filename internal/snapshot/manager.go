@@ -158,6 +158,28 @@ func (m *Manager) BackendType() BackendType {
 	return m.backend.Type()
 }
 
+func (m *Manager) Sync() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	snapshots, err := m.backend.ListSnapshots(m.machineName, m.rootfsPath)
+	if err != nil {
+		return fmt.Errorf("failed to list snapshots for sync: %w", err)
+	}
+
+	newState := NewSnapshotState()
+	for _, s := range snapshots {
+		newState.Snapshots[s.Name] = s
+	}
+
+	m.state = newState
+	if err := m.save(); err != nil {
+		return fmt.Errorf("failed to save synced state: %w", err)
+	}
+
+	return nil
+}
+
 func (m *Manager) Close() {
 	// Currently no resources to release, but provided for API consistency
 	// with machine.Manager and to allow future resource management

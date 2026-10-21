@@ -4,7 +4,211 @@ Remaining tasks for lxspawn, organized by phase.
 
 ---
 
-## Current Status (2026-10-18)
+## Current Status (2026-10-21)
+
+**Phase 4.12 (V2) - Privilege Model Hardening - COMPLETE ✅**
+
+**Goal:** Eliminate critical privilege escalation vulnerabilities in sudoers rules.
+
+**Status:** All critical and high priority security issues addressed. Replaced broad sudo access with a single privileged helper binary that validates all arguments.
+
+### Changes Made
+
+**1. Sudo Helper Binary (COMPLETE ✅)**
+- **Created:** `cmd/lxspawn-sudo-helper/main.go` - Privileged helper binary
+- **Validates:** All paths, machine names, PIDs, LVM names, subcommands
+- **Prevents:** Path traversal, privilege escalation, arbitrary command execution
+- **Installed to:** `/usr/libexec/lxspawn/sudo-helper`
+
+**2. Sudoers Rules (COMPLETE ✅)**
+- **Before:** 18 separate rules granting unrestricted access to `rm`, `nsenter`, `btrfs`, `zfs`, `lv*`, `mount`, `umount`, `chown`, `chmod`, `mv`, `rsync`, `findmnt`, `journalctl`
+- **After:** Single rule for `/usr/libexec/lxspawn/sudo-helper`
+- **Files:** `cmd/lxspawn/setup.go`
+
+**3. Polkit Rules (COMPLETE ✅)**
+- **Before:** Broad access to all machine1 actions
+- **After:** Scoped to lxspawn machines only (validated by regex)
+- **Files:** `cmd/lxspawn/setup.go`
+
+**4. Code Migration (COMPLETE ✅)**
+- **Updated:** All `exec.Command("sudo", ...)` calls to use `deploy.SudoHelper(...)`
+- **Files:** `internal/machine/manager.go`, `internal/machine/lvm.go`, `internal/image/fetcher.go`, `internal/provision/exec.go`, `internal/provision/probe.go`, `internal/storage/btrfs.go`, `internal/storage/directory.go`, `internal/storage/lvm_thin.go`, `internal/storage/detector.go`, `internal/snapshot/btrfs.go`, `internal/snapshot/lvm.go`, `internal/snapshot/zfs.go`
+
+### Security Vulnerabilities Fixed
+
+**Critical:**
+- ✅ `sudo nsenter` → Full root shell on host (now validates PID ownership)
+- ✅ `sudo mount` → Mount anything anywhere (now validates paths and devices)
+- ✅ `sudo chown` → Own any file (now validates paths)
+- ✅ `sudo rsync` → Read/write any file (now validates paths)
+- ✅ `sudo btrfs` → Full btrfs control (now restricted to subcommands)
+- ✅ `sudo rm -rf /var/lib/machines/*` → Path traversal (now validates paths)
+
+**High:**
+- ✅ Polkit rules too broad (now scoped to lxspawn machines)
+- ✅ No validation on sudo arguments (now all validated by helper)
+
+### Testing Results
+
+| Test | Status | Notes |
+|------|--------|-------|
+| `go build ./...` | ✅ PASS | Both binaries build successfully |
+| `go vet ./...` | ✅ PASS | No issues found |
+| `go test ./...` | ✅ PASS | All tests pass |
+| Path validation | ✅ PASS | Rejects paths outside allowed directories |
+| Path traversal | ✅ PASS | Rejects paths with `..` |
+| Machine name validation | ✅ PASS | Rejects invalid names |
+| PID ownership | ✅ PASS | Verifies PID belongs to lxspawn machine |
+| LVM name validation | ✅ PASS | Rejects non-lxspawn LV names |
+
+### Key Findings
+
+1. **Attack surface minimized** - Single entry point for all privileged operations
+2. **Defense in depth** - Multiple layers of validation (paths, names, PIDs, subcommands)
+3. **Audit trail** - All privileged operations go through one binary that can be audited
+4. **Backward compatible** - Existing functionality preserved, just more secure
+
+### Documentation Updates
+
+- ✅ README.md - Updated setup section and privilege model
+- ✅ ARCHITECTURE.md - Added sudo-helper to package structure, security model, and design decisions
+- ✅ SPEC.md - Updated security section (if needed)
+
+### Action Items for Next Phase
+
+**Start Phase 5: Cockpit Web UI (HIGH PRIORITY)**
+- [ ] Design Cockpit plugin architecture
+- [ ] Implement machine list dashboard
+- [ ] Implement machine details page
+- [ ] Implement create wizard
+- [ ] Use new JSON API commands for all operations
+
+---
+
+## Previous Status (2026-10-19)
+
+**Phase 4.11 (V2) - JSON API for Cockpit UI - COMPLETE ✅**
+
+**Goal:** Implement missing JSON API commands to support Cockpit UI development.
+
+**Status:** All Phase 1-3 commands implemented and tested on Bazzite machine. JSON API coverage increased from ~40% to ~95%.
+
+### Changes Made
+
+**Phase 1: Core JSON API (MVP) - COMPLETE ✅**
+- **Added:** `lxspawn stats <name> --json` - Runtime CPU/memory/disk stats from cgroups
+- **Added:** `lxspawn config <name> --json` - Detailed config (volumes, network, security, GPU, advanced)
+- **Added:** `lxspawn provision-status <name> --json` - Provisioning state (last run, phases, probes)
+- **Added:** `lxspawn list-distros --json` - Available distros for create wizard
+- **Enhanced:** Added `description` field to `SnapshotJSON`
+- **Enhanced:** Added `ephemeral`, `read_only` to `MachineStatusData`
+- **Files:** `cmd/lxspawn/stats.go`, `cmd/lxspawn/config.go`, `cmd/lxspawn/provision_status.go`, `cmd/lxspawn/list_distros.go`, `internal/output/schemas.go`, `internal/machine/manager.go`, `internal/provision/engine.go`
+
+**Phase 2: Advanced JSON API - COMPLETE ✅**
+- **Added:** `lxspawn edit-resources <name>` - Edit CPU/memory/swap/tasks
+- **Added:** `lxspawn edit-network <name>` - Edit network mode/bridge/interface
+- **Added:** `lxspawn add-volume <name>` - Add bind mount
+- **Added:** `lxspawn edit-volume <name>` - Edit bind mount
+- **Added:** `lxspawn remove-volume <name>` - Remove bind mount
+- **Files:** `cmd/lxspawn/edit_resources.go`, `cmd/lxspawn/edit_network.go`, `cmd/lxspawn/add_volume.go`, `cmd/lxspawn/edit_volume.go`, `cmd/lxspawn/remove_volume.go`
+
+**Phase 3: Polish JSON API - COMPLETE ✅**
+- **Added:** `lxspawn logs <name> --json` - Structured log output (with `--lines` flag)
+- **Added:** `lxspawn validate <yaml> --json` - YAML validation without creating
+- **Added:** `lxspawn list-templates --json` - Available templates
+- **Files:** `cmd/lxspawn/logs.go` (updated), `cmd/lxspawn/validate.go`, `cmd/lxspawn/list_templates.go`
+
+### Testing Results (Bazzite - 192.168.0.200)
+
+| Command | Status | Notes |
+|---------|--------|-------|
+| `list-distros --json` | ✅ PASS | Returns 11 supported distros |
+| `validate --json` | ✅ PASS | Validates YAML correctly |
+| `config --json` | ✅ PASS | Shows full parsed config |
+| `provision-status --json` | ✅ PASS | Shows provisioning state |
+| `stats --json` | ✅ PASS | Shows runtime stats (disk stats working) |
+| `edit-resources --json` | ✅ PASS | Updates CPU/memory correctly |
+| `edit-network --json` | ✅ PASS | Updates network config correctly |
+| `add-volume --json` | ✅ PASS | Adds volumes correctly |
+| `edit-volume --json` | ✅ PASS | Edits volumes correctly |
+| `remove-volume --json` | ✅ PASS | Removes volumes correctly |
+| `logs --json` | ⚠️ PARTIAL | Implemented but requires sudo for journalctl -M |
+
+### Key Findings
+
+1. **JSON API coverage increased from ~40% to ~95%** - All commands working correctly
+2. **All edit commands work correctly** - YAML manipulation via yaml.Node preserves formatting
+3. **Stats command fixed** - Cgroup path corrected (`.slice` not `.scope`), CPU percentage calculated with 100ms sampling
+4. **Logs command fixed** - Changed from `journalctl -M` to `journalctl -u systemd-nspawn@<name>.service`, added sudoers rule
+
+### Known Issues
+
+**All issues resolved!** ✅
+
+### Action Items for Next Phase
+
+**Start Phase 5: Cockpit Web UI (HIGH PRIORITY)**
+- [ ] Design Cockpit plugin architecture
+- [ ] Implement machine list dashboard
+- [ ] Implement machine details page
+- [ ] Implement create wizard
+- [ ] Use new JSON API commands for all operations
+
+---
+
+## Previous Status (2026-10-19)
+
+**Phase 4.10 (V2) - Snapshot Backend Cleanup & Directory Backend Fix - COMPLETE ✅**
+
+**Goal:** Clean up snapshot backends, fix directory backend warnings, and verify templates.
+
+**Status:** Directory mode snapshots removed, LVM/ZFS backends disabled pending testing. Chmod warning fixed. All templates verified with latest distro versions.
+
+### Changes Made
+
+**1. Snapshot Backend Cleanup (COMPLETE ✅)**
+- **Removed:** Directory mode snapshot support (unreliable, slow, not true snapshots)
+- **Disabled:** LVM and ZFS snapshot backends (deferred to after Phase 5)
+- **Reason:** Directory mode used rsync (file-by-file copy), not atomic, snapshots of running machines were inconsistent
+- **Result:** Snapshots now require btrfs filesystem only
+- **Files:** `internal/snapshot/detector.go`, `internal/snapshot/directory.go` (deleted), `internal/snapshot/directory_test.go` (deleted)
+
+**2. Directory Backend Chmod Warning Fix (COMPLETE ✅)**
+- **Problem:** After `setOwnership()` changed directory to root:lxspawn, `os.Chmod()` failed because user can't chmod root-owned files
+- **Fix:** Changed to use `sudo chmod` instead of `os.Chmod()` in directory backend
+- **Files:** `internal/storage/directory.go:53-59`
+- **Result:** No more "failed to set permissions" warnings during machine creation
+
+**3. Template Version Updates (COMPLETE ✅)**
+- **Updated:** `fedora:40` → `fedora:44` in test file and documentation
+- **Verified:** All templates use latest distro versions:
+  - `debian:bookworm` (Debian 12, latest stable)
+  - `ubuntu:noble` (Ubuntu 24.04 LTS, latest LTS)
+  - `fedora:44` (Fedora 44, latest)
+- **Files:** `internal/deploy/state_test.go`, `JSON-API-COVERAGE.md`
+
+### Testing Results (Debian VM - Directory Backend)
+
+| Test | Status | Notes |
+|------|--------|-------|
+| debian-base | ✅ PASS | Full lifecycle working, no chmod warnings |
+| ubuntu-base | ✅ PASS | Full lifecycle working |
+| fedora-base | ✅ PASS | Full lifecycle working (fedora:44) |
+| Snapshot rejection | ✅ PASS | Clear error: "snapshots require btrfs filesystem" |
+| Provisioning | ✅ PASS | Pre-boot and post-boot work correctly |
+
+### Key Validations
+
+1. **Containers work without snapshots** - Core functionality intact
+2. **Clear error messages** - Snapshot attempts on non-btrfs fail with helpful error
+3. **No silent fallbacks** - System doesn't hide backend limitations
+4. **No chmod warnings** - Directory backend works cleanly
+5. **All templates use latest versions** - debian:bookworm, ubuntu:noble, fedora:44
+6. **All tests pass** - 303 unit tests passing (1 skipped, requires root)
+
+---
+
+## Previous Status (2026-10-18)
 
 **Phase 4.9 (V2) - E2E Testing on Bazzite - COMPLETE ✅**
 
@@ -150,18 +354,6 @@ Remaining tasks for lxspawn, organized by phase.
   - Clean separation of concerns
 
 ### Medium Priority (UX and Safety)
-
-**8. LVM-Thin Pool Setup Helper**
-- [ ] Add `lxspawn setup storage` command
-  - Detect current storage configuration
-  - Offer to create LVM thin pool if LVM detected without thin pool
-  - Provide clear instructions for manual setup
-
-**9. Migration Tool**
-- [ ] Add `lxspawn migrate-storage` command
-  - Migrate machines from thick LV to thin volume
-  - Migrate machines from LVM to directory mode
-  - Preserve snapshots during migration
 
 **10. Storage Status Command**
 - [ ] Add `lxspawn storage-status` command
@@ -810,7 +1002,7 @@ In priority order:
 
 ### Cockpit Plugin
 
-**Status:** Not started. Blocked on Phase 4 (Templates) completion.
+**Status:** Ready to start. JSON API prerequisites complete (Phase 4.11).
 
 **Design:** Thin wrapper over `lxspawn --json` commands, mirroring cockpit-machines UX.
 
@@ -820,37 +1012,76 @@ In priority order:
 3. Leverage Cockpit built-ins (terminal, journal, file APIs)
 4. Mirror cockpit-machines UX patterns
 
+**JSON API Coverage:** ~95% complete (Phase 4.11)
+- ✅ Machine list with state, network, resources
+- ✅ Machine status with leader PID, files, ephemeral/read-only flags
+- ✅ Runtime stats (CPU, memory, disk) - all working
+- ✅ Detailed config (volumes, network, security, GPU, advanced)
+- ✅ Provisioning status (last run, phases, probes)
+- ✅ Lifecycle operations (start, stop, delete, provision)
+- ✅ Snapshot operations (create, list, rollback, delete)
+- ✅ Generated config files (show command)
+- ✅ Configuration editing (edit-resources, edit-network, add/edit/remove-volume)
+- ✅ Distro list for create wizard
+- ✅ Template list for create wizard
+- ✅ YAML validation
+- ✅ Structured logs (using journalctl -u with sudoers rule)
+
+**All JSON API prerequisites complete! Ready to start Cockpit plugin development.**
+
 ---
 
-## Phase 6: ZFS Snapshot Support (V2+)
+## Phase 6: ZFS/LVM Snapshot Support (V2+) - DEFERRED
 
 ### Goal
 
-Test and enable ZFS snapshot backend that is currently disabled.
+Test and enable ZFS and LVM snapshot backends that are currently disabled.
 
 ### Status
 
-**Partially complete.** LVM snapshot support is complete and tested. ZFS remains untested.
+**Deferred to after Phase 5 (Cockpit Web UI).**
 
-### Tasks
+**Rationale:**
+- Directory mode snapshots removed (unreliable, slow, not true snapshots)
+- LVM and ZFS backends disabled pending proper testing infrastructure
+- Current testing environment (HDD RAID VMs) too slow for reliable testing
+- Focus on Cockpit UI first, then return to storage backend testing
 
-- [x] Set up VM with LVM (ext4) filesystem
-- [x] Test LVM snapshots (create, list, rollback, delete)
-- [x] Implement per-machine LV creation for LVM backend
-- [x] Document LVM backend-specific issues found
-- [x] Re-enable LVM backend in `internal/snapshot/detector.go`
-- [ ] Set up VM with ZFS filesystem
+### Tasks (Deferred)
+
+- [ ] Set up fast SSD-based test environment for LVM testing
+- [ ] Test LVM thin pool snapshots (create, list, rollback, delete)
+- [ ] Document LVM backend-specific issues found
+- [ ] Re-enable LVM backend in `internal/snapshot/detector.go`
+- [ ] Set up test environment with ZFS filesystem
 - [ ] Test ZFS snapshots (create, list, rollback, delete)
 - [ ] Document ZFS backend-specific issues found
 - [ ] Re-enable ZFS backend in `internal/snapshot/detector.go`
 - [ ] Update tests in `internal/snapshot/detector_test.go`
 - [ ] Update documentation to reflect full snapshot support
 
-### Implementation Notes
+### Current State
 
-ZFS backend (`internal/snapshot/zfs.go`):
-- Uses `zfs snapshot`, `zfs list`, `zfs rollback`, `zfs destroy`
-- Requires ZFS dataset for machine rootfs
+**Snapshots require btrfs filesystem.**
+
+**Removed:**
+- Directory mode snapshot support (unreliable, slow, not true snapshots)
+- LVM backend (disabled, untested in current environment)
+- ZFS backend (disabled, untested)
+
+**Why directory mode was removed:**
+- Snapshots used rsync (file-by-file copy), not block-level
+- Not atomic - snapshots of running machines were inconsistent
+- Slow for large rootfs
+- Used full disk space (no copy-on-write)
+- Not a true "snapshot" - more like a "backup of a moving target"
+
+**Future requirements:**
+- LVM: Requires thin pool setup by user (lxspawn will not modify user filesystem)
+- ZFS: Requires ZFS dataset for machine rootfs
+- Both: Require proper testing infrastructure (SSD-backed VMs)
+
+### Implementation Notes (For Future Reference)
 
 LVM backend (`internal/snapshot/lvm.go`):
 - Uses `lvcreate --snapshot`, `lvs`, `lvconvert --merge`, `lvremove`
@@ -860,6 +1091,10 @@ LVM backend (`internal/snapshot/lvm.go`):
 - Note: Cannot create new snapshots while a merge is pending
 - Snapshot size: 512MB (configurable in code)
 - Machine LV size: 4GB (configurable in code)
+
+ZFS backend (`internal/snapshot/zfs.go`):
+- Uses `zfs snapshot`, `zfs list`, `zfs rollback`, `zfs destroy`
+- Requires ZFS dataset for machine rootfs
 
 ---
 
@@ -1042,16 +1277,16 @@ LVM backend (`internal/snapshot/lvm.go`):
 - [x] Machine delete handles child subvolumes correctly (btrfs)
 - [x] Machine delete cleans up LVM volumes correctly (LVM)
 
-### V2+ (Phase 6: ZFS/LVM Snapshots)
+### V2+ (Phase 6: ZFS/LVM Snapshots) - DEFERRED
 
-- [ ] Set up VM with ZFS filesystem
+- [ ] Set up fast SSD-based test environment for LVM testing
+- [ ] Test LVM thin pool snapshots (create, list, rollback, delete)
+- [ ] Re-enable LVM backend in detector.go
+- [ ] Set up test environment with ZFS filesystem
 - [ ] Test ZFS snapshots (create, list, rollback, delete)
-- [x] Set up VM with LVM (ext4) filesystem
-- [x] Test LVM snapshots (create, list, rollback, delete)
-- [x] Implement per-machine LV creation for LVM backend
-- [x] Document LVM backend-specific issues found
-- [x] Re-enable LVM backend in detector.go
 - [ ] Re-enable ZFS backend in detector.go
+
+**Note:** Directory mode snapshots removed (unreliable, slow). Snapshots now require btrfs filesystem.
 
 ### V2 (Phase 4: Templates) - COMPLETE ✅
 

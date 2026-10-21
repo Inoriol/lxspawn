@@ -331,7 +331,7 @@ func validateStorage(cfg *Config) error {
 
 	_, err := ParseSizeToGB(cfg.Storage.Size)
 	if err != nil {
-		return fmt.Errorf("storage.size: %w", err)
+		return fmt.Errorf("storage.size %q: %w", cfg.Storage.Size, err)
 	}
 
 	return nil
@@ -358,12 +358,12 @@ func ParseSizeToGB(size string) (int, error) {
 		multiplier = 1024
 		numStr = strings.TrimSuffix(size, "T")
 	} else {
-		return 0, fmt.Errorf("size must end with G, M, or T: %s", size)
+		return 0, fmt.Errorf("size %q must end with G, M, or T", size)
 	}
 
 	num, err := strconv.ParseFloat(numStr, 64)
 	if err != nil {
-		return 0, fmt.Errorf("invalid size number: %s", numStr)
+		return 0, fmt.Errorf("invalid size number %q in %q: %w", numStr, size, err)
 	}
 
 	if num <= 0 {

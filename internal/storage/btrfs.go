@@ -3,11 +3,11 @@ package storage
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
 
@@ -47,12 +47,7 @@ func (b *BtrfsBackend) CreateMachine(name string, sizeGB int) error {
 	}
 
 	// Create btrfs subvolume
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "create", machinePath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "create", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create btrfs subvolume %s: %w (%s)", machinePath, err, string(output))
 	}
@@ -63,7 +58,7 @@ func (b *BtrfsBackend) CreateMachine(name string, sizeGB int) error {
 	}
 
 	// Set group-writable permissions
-	cmd = exec.Command("sudo", "chmod", "0775", machinePath)
+	cmd = deploy.SudoHelper("chmod", "0775", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("failed to set permissions on %s: %v (%s)", machinePath, err, string(output)))
 	}
@@ -87,12 +82,7 @@ func (b *BtrfsBackend) DeleteMachine(name string) error {
 	}
 
 	// Delete the subvolume
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "delete", machinePath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete btrfs subvolume %s: %w (%s)", machinePath, err, string(output))
 	}
@@ -111,12 +101,7 @@ func (b *BtrfsBackend) MachineExists(name string) (bool, error) {
 	}
 
 	// Check if it's a btrfs subvolume
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "show", machinePath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "show", machinePath)
 	if err := cmd.Run(); err != nil {
 		return false, nil // Not a subvolume
 	}
@@ -155,12 +140,7 @@ func (b *BtrfsBackend) CreateSnapshot(machine, snapName string) error {
 	}
 
 	// Create read-only snapshot
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "snapshot", "-r", machinePath, snapshotPath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "snapshot", "-r", machinePath, snapshotPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create btrfs snapshot: %w (%s)", err, string(output))
 	}
@@ -179,12 +159,7 @@ func (b *BtrfsBackend) DeleteSnapshot(machine, snapName string) error {
 	}
 
 	// Delete the snapshot
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "delete", snapshotPath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", snapshotPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete btrfs snapshot %s: %w (%s)", snapshotPath, err, string(output))
 	}
@@ -198,12 +173,7 @@ func (b *BtrfsBackend) ListSnapshots(machine string) ([]SnapshotInfo, error) {
 	machinePath := b.GetMachinePath(machine)
 
 	// List child subvolumes
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "list", "-o", machinePath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "list", "-o", machinePath)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list btrfs subvolumes: %w", err)
@@ -218,7 +188,9 @@ func (b *BtrfsBackend) ListSnapshots(machine string) ([]SnapshotInfo, error) {
 			continue
 		}
 
-		// Parse line: ID <id> gen <gen> top level <top> path <path>
+		// btrfs subvolume list output format:
+		// ID <id> gen <gen> gen2 <gen2> cgen <cgen> top level <top> otrans <otrans> ... path <path>
+		// Minimum fields: ID, gen, top level, path = at least 8 fields
 		fields := strings.Fields(line)
 		if len(fields) < 8 {
 			continue
@@ -254,14 +226,9 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName string) error {
 		return fmt.Errorf("snapshot %s does not exist", snapName)
 	}
 
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
 	// Create writable snapshot
 	rollbackPath := machinePath + ".rollback-" + fmt.Sprintf("%d", time.Now().Unix())
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "snapshot", snapshotPath, rollbackPath)
+	cmd := deploy.SudoHelper("btrfs", "subvolume", "snapshot", snapshotPath, rollbackPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create writable snapshot: %w (%s)", err, string(output))
 	}
@@ -271,15 +238,15 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName string) error {
 		logger.Warn(fmt.Sprintf("failed to delete child subvolumes: %v", err))
 	}
 
-	cmd = exec.Command("sudo", btrfsPath, "subvolume", "delete", machinePath)
+	cmd = deploy.SudoHelper("btrfs", "subvolume", "delete", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Try to clean up rollback snapshot
-		exec.Command("sudo", btrfsPath, "subvolume", "delete", rollbackPath).Run()
+		deploy.SudoHelper("btrfs", "subvolume", "delete", rollbackPath).Run()
 		return fmt.Errorf("failed to delete current subvolume: %w (%s)", err, string(output))
 	}
 
 	// Rename rollback snapshot to machine path
-	cmd = exec.Command("sudo", "mv", rollbackPath, machinePath)
+	cmd = deploy.SudoHelper("mv", rollbackPath, machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to rename rollback snapshot: %w (%s)", err, string(output))
 	}
@@ -290,12 +257,7 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName string) error {
 
 // GetUsage returns btrfs filesystem usage
 func (b *BtrfsBackend) GetUsage() (int64, int64, error) {
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
-	cmd := exec.Command("sudo", btrfsPath, "filesystem", "usage", "-b", b.basePath)
+	cmd := deploy.SudoHelper("btrfs", "filesystem", "usage", "-b", b.basePath)
 	output, err := cmd.Output()
 	if err != nil {
 		return 0, 0, fmt.Errorf("failed to get btrfs usage: %w", err)
@@ -328,14 +290,9 @@ func (b *BtrfsBackend) getSnapshotsDir(machine string) string {
 
 // deleteChildSubvolumes recursively deletes child subvolumes
 func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
-	btrfsPath, err := exec.LookPath("btrfs")
-	if err != nil {
-		btrfsPath = "/usr/sbin/btrfs"
-	}
-
 	// List child subvolumes
-	cmd := exec.Command("sudo", btrfsPath, "subvolume", "list", "-o", parentPath)
-	output, err := cmd.Output()
+	listCmd := deploy.SudoHelper("btrfs", "subvolume", "list", "-o", parentPath)
+	output, err := listCmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list child subvolumes: %w", err)
 	}
@@ -348,6 +305,9 @@ func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
 			continue
 		}
 
+		// btrfs subvolume list output format:
+		// ID <id> gen <gen> gen2 <gen2> cgen <cgen> top level <top> otrans <otrans> ... path <path>
+		// Minimum fields: ID, gen, top level, path = at least 8 fields
 		fields := strings.Fields(line)
 		if len(fields) < 8 {
 			continue
@@ -357,9 +317,9 @@ func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
 		// Make path absolute if relative
 		if !filepath.IsAbs(childPath) {
 			// Get the root of the btrfs filesystem
-			cmd := exec.Command("sudo", btrfsPath, "subvolume", "show", parentPath)
-			showOutput, err := cmd.Output()
-			if err != nil {
+			showCmd := deploy.SudoHelper("btrfs", "subvolume", "show", parentPath)
+			showOutput, showErr := showCmd.Output()
+			if showErr != nil {
 				continue
 			}
 			// Parse "Path:" line to get absolute path
@@ -374,9 +334,9 @@ func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
 			}
 		}
 
-		cmd := exec.Command("sudo", btrfsPath, "subvolume", "delete", childPath)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			logger.Warn(fmt.Sprintf("failed to delete child subvolume %s: %v (%s)", childPath, err, string(output)))
+		deleteCmd := deploy.SudoHelper("btrfs", "subvolume", "delete", childPath)
+		if deleteOutput, deleteErr := deleteCmd.CombinedOutput(); deleteErr != nil {
+			logger.Warn(fmt.Sprintf("failed to delete child subvolume %s: %v (%s)", childPath, deleteErr, string(deleteOutput)))
 		}
 	}
 

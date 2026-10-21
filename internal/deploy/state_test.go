@@ -348,7 +348,7 @@ func TestMultipleMachinesPersistence(t *testing.T) {
 
 	sm1.RegisterMachine(MachineInfo{Name: "box1", Distro: "debian:bookworm", CPUs: 1})
 	sm1.RegisterMachine(MachineInfo{Name: "box2", Distro: "ubuntu:noble", CPUs: 2})
-	sm1.RegisterMachine(MachineInfo{Name: "box3", Distro: "fedora:40", CPUs: 4})
+	sm1.RegisterMachine(MachineInfo{Name: "box3", Distro: "fedora:44", CPUs: 4})
 
 	sm2 := &StateManager{
 		StateFilePath: statePath,

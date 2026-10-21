@@ -70,10 +70,10 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 	}
 
 	if err := os.WriteFile(targetPath, []byte(rendered), perm); err != nil {
-		return fmt.Errorf("failed to write file: %w", err)
+		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
 	}
 
-	logger.Info(fmt.Sprintf("Wrote %s", prov.Path))
+	logger.Debug(fmt.Sprintf("Wrote %s", prov.Path))
 
 	// Set ownership if specified
 	if prov.Owner != "" {
@@ -182,7 +182,7 @@ func lookupGID(name string) int {
 
 func validatePath(rootfsPath, relativePath string) (string, error) {
 	if !filepath.IsAbs(relativePath) {
-		return "", fmt.Errorf("path must be absolute")
+		return "", fmt.Errorf("path must be absolute: %s", relativePath)
 	}
 
 	targetPath := filepath.Join(rootfsPath, relativePath)
@@ -190,7 +190,7 @@ func validatePath(rootfsPath, relativePath string) (string, error) {
 	cleanRootfs := filepath.Clean(rootfsPath)
 
 	if !strings.HasPrefix(cleanTarget, cleanRootfs+string(os.PathSeparator)) && cleanTarget != cleanRootfs {
-		return "", fmt.Errorf("path escapes rootfs directory")
+		return "", fmt.Errorf("path %q escapes rootfs directory %s", relativePath, rootfsPath)
 	}
 
 	return targetPath, nil

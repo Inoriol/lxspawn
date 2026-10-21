@@ -192,7 +192,7 @@ lxspawn automatically detects and uses the best storage backend based on your fi
 - **btrfs:** Machine rootfs is automatically created as a btrfs subvolume. The `storage.size` field has no effect. Snapshots use btrfs copy-on-write.
 - **LVM with thin pool:** Machine rootfs is created as a thin volume from the thin pool. The `storage.size` field specifies the virtual size (can be larger than available space due to over-provisioning). Snapshots use LVM thin snapshots.
 - **LVM without thin pool:** Falls back to directory mode with a warning. For efficient space usage, create a thin pool: `sudo lvcreate -L 50G -n lxspawn-pool <vg-name> && sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool`
-- **Other filesystems:** Uses directory-based storage in `/var/lib/machines/<name>/`. The `storage.size` field has no effect. Snapshots use file copying.
+- **Other filesystems:** Uses directory-based storage in `/var/lib/machines/<name>/`. The `storage.size` field has no effect. Snapshots are not supported for directory mode.
 
 **Notes:**
 
@@ -525,8 +525,24 @@ Each entry defines a provisioning step. Steps are executed in order.
 | `owner` | string | no | File owner in `user:group` format (default `root:root`). |
 | `permissions` | string | no | File permissions in octal (default `0644`). |
 | `overwrite` | bool | no | If `false`, skip writing when the file already exists (default `true`). |
-| `expression` | string | `yq` only | yq expression to apply to the file. |
+| `expression` | string | `yq` only | yq expression to apply to the file. See [yq expression limitations](#yq-expression-limitations) below. |
 | `format` | string | no | File format for yq: `auto`, `json`, `yaml`, `toml`, etc. |
+
+#### `yq` expression limitations
+
+The built-in yq provisioner supports a **subset** of yq expression syntax. It is not a full yq implementation.
+
+**Supported operations:**
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `.path = value` | Set a value at a path | `.server.port = 8080` |
+| `.path \|= . + value` | Append to an array | `.storage-options \|= . + ["overlay2"]` |
+| `.path += value` | Append to an array | `.items += ["new-item"]` |
+
+**Value types** are auto-detected: strings (quoted), numbers, booleans (`true`/`false`), `null`, JSON arrays/objects.
+
+**Not supported:** Complex yq expressions such as conditionals (`select()`), multi-document processing, array slicing, custom functions, pipes, or tag manipulation. For advanced use cases, use a `system` or `boot` provision step to invoke the `yq` binary directly inside the container.
 
 #### `file` reference
 
