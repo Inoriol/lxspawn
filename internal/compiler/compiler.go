@@ -89,9 +89,7 @@ func resolveNetworkMode(cfg *config.Config) error {
 			cfg.Network.Mode = config.NetworkBridge
 			return nil
 		}
-		if cfg.Network.Bridge != "" {
-			logger.Warn(fmt.Sprintf("Bridge %s not found, falling back to macvlan", cfg.Network.Bridge))
-		}
+		logger.Warn(fmt.Sprintf("Bridge %s not found, falling back to macvlan", cfg.Network.Bridge))
 	}
 
 	// Resolve interface

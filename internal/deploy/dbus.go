@@ -37,6 +37,7 @@ func NewSystemdManager() (*SystemdManager, error) {
 
 func (s *SystemdManager) Close() error {
 	s.conn.Close()
+	s.sysConn.Close()
 	return nil
 }
 

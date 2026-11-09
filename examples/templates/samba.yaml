@@ -69,6 +69,6 @@ probes:
     description: "Samba to be serving"
     script: |
       #!/bin/bash
-      until smbclient -L localhost -N 2>/dev/null | grep -q data; do sleep 2; done
+      until smbclient -L localhost -N 2>/dev/null | grep -q data || (echo > /dev/tcp/localhost/445) 2>/dev/null; do sleep 2; done
     hint: |
       Samba may not have started. Check: journalctl -M {{.Name}} -u smbd

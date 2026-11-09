@@ -2,7 +2,6 @@ package provision
 
 import (
 	"bytes"
-	"os"
 	"os/user"
 	"strings"
 	"text/template"
@@ -71,13 +70,4 @@ func RenderTemplate(text string, ctx *TemplateContext) (string, error) {
 	}
 
 	return buf.String(), nil
-}
-
-func RenderTemplateFile(path string, ctx *TemplateContext) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-
-	return RenderTemplate(string(data), ctx)
 }

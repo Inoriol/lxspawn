@@ -345,38 +345,47 @@ func ParseSizeToGB(size string) (int, error) {
 
 	size = strings.ToUpper(size)
 
-	var multiplier int
-	var numStr string
+	var num float64
+	var gb int
 
 	if strings.HasSuffix(size, "G") {
-		multiplier = 1
-		numStr = strings.TrimSuffix(size, "G")
+		numStr := strings.TrimSuffix(size, "G")
+		var err error
+		num, err = strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid size number %q in %q: %w", numStr, size, err)
+		}
+		if num <= 0 {
+			return 0, fmt.Errorf("size must be positive: %s", size)
+		}
+		gb = int(num)
 	} else if strings.HasSuffix(size, "M") {
-		multiplier = 0
-		numStr = strings.TrimSuffix(size, "M")
-	} else if strings.HasSuffix(size, "T") {
-		multiplier = 1024
-		numStr = strings.TrimSuffix(size, "T")
-	} else {
-		return 0, fmt.Errorf("size %q must end with G, M, or T", size)
-	}
-
-	num, err := strconv.ParseFloat(numStr, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid size number %q in %q: %w", numStr, size, err)
-	}
-
-	if num <= 0 {
-		return 0, fmt.Errorf("size must be positive: %s", size)
-	}
-
-	gb := int(num * float64(multiplier))
-
-	if multiplier == 0 {
+		numStr := strings.TrimSuffix(size, "M")
+		var err error
+		num, err = strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid size number %q in %q: %w", numStr, size, err)
+		}
+		if num <= 0 {
+			return 0, fmt.Errorf("size must be positive: %s", size)
+		}
 		gb = int(num / 1024)
 		if gb == 0 && num > 0 {
 			gb = 1
 		}
+	} else if strings.HasSuffix(size, "T") {
+		numStr := strings.TrimSuffix(size, "T")
+		var err error
+		num, err = strconv.ParseFloat(numStr, 64)
+		if err != nil {
+			return 0, fmt.Errorf("invalid size number %q in %q: %w", numStr, size, err)
+		}
+		if num <= 0 {
+			return 0, fmt.Errorf("size must be positive: %s", size)
+		}
+		gb = int(num * 1024)
+	} else {
+		return 0, fmt.Errorf("size %q must end with G, M, or T", size)
 	}
 
 	return gb, nil

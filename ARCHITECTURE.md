@@ -76,9 +76,6 @@ lxspawn/
 │   ├── edit_volume.go        # Edit bind mount
 │   └── remove_volume.go      # Remove bind mount
 │
-├── cmd/lxspawn-sudo-helper/  # Privileged helper binary
-│   └── main.go               # Validates all sudo arguments before execution
-│
 ├── internal/
 │   ├── config/               # YAML parsing and validation
 │   │   ├── schema.go         # Config struct definitions
@@ -488,17 +485,28 @@ ExecStopPost=/var/lib/lxspawn/myserver/.hooks/post_stop.sh
 - Two commands instead of one (but `launch` combines them)
 - Slightly more complex state management (created but not started)
 
-### 7. Why machinectl for Shell/Exec?
+### 7. Why nsenter for Exec and machinectl for Shell?
 
-**machinectl advantages:**
+**nsenter advantages for exec:**
+- No PTY allocation issues (machinectl shell has intermittent PTY errors)
+- Works reliably in non-interactive contexts
+- Faster than machinectl shell
+- Direct namespace entry without D-Bus overhead
+
+**machinectl advantages for shell:**
+- Interactive PTY allocation handled correctly
 - Native systemd tool (no additional dependencies)
 - Works rootless (after setup)
-- PTY allocation handled correctly
 - Integrates with journal (logs visible on host)
 
+**Implementation:**
+- `internal/machine/manager.go:Exec()` uses `nsenter` to enter container namespaces
+- `internal/machine/manager.go:Shell()` uses `machinectl shell` for interactive sessions
+- Exec sets `DBUS_SYSTEM_BUS_ADDRESS` and `XDG_RUNTIME_DIR` for systemctl commands
+
 **Trade-offs:**
-- Slower than `nsenter` (but more secure)
-- Requires machine to be running (can't exec into stopped container)
+- Exec requires sudo (nsenter needs root to enter namespaces)
+- Shell requires machine to be running (can't shell into stopped container)
 
 ### 8. Why D-Bus for Status?
 
@@ -1041,10 +1049,18 @@ The `lxspawn stats` command reads runtime CPU, memory, and disk statistics from 
 
 **Cgroup Path:**
 
-For systemd-nspawn containers, the cgroup path is:
-```
-/sys/fs/cgroup/machine.slice/machine-<name>.slice/
-```
+The cgroup path is dynamically determined by reading the leader process's cgroup from `/proc/<pid>/cgroup`. This is necessary because systemd creates hierarchical slice structures for machine names with hyphens.
+
+For example:
+- Machine `testbox` → `/sys/fs/cgroup/machine.slice/machine-testbox.slice/`
+- Machine `test-stats` → `/sys/fs/cgroup/machine.slice/machine-test.slice/machine-test-stats.slice/`
+- Machine `docker-host` → `/sys/fs/cgroup/machine.slice/machine-docker.slice/machine-docker-host.slice/`
+
+The `getMachineCgroupPath()` function:
+1. Gets the leader PID via D-Bus (`org.freedesktop.machine1.Machine.Leader`)
+2. Reads `/proc/<pid>/cgroup` to get the actual cgroup path
+3. Extracts the slice path (removing the service and init.scope suffixes)
+4. Returns the full path: `/sys/fs/cgroup` + cgroup path
 
 Note: The path uses `.slice` not `.scope`. The `.slice` directory contains resource stats for the entire machine.
 
@@ -1072,7 +1088,45 @@ Disk stats are read using `df -B1 <rootfs-path>` which returns usage in bytes.
 
 All cgroup files are world-readable, so the stats command works without sudo or special permissions.
 
-### 26. Logs Implementation
+### 26. Sudo Implementation
+
+lxspawn uses direct `sudo` calls with specific sudoers rules instead of a privileged helper binary. This approach provides better security through explicit rule definitions.
+
+**Sudoers Rules:**
+
+The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required operation:
+
+- **Core operations**: `rm`, `chown`, `chmod`, `mv`, `mkdir`, `nsenter`, `journalctl`
+- **btrfs operations**: `btrfs subvolume create/delete/show/list/snapshot`, `btrfs filesystem usage`
+- **LVM operations**: `lvs`, `lvcreate`, `lvconvert`, `lvremove`, `mkfs.ext4`, `mount`, `umount`
+- **ZFS operations**: `zfs snapshot/rollback/destroy` (when available)
+
+Each rule is scoped to specific paths and arguments. For example:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
+```
+
+**Implementation:**
+
+The `deploy.Sudo()` function wraps `exec.Command("sudo", args...)` to execute privileged operations. All sudo calls go through this function, making it easy to audit and test.
+
+**Security Benefits:**
+
+1. **Explicit rules**: Each operation has a specific sudoers rule with path and argument restrictions
+2. **No helper binary**: Reduces attack surface by eliminating an additional binary
+3. **Standard approach**: Uses well-understood sudo mechanisms instead of custom validation logic
+4. **Easy to audit**: Sudoers rules are human-readable and can be reviewed independently
+
+**Path Handling:**
+
+Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different path depths. For example, to delete both machine rootfs and snapshots:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
+```
+
+### 27. Logs Implementation
 
 The `lxspawn logs --json` command reads container logs using `journalctl`.
 
@@ -1098,6 +1152,39 @@ This allows users in the lxspawn group to read logs without a password prompt.
 
 The `-o short-iso` format provides ISO 8601 timestamps with timezone information, which is parsed into structured JSON output.
 
+### 28. Stop and Delete Robustness
+
+The `Stop` and `Delete` methods handle multiple failure modes gracefully.
+
+**Stop Implementation:**
+
+The `Stop` method (`internal/machine/manager.go:Stop()`) uses a fallback chain:
+
+1. Try `systemd.StopUnit()` via D-Bus
+2. If that fails, try `machinectl terminate`
+3. If that fails, try `sudo systemctl stop`
+
+This ensures machines can be stopped even when:
+- systemd D-Bus interface is unavailable
+- machinectl has PTY or permission issues
+- The machine is in a failed state
+
+**Delete Implementation:**
+
+The `Delete` method (`internal/machine/manager.go:Delete()`) suppresses warnings for expected states:
+
+- If the machine is already stopped, `StopUnit` warnings are logged at debug level
+- If the machine is not registered, `machinectl terminate` warnings are logged at debug level
+- If the unit is not in failed state, `ResetFailedUnit` warnings are logged at debug level
+
+This prevents confusing warnings when deleting machines that were already stopped or crashed.
+
+**Why this matters:**
+
+- Users expect `lxspawn delete` to work regardless of machine state
+- Warnings about "machine already stopped" are confusing and noisy
+- Debug-level logging preserves information for troubleshooting without cluttering normal output
+
 ## Security Model
 
 ### Privilege Escalation Prevention
@@ -1118,44 +1205,78 @@ The `-o short-iso` format provides ISO 8601 timestamps with timezone information
    - Map container UIDs to unprivileged host UIDs
    - Prevents container root from being host root
 
-### Sudo Helper (Privileged Operations)
+### Sudoers Rules (Privileged Operations)
 
-The `lxspawn setup` command installs a single sudoers rule:
+The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions with path and argument restrictions using pattern matching.
 
+**Core Operations:**
 ```
-%lxspawn ALL=(root) NOPASSWD: /usr/libexec/lxspawn/sudo-helper
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/rm -rf /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown root\:lxspawn /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown -R 0\:0 /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown [0-9]*\:[0-9]* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chmod [0-7]* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mv /var/lib/machines/* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mkdir -p /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/nsenter -t [0-9]* -m -u -i -n -p -- /bin/bash -c *
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/journalctl -u systemd-nspawn@*.service -n [0-9]* -o short-iso
 ```
 
-All privileged operations (storage management, provisioning, snapshots) go through the `lxspawn-sudo-helper` binary. This binary validates all arguments before executing system commands:
+**Key Security Improvements:**
+- Argument pattern matching (e.g., `[0-9]*` for numeric-only values)
+- Specific chown patterns instead of wildcards
+- Numeric-only chmod patterns
+- Restricted journalctl output format
 
-**Path Restrictions:**
-- All paths must be under allowed directories:
-  - `/var/lib/machines/` (machine rootfs)
-  - `/var/lib/lxspawn/` (machine metadata)
-  - `/etc/systemd/nspawn/` (container configs)
-  - `/etc/systemd/system/` (systemd units)
-- Paths containing `..` are rejected (prevents path traversal)
+**btrfs Operations (when btrfs is detected):**
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume create /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume show /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume list -o /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*/.snapshots/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot /var/lib/machines/* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot /var/lib/machines/*/.snapshots/* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs filesystem usage -b /var/lib/machines
+```
 
-**Machine Name Validation:**
-- Names must match: `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
-- Prevents injection via machine names
+**LVM Operations (when LVM is detected):**
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvs *
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvcreate --name lxspawn-* *
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvcreate --snapshot --name lxspawn-* *
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvconvert --merge */lxspawn-*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvremove -f */lxspawn-*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mkfs.ext4 -q /dev/*/lxspawn-*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mount /dev/*/lxspawn-* /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/umount /var/lib/machines/*
+```
 
-**PID Ownership Validation (nsenter):**
-- Verifies target PID belongs to an lxspawn machine
-- Checks `/proc/<pid>/exe` contains `systemd`
-- Checks `/proc/<pid>/cmdline` contains `systemd-nspawn`
-- Checks `/proc/<pid>/cgroup` contains `machine-*.slice`
+**ZFS Operations (when ZFS is detected):**
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs snapshot lxspawn/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs rollback -r lxspawn/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs destroy lxspawn/*
+```
 
-**LVM Name Restrictions:**
-- LV names must start with `lxspawn-`
-- Prevents operating on non-lxspawn volumes
+**Security Benefits:**
 
-**Subcommand Restrictions:**
-- `btrfs`: only allows `subvolume` and `filesystem usage`
-- `zfs`: only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
-- `mount`/`umount`: only allows mounting lxspawn devices under allowed paths
+1. **Explicit rules**: Each operation has a specific sudoers rule with path and argument restrictions
+2. **No helper binary**: Reduces attack surface by eliminating an additional binary
+3. **Standard approach**: Uses well-understood sudo mechanisms instead of custom validation logic
+4. **Easy to audit**: Sudoers rules are human-readable and can be reviewed independently
 
-This design ensures that even if an attacker gains membership in the `lxspawn` group, they can only perform validated operations on lxspawn-managed resources.
+**Path Handling:**
+
+Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different path depths. For example, to delete both machine rootfs and snapshots:
+```
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
+```
+
+This design ensures that even if an attacker gains membership in the `lxspawn` group, they can only perform operations on lxspawn-managed resources under `/var/lib/machines/`.
 
 ### Filesystem Isolation
 
@@ -1428,45 +1549,52 @@ The `Delete` and `Stop` methods now perform comprehensive cleanup:
 - Ensures clean state for future machine creation
 - Handles crash scenarios gracefully
 
-### 29. Sudo Helper for Privileged Operations
+### 29. Sudoers Rules for Privileged Operations
 
-All privileged operations (storage management, provisioning, snapshots) go through a single privileged helper binary (`lxspawn-sudo-helper`) instead of granting broad sudo access to individual commands.
+All privileged operations (storage management, provisioning, snapshots, logs) use direct sudo calls with specific sudoers rules instead of a helper binary.
 
 **The Problem:**
 
-The original design granted passwordless sudo access to individual commands like `nsenter`, `btrfs`, `mount`, `chown`, `rm`, etc. This created critical security vulnerabilities:
+The original design granted passwordless sudo access to individual commands with broad argument patterns:
+- `sudo rm -rf /var/lib/machines/*` - Could delete any machine
+- `sudo nsenter -t * -m -u -i -n -p -- /bin/bash -c *` - Could execute any command in any namespace
+- `sudo btrfs subvolume *` - Could perform any btrfs operation
+- `sudo journalctl -u *` - Could read any systemd journal
 
-- `sudo nsenter -t 1 -m -u -i -n -p -- /bin/bash` → Full root shell on host
-- `sudo rsync -a /etc/shadow /tmp/` → Read any file on the system
-- `sudo chown attacker:attacker /etc/shadow` → Take ownership of system files
-- `sudo mount -o bind / /tmp/chroot && sudo chroot /tmp/chroot` → Root filesystem access
-- `sudo btrfs subvolume create /anywhere` → Create subvolumes anywhere on the filesystem
+This created security risks because sudoers wildcards (`*`) don't validate arguments, only match patterns.
 
 **The Solution:**
 
-A single sudoers rule for `/usr/libexec/lxspawn/sudo-helper`, a Go binary that validates all arguments before executing system commands:
+Generate specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required operation, with explicit path and argument restrictions:
 
-1. **Path validation** - All paths must be under allowed directories (`/var/lib/machines/`, `/var/lib/lxspawn/`, `/etc/systemd/nspawn/`, `/etc/systemd/system/`)
-2. **Path traversal prevention** - Paths containing `..` are rejected
-3. **Machine name validation** - Names must match strict regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
-4. **PID ownership validation** - `nsenter` calls verify the target PID belongs to an lxspawn machine by checking `/proc/<pid>/exe`, `/proc/<pid>/cmdline`, and `/proc/<pid>/cgroup`
-5. **LVM name restrictions** - LV names must start with `lxspawn-`
-6. **Subcommand restrictions** - `btrfs` only allows `subvolume` and `filesystem usage`; `zfs` only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
+1. **Path-scoped rules** - Each rule targets specific directories:
+   - `/var/lib/machines/*` - Machine rootfs
+   - `/var/lib/machines/*/.snapshots/*` - Snapshot directories
+   - `/dev/*/lxspawn-*` - LVM volumes
+
+2. **Argument-specific rules** - Each rule specifies exact command patterns:
+   - `btrfs subvolume create` vs `btrfs subvolume delete`
+   - `lvcreate --name lxspawn-*` (only lxspawn volumes)
+   - `journalctl -u systemd-nspawn@*.service` (only lxspawn services)
+
+3. **Multiple depth rules** - Sudoers wildcards don't match `/`, so we need separate rules for different path depths:
+   - `/var/lib/machines/*` - Top-level machine directories
+   - `/var/lib/machines/*/.snapshots/*` - Snapshot subdirectories
 
 **Implementation:**
 
-- `cmd/lxspawn-sudo-helper/main.go` - Privileged helper binary with argument validation
-- `internal/deploy/filesystem.go:SudoHelper()` - Helper function that wraps `sudo /usr/libexec/lxspawn/sudo-helper <subcommand> [args...]`
-- All code that previously used `exec.Command("sudo", ...)` now uses `deploy.SudoHelper(...)`
+- `cmd/lxspawn/setup.go:installSudoersRules()` - Generates sudoers rules based on available binaries
+- `internal/deploy/filesystem.go:Sudo()` - Simple wrapper around `exec.Command("sudo", args...)`
+- All privileged operations use `deploy.Sudo()` with specific arguments
 
 **Trade-offs:**
 
-- **Pros:** Minimal attack surface, defense in depth, clear audit trail, prevents privilege escalation
-- **Cons:** Additional binary to maintain, requires `lxspawn setup` to install helper, slightly more complex architecture
+- **Pros:** Simpler architecture, no helper binary to maintain, standard sudo approach, easy to audit
+- **Cons:** More sudoers rules to manage, requires careful path handling, less centralized validation
 
 **Why this approach:**
 
-The sudo-helper pattern is used by other security-conscious tools (e.g., `lxc-checkpoint`, `virsh`). It provides a single point of validation that can be audited and tested independently. Even if an attacker gains membership in the `lxspawn` group, they can only perform validated operations on lxspawn-managed resources.
+Direct sudo calls with specific rules provide security through explicit definitions rather than centralized validation. Each rule is human-readable and can be audited independently. The approach uses well-understood sudo mechanisms instead of custom validation logic. Even if an attacker gains membership in the `lxspawn` group, they can only perform operations on lxspawn-managed resources under `/var/lib/machines/`.
 
 ## Future Enhancements
 
@@ -1481,10 +1609,191 @@ Turnkey templates for common use cases:
 
 ### Cockpit Integration (Phase 5)
 
+**Status:** IN PROGRESS
+
 Framework-agnostic plugin:
 - Thin wrapper over `lxspawn --json` commands
 - Leverage Cockpit's built-in terminal and journal
 - Mirror cockpit-machines UX patterns
+
+#### Plugin Architecture
+
+The Cockpit plugin is located in `cockpit/` and uses React 18+ with TypeScript and PatternFly 5.
+
+**Directory Structure:**
+```
+cockpit/
+├── src/
+│   ├── index.tsx                      # Entry point
+│   ├── app.tsx                        # Main app with routing
+│   ├── manifest.json                  # Cockpit plugin manifest
+│   ├── api/
+│   │   ├── lxspawn.ts                 # API wrapper (all lxspawn commands)
+│   │   └── types.ts                   # TypeScript type definitions
+│   ├── components/
+│   │   ├── MachineList.tsx            # Dashboard with filtering & stats
+│   │   ├── MachineDetailsPage.tsx     # Machine details (overview, usage, volumes, network)
+│   │   ├── CreateMachineWizard.tsx    # Template-based creation wizard
+│   │   ├── cards/
+│   │   │   └── AggregateStatusCards.tsx  # Status cards (total/running/stopped)
+│   │   └── common/
+│   │       └── StateIcon.tsx          # State indicator component
+│   └── utils/
+│       └── format.ts                  # Formatting helpers (bytes, CPU, time)
+├── dist/                              # Built files (deployed to test machine)
+├── package.json                       # Dependencies (React, PatternFly, TypeScript)
+├── tsconfig.json                      # TypeScript configuration
+├── build.js                           # Build script (esbuild)
+└── Makefile                           # Build automation
+```
+
+**Key Components:**
+
+1. **MachineList** - Dashboard showing all machines with:
+   - Real-time CPU/memory usage (polling every 5s)
+   - State indicators (running/stopped/creating)
+   - Filter by name and state
+   - Action menu (start/stop/delete)
+
+2. **MachineDetailsPage** - Detailed view with:
+   - Overview card (state, distro, CPU, memory, network)
+   - Usage card (CPU/memory progress bars)
+   - Volumes card (bind mounts)
+   - Network card (network configuration)
+
+3. **CreateMachineWizard** - Template-based creation:
+   - Step 1: Select template (radio buttons)
+   - Step 2: Configure (machine name)
+   - Step 3: Review (YAML preview)
+   - Uses tested templates from `~/.local/share/lxspawn/templates/`
+
+**API Integration:**
+
+All data flows through `cockpit.spawn(["lxspawn", "command", "--json"])`:
+```typescript
+// Example: List machines
+const machines = await listMachines();
+// Returns: Machine[] (extracted from {version, data})
+
+// Example: Get stats
+const stats = await getMachineStats(name);
+// Returns: {cpu_usage_percent, memory_used_bytes, ...}
+```
+
+**JSON Format:**
+
+lxspawn returns JSON in this format:
+```json
+{
+  "version": "1.0",
+  "data": {
+    "machines": [...]
+  }
+}
+```
+
+The API wrapper extracts the `data` field and returns it directly to components.
+
+**Development Commands:**
+```bash
+# Build plugin
+cd cockpit && npm run build
+
+# Deploy to test machine
+sshpass -p 'PASSWORD' scp -r cockpit/dist/* USER@HOST:~/.local/share/cockpit/lxspawn/
+
+# Watch mode (auto-rebuild on changes)
+cd cockpit && npm run watch
+```
+
+## Security Improvements (2026-10-22)
+
+A comprehensive code inspection identified and fixed 24 issues across critical bugs, security vulnerabilities, dead code, and logic errors.
+
+### Critical Security Fixes
+
+**1. Symlink Path Traversal Protection**
+- **Issue:** Tar extraction validated symlink targets but created symlinks with original unvalidated paths
+- **Fix:** Symlinks now created with validated absolute paths to prevent directory traversal
+- **Location:** `internal/image/fetcher.go:extractTarXz()`
+
+**2. HTTPS-Only Downloads**
+- **Issue:** HTTP downloads allowed, enabling MITM attacks on image downloads and file references
+- **Fix:** All downloads now require HTTPS; HTTP URLs rejected with error
+- **Location:** `internal/image/fetcher.go:download()`
+
+**3. Download Size Limits**
+- **Issue:** No size limit on downloads could exhaust disk space
+- **Fix:** Added 2GB maximum size limit with `io.LimitReader`
+- **Location:** `internal/image/fetcher.go:download()`
+
+**4. State File Permissions**
+- **Issue:** State files (`machines.json`, `snapshots.json`) were world-readable (0644)
+- **Fix:** Changed to owner-only read/write (0600) for sensitive metadata
+- **Location:** `internal/deploy/state.go`, `internal/snapshot/manager.go`
+
+**5. Sudoers Rule Hardening**
+- **Issue:** Overly broad sudoers rules allowed arbitrary arguments
+- **Fix:** Added pattern matching for numeric-only arguments, specific chown/chmod patterns
+- **Location:** `cmd/lxspawn/setup.go:installSudoersRules()`
+
+### Critical Bug Fixes
+
+**1. Edit Command Backup Restore**
+- **Issue:** `lxspawn edit` always reported failure even when backup restore succeeded
+- **Fix:** Added explicit `return nil` after successful backup restore
+- **Location:** `cmd/lxspawn/edit.go`
+
+**2. Triple Template Rendering**
+- **Issue:** Provision scripts rendered templates multiple times, causing parse errors
+- **Fix:** Removed duplicate template rendering in `ExecProvisioner.Provision()`
+- **Location:** `internal/provision/exec.go`
+
+**3. Size Parsing Bug**
+- **Issue:** `ParseSizeToGB` incorrectly calculated megabytes (500M → 1GB instead of 0.5GB)
+- **Fix:** Rewrote size parsing logic with correct unit conversion
+- **Location:** `internal/config/parser.go:ParseSizeToGB()`
+
+### Dead Code Removal
+
+Removed 7 instances of dead code:
+- `reloadMachine()` function (never called)
+- `removeRootfs()`, `isBtrfsSubvolume()`, `removeBtrfsSubvolumeTree()` (replaced by storage backends)
+- Entire `internal/machine/lvm.go` file (replaced by storage backends)
+- `fixRootfsOwnership()` in image package (duplicate of machine package function)
+- `RenderTemplateFile()` (never called)
+- `FormatError()`, `FormatErrorCode()`, `PrintSuccess()` (never called)
+
+### Logic Improvements
+
+**1. CPU Usage Normalization**
+- **Issue:** CPU usage showed percentage of one core, not total system
+- **Fix:** Read `cpu.max` quota and normalize by allocated CPUs
+- **Location:** `internal/machine/manager.go:readCPUUsage()`
+
+**2. State Persistence**
+- **Issue:** `SetMachine()` didn't persist changes to disk
+- **Fix:** Added file locking and disk write to `SetMachine()`
+- **Location:** `internal/deploy/state.go:SetMachine()`
+
+**3. D-Bus Connection Leak**
+- **Issue:** `SystemdManager.Close()` didn't close `sysConn`
+- **Fix:** Added `sysConn.Close()` to prevent connection leak
+- **Location:** `internal/deploy/dbus.go:Close()`
+
+**4. Config Mutation**
+- **Issue:** `compileHooks()` mutated input config, causing issues on reuse
+- **Fix:** Use local copies of hook scripts instead of mutating config
+- **Location:** `internal/compiler/slice.go:compileHooks()`
+
+### Testing
+
+All fixes verified with:
+- `go build ./...` - Successful compilation
+- `go test ./...` - All tests pass
+- Manual testing of critical paths
+
+---
 
 ## Troubleshooting
 

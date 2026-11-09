@@ -306,3 +306,22 @@ func compressTarToXz(t *testing.T, tarPath, outputPath string) {
 		t.Fatalf("xz compression failed: %v", err)
 	}
 }
+
+func TestDownloadRejectsHTTP(t *testing.T) {
+	f := &Fetcher{
+		MachineName: "test",
+		Distro:      "debian",
+		Release:     "bookworm",
+		Arch:        "amd64",
+		TargetDir:   t.TempDir(),
+	}
+
+	// Test that HTTP URLs are rejected
+	_, err := f.download("http://example.com/rootfs.tar.xz")
+	if err == nil {
+		t.Error("expected error for HTTP URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "insecure HTTP") {
+		t.Errorf("expected error to mention 'insecure HTTP', got: %v", err)
+	}
+}

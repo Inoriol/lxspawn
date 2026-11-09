@@ -94,7 +94,7 @@ func isLVM(path string) bool {
 
 	// Check if device is an LVM volume
 
-	cmd = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device)
+	cmd = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
 	output, err = cmd.CombinedOutput()
 	if err != nil {
 		return false
@@ -119,7 +119,7 @@ func getVGName(path string) (string, error) {
 	device := strings.TrimSpace(lines[len(lines)-1])
 
 
-	cmd = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name", device)
+	cmd = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
 	output, err = cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get VG name: %w", err)

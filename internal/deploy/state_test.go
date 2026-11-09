@@ -368,3 +368,34 @@ func TestMultipleMachinesPersistence(t *testing.T) {
 		}
 	}
 }
+
+func TestStateFilePermissions(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "machines.json")
+
+	sm := &StateManager{
+		StateFilePath: statePath,
+		Machines:      make(map[string]MachineInfo),
+	}
+
+	// Register a machine to trigger save
+	err := sm.RegisterMachine(MachineInfo{
+		Name:   "test",
+		Distro: "debian:bookworm",
+	})
+	if err != nil {
+		t.Fatalf("RegisterMachine failed: %v", err)
+	}
+
+	// Check file permissions
+	info, err := os.Stat(statePath)
+	if err != nil {
+		t.Fatalf("failed to stat state file: %v", err)
+	}
+
+	// File should be 0600 (owner read/write only)
+	expectedPerm := os.FileMode(0600)
+	if info.Mode().Perm() != expectedPerm {
+		t.Errorf("state file permissions = %o, want %o", info.Mode().Perm(), expectedPerm)
+	}
+}

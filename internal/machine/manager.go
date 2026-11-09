@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -280,15 +279,20 @@ func (m *Manager) Stop(name string) error {
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
 	if err := m.systemd.StopUnit(unitName); err != nil {
-		logger.Warn(fmt.Sprintf("stop unit warning: %v", err))
+		logger.Debug(fmt.Sprintf("stop unit warning: %v", err))
 		
 		if err := m.systemd.ResetFailedUnit(unitName); err != nil {
-			logger.Warn(fmt.Sprintf("reset failed warning: %v", err))
+			logger.Debug(fmt.Sprintf("reset failed warning: %v", err))
 		}
 		
 		cleanupCmd := exec.Command("machinectl", "terminate", name)
 		if output, err := cleanupCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("failed to stop machine: %w (%s)", err, string(output))
+			logger.Debug(fmt.Sprintf("machinectl terminate warning: %v (%s)", err, string(output)))
+			
+			systemctlCmd := deploy.Sudo("systemctl", "stop", unitName)
+			if output, err := systemctlCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("failed to stop machine: %w (%s)", err, string(output))
+			}
 		}
 	}
 
@@ -306,16 +310,16 @@ func (m *Manager) Delete(name string) error {
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
 	
 	if err := m.systemd.StopUnit(unitName); err != nil {
-		logger.Warn(fmt.Sprintf("failed to stop machine (may already be stopped): %v", err))
+		logger.Debug(fmt.Sprintf("stop unit warning (may already be stopped): %v", err))
 	}
 	
 	if err := m.systemd.ResetFailedUnit(unitName); err != nil {
-		logger.Warn(fmt.Sprintf("failed to reset failed state (may not be in failed state): %v", err))
+		logger.Debug(fmt.Sprintf("reset failed warning (may not be in failed state): %v", err))
 	}
 	
 	cleanupCmd := exec.Command("machinectl", "terminate", name)
 	if output, err := cleanupCmd.CombinedOutput(); err != nil {
-		logger.Warn(fmt.Sprintf("machinectl terminate warning: %v (%s)", err, string(output)))
+		logger.Debug(fmt.Sprintf("machinectl terminate warning (may already be terminated): %v (%s)", err, string(output)))
 	}
 
 	var paths []string
@@ -345,61 +349,6 @@ func (m *Manager) Delete(name string) error {
 	return nil
 }
 
-func removeRootfs(rootfsPath string) error {
-	if isBtrfsSubvolume(rootfsPath) {
-		return removeBtrfsSubvolumeTree(rootfsPath)
-	}
-
-	cmd := deploy.SudoHelper("rm-rf", rootfsPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("rm -rf failed: %w (%s)", err, string(output))
-	}
-	return nil
-}
-
-func isBtrfsSubvolume(path string) bool {
-	out, err := exec.Command("sudo", "btrfs", "subvolume", "show", path).CombinedOutput()
-	if err != nil {
-		return false
-	}
-	return !strings.Contains(string(out), "Not a Btrfs subvolume") && !strings.Contains(string(out), "ERROR")
-}
-
-func removeBtrfsSubvolumeTree(rootfsPath string) error {
-	out, err := exec.Command("sudo", "btrfs", "subvolume", "list", "-o", rootfsPath).Output()
-	if err == nil {
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-		var subvols []string
-		for _, line := range lines {
-			if line == "" {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) >= 9 {
-				subvolPath := filepath.Join("/", fields[len(fields)-1])
-				subvols = append(subvols, subvolPath)
-			}
-		}
-
-		sort.Sort(sort.Reverse(sort.StringSlice(subvols)))
-		for _, subvol := range subvols {
-			logger.Info(fmt.Sprintf("Deleting child subvolume: %s", subvol))
-			cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", subvol)
-			if output, err := cmd.CombinedOutput(); err != nil {
-				return fmt.Errorf("failed to delete child subvolume %s: %w (%s)", subvol, err, string(output))
-			}
-		}
-	}
-
-	logger.Info(fmt.Sprintf("Deleting root subvolume: %s", rootfsPath))
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", rootfsPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to delete root subvolume: %w (%s)", err, string(output))
-	}
-
-	return nil
-}
-
 func (m *Manager) Shell(name string) error {
 	if _, exists := m.state.GetMachine(name); !exists {
 		return fmt.Errorf("machine '%s' not found", name)
@@ -417,9 +366,16 @@ func (m *Manager) Exec(name string, command []string) error {
 		return fmt.Errorf("machine '%s' not found", name)
 	}
 
+	leaderPID, err := m.systemd.GetMachineLeader(name)
+	if err != nil {
+		return fmt.Errorf("failed to get leader PID: %w", err)
+	}
+
 	shellCmd := shellQuoteArgs(command)
-	args := []string{"shell", name, "/bin/bash", "-c", shellCmd}
-	cmd := exec.Command("machinectl", args...)
+	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
+
+	args := []string{"nsenter", "-t", fmt.Sprintf("%d", leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", envScript}
+	cmd := deploy.Sudo(args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -476,7 +432,7 @@ func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
 	}
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
-	cmd := deploy.SudoHelper("journalctl", "-u", unitName, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso")
+	cmd := deploy.Sudo("journalctl", "-u", unitName, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get logs: %w", err)
@@ -687,7 +643,7 @@ func isPopulatedRootfs(path string) bool {
 }
 
 func fixRootfsOwnership(rootfsPath string) error {
-	cmd := deploy.SudoHelper("chown", "-R", "0:0", rootfsPath)
+	cmd := deploy.Sudo("chown", "-R", "0:0", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
@@ -706,8 +662,7 @@ type MachineStats struct {
 }
 
 func (m *Manager) GetStats(name string) (*MachineStats, error) {
-	info, exists := m.state.GetMachine(name)
-	if !exists {
+	if _, exists := m.state.GetMachine(name); !exists {
 		return nil, fmt.Errorf("machine '%s' not found", name)
 	}
 
@@ -725,7 +680,10 @@ func (m *Manager) GetStats(name string) (*MachineStats, error) {
 		return stats, nil
 	}
 
-	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/machine.slice/machine-%s.slice", name)
+	cgroupPath, err := m.getMachineCgroupPath(name)
+	if err != nil {
+		return stats, nil
+	}
 
 	if cpuUsage, err := readCPUUsage(cgroupPath); err == nil {
 		stats.CPUUsagePercent = cpuUsage
@@ -744,9 +702,34 @@ func (m *Manager) GetStats(name string) (*MachineStats, error) {
 		stats.DiskTotalBytes = diskTotal
 	}
 
-	_ = info
-
 	return stats, nil
+}
+
+func (m *Manager) getMachineCgroupPath(name string) (string, error) {
+	leader, err := m.systemd.GetMachineLeader(name)
+	if err != nil {
+		return "", fmt.Errorf("failed to get machine leader: %w", err)
+	}
+
+	cgroupFile := fmt.Sprintf("/proc/%d/cgroup", leader)
+	data, err := os.ReadFile(cgroupFile)
+	if err != nil {
+		return "", fmt.Errorf("failed to read cgroup file: %w", err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.Contains(line, "machine.slice") {
+			parts := strings.Split(line, "::")
+			if len(parts) == 2 {
+				cgroupPath := parts[1]
+				cgroupPath = strings.TrimSuffix(cgroupPath, "/systemd-nspawn@"+name+".service/payload/init.scope")
+				cgroupPath = strings.TrimSuffix(cgroupPath, "/systemd-nspawn@"+name+".service")
+				return "/sys/fs/cgroup" + cgroupPath, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("machine cgroup not found")
 }
 
 func readCPUUsage(cgroupPath string) (float64, error) {
@@ -791,6 +774,18 @@ func readCPUUsage(cgroupPath string) (float64, error) {
 
 	intervalUsec := int64(100000)
 	cpuPercent := float64(deltaUsec) / float64(intervalUsec) * 100.0
+
+	// Normalize by number of allocated CPUs if quota is set
+	cpuMaxPath := filepath.Join(cgroupPath, "cpu.max")
+	if data, err := os.ReadFile(cpuMaxPath); err == nil {
+		var quota, period int64
+		if n, _ := fmt.Sscanf(string(data), "%d %d", &quota, &period); n == 2 && quota > 0 && period > 0 {
+			numCPUs := float64(quota) / float64(period)
+			if numCPUs > 0 {
+				cpuPercent = cpuPercent / numCPUs
+			}
+		}
+	}
 
 	return cpuPercent, nil
 }

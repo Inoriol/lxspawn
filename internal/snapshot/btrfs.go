@@ -33,7 +33,10 @@ func (b *BtrfsBackend) CreateSnapshot(machine, snapName, rootfsPath string) erro
 
 	snapDir := b.snapshotDir(rootfsPath)
 	if err := os.MkdirAll(snapDir, 0755); err != nil {
-		return fmt.Errorf("failed to create snapshot directory: %w", err)
+		cmd := deploy.Sudo("mkdir", "-p", snapDir)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to create snapshot directory: %w (%s)", err, string(output))
+		}
 	}
 
 	snapPath := filepath.Join(snapDir, snapName)
@@ -41,7 +44,7 @@ func (b *BtrfsBackend) CreateSnapshot(machine, snapName, rootfsPath string) erro
 		return fmt.Errorf("snapshot '%s' already exists", snapName)
 	}
 
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "snapshot", "-r", rootfsPath, snapPath)
+	cmd := deploy.Sudo("btrfs", "subvolume", "snapshot", "-r", rootfsPath, snapPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create btrfs snapshot: %w (%s)", err, string(output))
 	}
@@ -56,7 +59,7 @@ func (b *BtrfsBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo
 		return []SnapshotInfo{}, nil
 	}
 
-	out, err := deploy.SudoHelper("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
+	out, err := deploy.Sudo("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list btrfs subvolumes: %w", err)
 	}
@@ -105,7 +108,7 @@ func (b *BtrfsBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo
 }
 
 func (b *BtrfsBackend) listChildSubvolumes(rootfsPath string) ([]string, error) {
-	out, err := deploy.SudoHelper("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
+	out, err := deploy.Sudo("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list child subvolumes: %w", err)
 	}
@@ -136,14 +139,14 @@ func (b *BtrfsBackend) deleteSubvolumeTree(rootfsPath string) error {
 
 	for _, child := range children {
 		logger.Info(fmt.Sprintf("Deleting child subvolume: %s", child))
-		cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", child)
+		cmd := deploy.Sudo("btrfs", "subvolume", "delete", child)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("failed to delete child subvolume %s: %w (%s)", child, err, string(output))
 		}
 	}
 
 	logger.Info(fmt.Sprintf("Deleting root subvolume: %s", rootfsPath))
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", rootfsPath)
+	cmd := deploy.Sudo("btrfs", "subvolume", "delete", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete root subvolume: %w (%s)", err, string(output))
 	}
@@ -169,22 +172,22 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName, rootfsPath string) er
 		}
 	}
 
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "snapshot", snapPath, tempPath)
+	cmd := deploy.Sudo("btrfs", "subvolume", "snapshot", snapPath, tempPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create writable snapshot for rollback: %w (%s)", err, string(output))
 	}
 
 	if err := b.deleteSubvolumeTree(rootfsPath); err != nil {
-		deploy.SudoHelper("btrfs", "subvolume", "delete", tempPath)
+		deploy.Sudo("btrfs", "subvolume", "delete", tempPath)
 		return fmt.Errorf("failed to delete old rootfs: %w", err)
 	}
 
-	cmd = deploy.SudoHelper("mv", tempPath, rootfsPath)
+	cmd = deploy.Sudo("mv", tempPath, rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to rename restored snapshot: %w (%s)", err, string(output))
 	}
 
-	cmd = deploy.SudoHelper("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), rootfsPath)
+	cmd = deploy.Sudo("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("chown warning: %v (%s)", err, string(output)))
 	}
@@ -201,7 +204,7 @@ func (b *BtrfsBackend) DeleteSnapshot(machine, snapName, rootfsPath string) erro
 		return fmt.Errorf("snapshot '%s' does not exist", snapName)
 	}
 
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "delete", snapPath)
+	cmd := deploy.Sudo("btrfs", "subvolume", "delete", snapPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to delete btrfs snapshot: %w (%s)", err, string(output))
 	}

@@ -1,8 +1,6 @@
 package provision
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -193,31 +191,6 @@ func TestRenderTemplateNilParam(t *testing.T) {
 	}
 	if got != "<no value>" {
 		t.Errorf("got %q, want %q", got, "<no value>")
-	}
-}
-
-func TestRenderTemplateFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "template.txt")
-	if err := os.WriteFile(path, []byte("name={{.Name}} distro={{.Distro}}"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := testContext()
-	got, err := RenderTemplateFile(path, ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "name=myserver distro=debian:bookworm" {
-		t.Errorf("got %q", got)
-	}
-}
-
-func TestRenderTemplateFileNotFound(t *testing.T) {
-	ctx := testContext()
-	_, err := RenderTemplateFile("/nonexistent/file.txt", ctx)
-	if err == nil {
-		t.Fatal("expected error for missing file")
 	}
 }
 

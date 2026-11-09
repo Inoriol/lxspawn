@@ -35,7 +35,7 @@ func (l *LVMBackend) getMachineLVInfo(rootfsPath string) (vgName, lvName string,
 
 	device := strings.TrimSpace(lines[len(lines)-1])
 
-	out, err = deploy.SudoHelper("lvs", "--noheadings", "-o", "vg_name,lv_name", device).Output()
+	out, err = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name,lv_name", device).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get LVM info for %s: %w", device, err)
 	}
@@ -58,12 +58,12 @@ func (l *LVMBackend) CreateSnapshot(machine, snapName, rootfsPath string) error 
 
 	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
 
-	existing, err := deploy.SudoHelper("lvs", "--noheadings", "-o", "lv_name", fmt.Sprintf("%s/%s", vgName, snapLVName)).CombinedOutput()
+	existing, err := deploy.Sudo("lvs", "--noheadings", "-o", "lv_name", fmt.Sprintf("%s/%s", vgName, snapLVName)).CombinedOutput()
 	if err == nil && strings.TrimSpace(string(existing)) != "" {
 		return fmt.Errorf("snapshot '%s' already exists", snapName)
 	}
 
-	cmd := deploy.SudoHelper("lvcreate", "--snapshot", "--name", snapLVName, "--size", "512M", fmt.Sprintf("%s/%s", vgName, lvName))
+	cmd := deploy.Sudo("lvcreate", "--snapshot", "--name", snapLVName, "--size", "512M", fmt.Sprintf("%s/%s", vgName, lvName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create LVM snapshot: %w (%s)", err, string(output))
 	}
@@ -78,7 +78,7 @@ func (l *LVMBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo, 
 		return nil, err
 	}
 
-	out, err := deploy.SudoHelper("lvs", "--noheadings", "-o", "lv_name,lv_time,lv_size", "--select", fmt.Sprintf("vg_name=%s", vgName)).Output()
+	out, err := deploy.Sudo("lvs", "--noheadings", "-o", "lv_name,lv_time,lv_size", "--select", fmt.Sprintf("vg_name=%s", vgName)).Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list LVM snapshots: %w", err)
 	}
@@ -132,7 +132,7 @@ func (l *LVMBackend) RollbackSnapshot(machine, snapName, rootfsPath string) erro
 
 	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
 
-	cmd := deploy.SudoHelper("lvconvert", "--merge", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	cmd := deploy.Sudo("lvconvert", "--merge", fmt.Sprintf("%s/%s", vgName, snapLVName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to merge LVM snapshot: %w (%s)", err, string(output))
 	}
@@ -142,7 +142,7 @@ func (l *LVMBackend) RollbackSnapshot(machine, snapName, rootfsPath string) erro
 }
 
 func (l *LVMBackend) isSnapshotMerging(vgName, snapLVName string) bool {
-	cmd := deploy.SudoHelper("lvs", "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	cmd := deploy.Sudo("lvs", "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", vgName, snapLVName))
 	out, err := cmd.Output()
 	if err != nil {
 		return false
@@ -171,7 +171,7 @@ func (l *LVMBackend) DeleteSnapshot(machine, snapName, rootfsPath string) error 
 			"Wait for merge to complete (machine restart required), then retry", snapName)
 	}
 
-	cmd := deploy.SudoHelper("lvremove", "-f", fmt.Sprintf("%s/%s", vgName, snapLVName))
+	cmd := deploy.Sudo("lvremove", "-f", fmt.Sprintf("%s/%s", vgName, snapLVName))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		outputStr := string(output)
 		if strings.Contains(outputStr, "merging") || strings.Contains(outputStr, "merge") {

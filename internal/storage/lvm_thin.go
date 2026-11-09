@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -55,7 +54,7 @@ func (l *LVMThinBackend) CreateMachine(name string, sizeGB int) error {
 
 	// Create thin volume
 
-	cmd := deploy.SudoHelper("lvcreate",
+	cmd := deploy.Sudo("lvcreate",
 		"--type", "thin",
 		"--name", lvName,
 		"--virtualsize", fmt.Sprintf("%dG", sizeGB),
@@ -69,35 +68,35 @@ func (l *LVMThinBackend) CreateMachine(name string, sizeGB int) error {
 	// Format with ext4
 	lvPath := fmt.Sprintf("/dev/%s/%s", l.vgName, lvName)
 
-	cmd = deploy.SudoHelper("mkfs-ext4", "-q", lvPath)
+	cmd = deploy.Sudo("mkfs.ext4", "-q", lvPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Clean up LV
-		deploy.SudoHelper("lvremove", "-f", lvPath).Run()
+		deploy.Sudo("lvremove", "-f", lvPath).Run()
 		return fmt.Errorf("failed to format %s: %w (%s)", lvPath, err, string(output))
 	}
 
 	// Create mount point
 	if err := os.MkdirAll(machinePath, 0755); err != nil {
-		deploy.SudoHelper("lvremove", "-f", lvPath).Run()
+		deploy.Sudo("lvremove", "-f", lvPath).Run()
 		return fmt.Errorf("failed to create mount point %s: %w", machinePath, err)
 	}
 
 	// Mount
-	cmd = deploy.SudoHelper("mount", lvPath, machinePath)
+	cmd = deploy.Sudo("mount", lvPath, machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		os.Remove(machinePath)
-		deploy.SudoHelper("lvremove", "-f", lvPath).Run()
+		deploy.Sudo("lvremove", "-f", lvPath).Run()
 		return fmt.Errorf("failed to mount %s at %s: %w (%s)", lvPath, machinePath, err, string(output))
 	}
 
 	// Set ownership (use sudo since freshly mounted ext4 is root-owned)
-	cmd = deploy.SudoHelper("chown", "root:lxspawn", machinePath)
+	cmd = deploy.Sudo("chown", "root:lxspawn", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("failed to set ownership on %s: %v (%s)", machinePath, err, string(output)))
 	}
 
 	// Set permissions (use sudo since freshly mounted ext4 is root-owned)
-	cmd = deploy.SudoHelper("chmod", "0775", machinePath)
+	cmd = deploy.Sudo("chmod", "0775", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("failed to set permissions on %s: %v (%s)", machinePath, err, string(output)))
 	}
@@ -113,7 +112,7 @@ func (l *LVMThinBackend) DeleteMachine(name string) error {
 	lvPath := fmt.Sprintf("/dev/%s/%s", l.vgName, lvName)
 
 	// Unmount
-	cmd := deploy.SudoHelper("umount", machinePath)
+	cmd := deploy.Sudo("umount", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if !strings.Contains(string(output), "not mounted") {
 			logger.Warn(fmt.Sprintf("failed to unmount %s: %v (%s)", machinePath, err, string(output)))
@@ -127,7 +126,7 @@ func (l *LVMThinBackend) DeleteMachine(name string) error {
 
 	// Remove LV
 
-	cmd = deploy.SudoHelper("lvremove", "-f", lvPath)
+	cmd = deploy.Sudo("lvremove", "-f", lvPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove thin volume %s: %w (%s)", lvPath, err, string(output))
 	}
@@ -143,7 +142,7 @@ func (l *LVMThinBackend) MachineExists(name string) (bool, error) {
 
 	// Check if LV exists
 
-	cmd := deploy.SudoHelper("lvs", fmt.Sprintf("%s/%s", l.vgName, lvName))
+	cmd := deploy.Sudo("lvs", fmt.Sprintf("%s/%s", l.vgName, lvName))
 	if err := cmd.Run(); err != nil {
 		return false, nil
 	}
@@ -162,143 +161,10 @@ func (l *LVMThinBackend) GetMachinePath(name string) string {
 	return filepath.Join(l.basePath, name)
 }
 
-// CreateSnapshot creates an LVM thin snapshot
-func (l *LVMThinBackend) CreateSnapshot(machine, snapName string) error {
-	lvName := fmt.Sprintf("lxspawn-%s", machine)
-	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
-
-	// Check if machine exists
-	exists, err := l.MachineExists(machine)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("machine %s does not exist", machine)
-	}
-
-	// Check if snapshot already exists
-
-	cmd := deploy.SudoHelper("lvs", fmt.Sprintf("%s/%s", l.vgName, snapLVName))
-	if err := cmd.Run(); err == nil {
-		return fmt.Errorf("snapshot %s already exists", snapName)
-	}
-
-	// Create thin snapshot
-
-	cmd = deploy.SudoHelper("lvcreate",
-		"--snapshot",
-		"--name", snapLVName,
-		fmt.Sprintf("%s/%s", l.vgName, lvName))
-
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to create thin snapshot: %w (%s)", err, string(output))
-	}
-
-	logger.Info(fmt.Sprintf("Created thin snapshot %s for machine %s", snapName, machine))
-	return nil
-}
-
-// DeleteSnapshot deletes a thin snapshot
-func (l *LVMThinBackend) DeleteSnapshot(machine, snapName string) error {
-	lvName := fmt.Sprintf("lxspawn-%s", machine)
-	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
-
-	// Check if snapshot is merging
-	if l.isSnapshotMerging(snapLVName) {
-		return fmt.Errorf("snapshot %s is currently merging and cannot be deleted. Wait for merge to complete (machine restart required), then retry", snapName)
-	}
-
-	// Remove snapshot LV
-
-	cmd := deploy.SudoHelper("lvremove", "-f", fmt.Sprintf("%s/%s", l.vgName, snapLVName))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		outputStr := string(output)
-		if strings.Contains(outputStr, "merging") || strings.Contains(outputStr, "merge") {
-			return fmt.Errorf("snapshot %s is currently merging and cannot be deleted. Wait for merge to complete (machine restart required), then retry", snapName)
-		}
-		return fmt.Errorf("failed to delete thin snapshot %s: %w (%s)", snapLVName, err, outputStr)
-	}
-
-	logger.Info(fmt.Sprintf("Deleted thin snapshot %s for machine %s", snapName, machine))
-	return nil
-}
-
-// ListSnapshots lists all thin snapshots for a machine
-func (l *LVMThinBackend) ListSnapshots(machine string) ([]SnapshotInfo, error) {
-	lvName := fmt.Sprintf("lxspawn-%s", machine)
-	prefix := fmt.Sprintf("%s-snap-", lvName)
-
-
-	cmd := deploy.SudoHelper("lvs",
-		"--noheadings",
-		"-o", "lv_name,lv_time",
-		"--select", fmt.Sprintf("vg_name=%s", l.vgName))
-
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to list LVM volumes: %w", err)
-	}
-
-	var snapshots []SnapshotInfo
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-
-		lv := strings.TrimSpace(fields[0])
-		if !strings.HasPrefix(lv, prefix) {
-			continue
-		}
-
-		snapName := strings.TrimPrefix(lv, prefix)
-		createdAt := time.Now()
-		if t, err := time.Parse("2006-01-02 15:04:05 -0700", fields[1]); err == nil {
-			createdAt = t
-		}
-
-		snapshots = append(snapshots, SnapshotInfo{
-			Name:      snapName,
-			Machine:   machine,
-			Backend:   string(BackendLVMThin),
-			CreatedAt: createdAt,
-			Location:  fmt.Sprintf("%s/%s", l.vgName, lv),
-		})
-	}
-
-	return snapshots, nil
-}
-
-// RollbackSnapshot rolls back a machine to a thin snapshot
-func (l *LVMThinBackend) RollbackSnapshot(machine, snapName string) error {
-	lvName := fmt.Sprintf("lxspawn-%s", machine)
-	snapLVName := fmt.Sprintf("%s-snap-%s", lvName, snapName)
-
-	// Merge snapshot
-
-	cmd := deploy.SudoHelper("lvconvert",
-		"--merge",
-		fmt.Sprintf("%s/%s", l.vgName, snapLVName))
-
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to merge thin snapshot: %w (%s)", err, string(output))
-	}
-
-	logger.Info(fmt.Sprintf("Machine %s will be rolled back to thin snapshot %s on next activation", machine, snapName))
-	return nil
-}
-
 // GetUsage returns LVM thin pool usage
 func (l *LVMThinBackend) GetUsage() (int64, int64, error) {
 
-	cmd := deploy.SudoHelper("lvs",
+	cmd := deploy.Sudo("lvs",
 		"--noheadings",
 		"--nosuffix",
 		"--units", "b",
@@ -323,27 +189,10 @@ func (l *LVMThinBackend) GetUsage() (int64, int64, error) {
 	return usedBytes, int64(totalBytes), nil
 }
 
-// isSnapshotMerging checks if a snapshot is in merging state
-func (l *LVMThinBackend) isSnapshotMerging(snapLVName string) bool {
-
-	cmd := deploy.SudoHelper("lvs", "--noheadings", "-o", "lv_attr", fmt.Sprintf("%s/%s", l.vgName, snapLVName))
-	out, err := cmd.Output()
-	if err != nil {
-		return false
-	}
-
-	attrs := strings.TrimSpace(string(out))
-	if len(attrs) < 1 {
-		return false
-	}
-
-	return attrs[0] == 'v'
-}
-
 // verifyThinPool checks if a thin pool exists
 func verifyThinPool(vgName, poolName string) error {
 
-	cmd := deploy.SudoHelper("lvs",
+	cmd := deploy.Sudo("lvs",
 		"--noheadings",
 		"-o", "lv_attr",
 		fmt.Sprintf("%s/%s", vgName, poolName))
@@ -369,7 +218,7 @@ func verifyThinPool(vgName, poolName string) error {
 // DetectThinPool attempts to find a thin pool in the VG
 func DetectThinPool(vgName string) (string, error) {
 
-	cmd := deploy.SudoHelper("lvs",
+	cmd := deploy.Sudo("lvs",
 		"--noheadings",
 		"-o", "lv_name,lv_attr",
 		"--select", fmt.Sprintf("vg_name=%s", vgName))

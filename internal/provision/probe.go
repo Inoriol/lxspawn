@@ -58,7 +58,7 @@ func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext)
 		}
 
 		args := []string{"nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", script}
-		cmd := deploy.SudoHelper(args...)
+		cmd := deploy.Sudo(args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 

@@ -36,7 +36,7 @@ This creates:
 - `lxspawn` group for passwordless management
 - Directory permissions for `/var/lib/lxspawn`, `/etc/systemd/nspawn`, etc.
 - Polkit rules for systemd unit management (scoped to lxspawn machines only)
-- A single sudoers rule for `/usr/libexec/lxspawn/sudo-helper` — a privileged helper binary that validates all arguments before executing system commands (path validation, machine name validation, PID ownership checks)
+- Sudoers rules for privileged operations (path validation, machine name validation, PID ownership checks)
 
 Add your user to the group:
 
@@ -566,6 +566,46 @@ All state is filesystem-based:
 - `~/.local/share/lxspawn/machines.json` - Machine registry
 - `~/.local/share/lxspawn/<name>/snapshots.json` - Snapshot metadata
 
+## Security Model
+
+lxspawn implements multiple layers of security:
+
+### Privilege Model
+
+After `lxspawn setup`, users in the `lxspawn` group can:
+- Create/start/stop/delete machines without sudo
+- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
+- Reload the systemd daemon (required for `lxspawn start`)
+- Cannot modify other systemd units
+- Execute privileged operations via specific sudoers rules with path and argument restrictions
+
+### Security Features
+
+**Container Isolation:**
+- `NoNewPrivileges=yes` (default) - Prevents privilege escalation
+- `SystemCallFilter` - Seccomp filtering (enabled by default)
+- Capability dropping - Dangerous capabilities dropped by default
+- Path validation - Volumes cannot expose sensitive system paths
+- Symlink protection - Tar extraction validates symlink targets
+
+**File Security:**
+- State files (`machines.json`, `snapshots.json`) stored with `0600` permissions (owner-only read/write)
+- Atomic file writes prevent corruption
+- SELinux context automatically applied to hook scripts
+
+**Network Security:**
+- HTTPS-only downloads - Image downloads and file references require HTTPS
+- Download size limits - Prevents disk exhaustion attacks (2GB max for images)
+- Digest verification - File references support SHA256 digest validation
+- Port validation - Port forwarding restricted to valid ranges (1-65535)
+
+**Sudoers Hardening:**
+- Argument pattern matching - Numeric-only patterns prevent injection
+- Path restrictions - All operations scoped to `/var/lib/machines/*`
+- Command-specific rules - Each operation has explicit sudoers rule
+
+See [SPEC.md](SPEC.md) for complete security configuration options.
+
 ## Privilege Model
 
 After `lxspawn setup`, users in the `lxspawn` group can:
@@ -573,18 +613,50 @@ After `lxspawn setup`, users in the `lxspawn` group can:
 - Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
 - Reload the systemd daemon (required for `lxspawn start`)
 - Cannot modify other systemd units
-- Execute privileged operations only through the `sudo-helper` binary, which validates all arguments
+- Execute privileged operations via specific sudoers rules with path and argument restrictions
 
-### Sudo Helper
+### Sudoers Rules
 
-All privileged operations (storage management, provisioning, snapshots) go through a single privileged helper binary at `/usr/libexec/lxspawn/sudo-helper`. This binary validates:
+The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions rather than a helper binary.
 
-- **Path restrictions**: All paths must be under `/var/lib/machines/`, `/var/lib/lxspawn/`, `/etc/systemd/nspawn/`, or `/etc/systemd/system/`
-- **No path traversal**: Paths containing `..` are rejected
-- **Machine name validation**: Names must match the strict regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
-- **PID ownership**: `nsenter` calls verify the target PID belongs to an lxspawn machine (checks `/proc/<pid>/exe`, cmdline, and cgroup)
-- **LVM name restrictions**: LV names must start with `lxspawn-`
-- **Subcommand restrictions**: `btrfs` only allows `subvolume` and `filesystem usage`; `zfs` only allows `snapshot`, `rollback`, `destroy` on lxspawn datasets
+**Core operations:**
+- `rm -rf /var/lib/machines/*` - Delete machine storage
+- `chown root\:lxspawn /var/lib/machines/*` - Change ownership to root:lxspawn
+- `chown -R 0\:0 /var/lib/machines/*` - Recursively change ownership to root:root
+- `chown [0-9]*\:[0-9]* /var/lib/machines/*` - Change ownership to numeric UID:GID
+- `chmod [0-7]* /var/lib/machines/*` - Change permissions (numeric only)
+- `mv /var/lib/machines/* /var/lib/machines/*` - Move/rename machine directories
+- `mkdir -p /var/lib/machines/*` - Create machine and snapshot directories
+- `nsenter -t [0-9]* -m -u -i -n -p -- /bin/bash -c *` - Execute commands in container namespaces (PID must be numeric)
+- `journalctl -u systemd-nspawn@*.service -n [0-9]* -o short-iso` - Read container logs (lines must be numeric)
+
+**btrfs operations (when btrfs is detected):**
+- `btrfs subvolume create/delete/show /var/lib/machines/*` - Manage machine subvolumes
+- `btrfs subvolume delete /var/lib/machines/*/.snapshots/*` - Delete snapshot subvolumes
+- `btrfs subvolume list -o /var/lib/machines/*` - List child subvolumes
+- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*` - Create read-only snapshots
+- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*/.snapshots/*` - Create snapshots in .snapshots directory
+- `btrfs subvolume snapshot /var/lib/machines/* /var/lib/machines/*` - Create writable snapshots
+- `btrfs subvolume snapshot /var/lib/machines/*/.snapshots/* /var/lib/machines/*` - Restore from snapshots
+- `btrfs filesystem usage -b /var/lib/machines` - Check filesystem usage
+
+**LVM operations (when LVM is detected):**
+- `lvs --noheadings *` - List logical volumes (with noheadings flag)
+- `lvs */lxspawn-*` - List lxspawn logical volumes
+- `lvcreate --name lxspawn-* *` - Create thin volumes
+- `lvcreate --snapshot --name lxspawn-* *` - Create LVM snapshots
+- `lvconvert --merge */lxspawn-*` - Merge snapshots
+- `lvremove -f */lxspawn-*` - Remove logical volumes
+- `mkfs.ext4 -q /dev/*/lxspawn-*` - Format volumes
+- `mount /dev/*/lxspawn-* /var/lib/machines/*` - Mount volumes
+- `umount /var/lib/machines/*` - Unmount volumes
+
+**ZFS operations (when ZFS is detected):**
+- `zfs snapshot lxspawn/*` - Create ZFS snapshots
+- `zfs rollback -r lxspawn/*` - Rollback to snapshots
+- `zfs destroy lxspawn/*` - Destroy snapshots
+
+Each rule is scoped to specific paths and arguments with pattern matching, preventing privilege escalation while allowing necessary operations. Argument patterns use regex-like wildcards (e.g., `[0-9]*` for numeric values only).
 
 Commands that require group membership:
 - `create`, `launch`, `start`, `stop`, `delete`
@@ -636,7 +708,7 @@ lxspawn automatically detects and uses the best storage backend based on your fi
 - **Features:** Simple directory-based storage
 - **Works on:** Any filesystem (ext4, xfs, etc.)
 - **Limitations:** No snapshot support, less efficient than btrfs or LVM
-- **Note:** Uses the sudo-helper for deletion (handles root-owned files from container namespace)
+- **Note:** Uses sudo for deletion to handle root-owned files from container namespace
 
 ### Automatic Selection
 lxspawn selects the backend automatically:
@@ -653,7 +725,7 @@ The selected backend is logged at startup: `Using storage backend: <type>`
 
 Intermittent "Failed to get shell PTY: Protocol error" or "There is no system bus in container" when using `lxspawn shell` or post-boot provisioning.
 
-**Fixed:** Post-boot provisioning and readiness probes now use `nsenter` for non-interactive execution, which avoids PTY allocation issues entirely. Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
+**Fixed:** Post-boot provisioning, readiness probes, and `lxspawn exec` now use `nsenter` for non-interactive execution, which avoids PTY allocation issues entirely. Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
 
 ### Macvlan Host Visibility
 
@@ -716,8 +788,12 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 - [x] Secure cache directory permissions (0700)
 - [x] Resource leak fixes (defer mgr.Close())
 
-**Phase 5 (V2+) - Cockpit Web UI:**
-- [ ] Cockpit web UI plugin
+**Phase 5 (V2+) - Cockpit Web UI - IN PROGRESS:**
+- [ ] Cockpit web UI plugin (dashboard, details page, create wizard)
+- [ ] Template-based machine creation
+- [ ] Real-time stats monitoring
+- [ ] Machine lifecycle management (start/stop/delete)
+- [ ] Configuration editing (CPU, memory, network, volumes)
 
 **Phase 6 (V2+) - ZFS/LVM Snapshots - DEFERRED:**
 - [ ] Set up fast SSD-based test environment for LVM testing

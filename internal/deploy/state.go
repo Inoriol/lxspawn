@@ -201,8 +201,15 @@ func (sm *StateManager) ListMachines() []MachineInfo {
 	return machines
 }
 
-func (sm *StateManager) SetMachine(name string, info MachineInfo) {
+func (sm *StateManager) SetMachine(name string, info MachineInfo) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	if err := sm.lock(); err != nil {
+		return err
+	}
+	defer sm.unlock()
+
 	sm.Machines[name] = info
+	return sm.save()
 }

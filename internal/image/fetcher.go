@@ -21,6 +21,8 @@ import (
 
 const lxcImageBaseURL = "https://images.linuxcontainers.org/images"
 
+const maxDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GB
+
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
 }
@@ -101,7 +103,7 @@ func (f *Fetcher) prepareTargetDir() error {
 	// Check if directory already exists (created by storage backend)
 	if _, err := os.Stat(f.TargetDir); err == nil {
 		// Directory exists, chown to current user so extraction works
-		cmd := deploy.SudoHelper("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), f.TargetDir)
+		cmd := deploy.Sudo("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), f.TargetDir)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 		}
@@ -123,24 +125,16 @@ func (f *Fetcher) prepareTargetDir() error {
 }
 
 func createBtrfsSubvolume(path string) error {
-	cmd := deploy.SudoHelper("btrfs", "subvolume", "create", path)
+	cmd := deploy.Sudo("btrfs", "subvolume", "create", path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("btrfs subvolume create failed: %w (%s)", err, string(output))
 	}
 	
-	cmd = deploy.SudoHelper("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), path)
+	cmd = deploy.Sudo("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
 	
-	return nil
-}
-
-func fixRootfsOwnership(rootfsPath string) error {
-	cmd := deploy.SudoHelper("chown", "-R", "0:0", rootfsPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
-	}
 	return nil
 }
 
@@ -193,6 +187,10 @@ func (f *Fetcher) getLatestDate() (string, error) {
 }
 
 func (f *Fetcher) download(url string) (string, error) {
+	if strings.HasPrefix(url, "http://") {
+		return "", fmt.Errorf("insecure HTTP downloads are not allowed, use HTTPS: %s", url)
+	}
+
 	resp, err := newDownloadClient().Get(url)
 	if err != nil {
 		return "", fmt.Errorf("HTTP request failed: %w", err)
@@ -209,10 +207,16 @@ func (f *Fetcher) download(url string) (string, error) {
 	}
 	defer tmpFile.Close()
 
-	written, err := io.Copy(tmpFile, resp.Body)
+	limitedReader := io.LimitReader(resp.Body, maxDownloadSize+1)
+	written, err := io.Copy(tmpFile, limitedReader)
 	if err != nil {
 		os.Remove(tmpFile.Name())
 		return "", fmt.Errorf("failed to write download: %w", err)
+	}
+
+	if written > maxDownloadSize {
+		os.Remove(tmpFile.Name())
+		return "", fmt.Errorf("downloaded file exceeds maximum size of %d bytes", maxDownloadSize)
 	}
 
 	logger.Info(fmt.Sprintf("Downloaded %d bytes", written))
@@ -272,17 +276,20 @@ func extractTarXz(tarXzPath, targetDir string) error {
 			if err := os.MkdirAll(parentDir, 0755); err != nil {
 				return fmt.Errorf("failed to create parent directory %s: %w", parentDir, err)
 			}
+			// Validate the symlink target doesn't escape the destination directory
 			linkTarget := header.Linkname
+			var resolvedTarget string
 			if filepath.IsAbs(linkTarget) {
-				linkTarget = filepath.Join(targetDir, linkTarget)
+				resolvedTarget = filepath.Join(targetDir, linkTarget)
 			} else {
-				linkTarget = filepath.Join(filepath.Dir(target), linkTarget)
+				resolvedTarget = filepath.Join(filepath.Dir(target), linkTarget)
 			}
-			cleanTarget := filepath.Clean(linkTarget)
+			cleanTarget := filepath.Clean(resolvedTarget)
 			if !strings.HasPrefix(cleanTarget, filepath.Clean(targetDir)+string(os.PathSeparator)) && cleanTarget != filepath.Clean(targetDir) {
 				return fmt.Errorf("symlink target escapes destination directory: %s -> %s", header.Name, header.Linkname)
 			}
 			os.Remove(target)
+			// Create symlink with original linkname (relative or absolute as specified)
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return fmt.Errorf("failed to create symlink %s -> %s: %w", target, header.Linkname, err)
 			}

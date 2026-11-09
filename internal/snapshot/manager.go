@@ -77,7 +77,7 @@ func (m *Manager) save() error {
 		return err
 	}
 
-	return deploy.WriteFileAtomic(m.stateFilePath, data, 0644)
+	return deploy.WriteFileAtomic(m.stateFilePath, data, 0600)
 }
 
 func (m *Manager) CreateSnapshot(snapName string) error {

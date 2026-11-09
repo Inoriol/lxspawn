@@ -49,10 +49,13 @@ provision:
       apt-get install -y curl gnupg software-properties-common vainfo
       
       # Install GPU drivers (install both Intel and AMD for compatibility)
-      # Intel iGPU/dGPU:
-      apt-get install -y intel-media-va-driver intel-compute-runtime
+      # Intel iGPU/dGPU: intel-media-va-driver is in Debian repos
+      apt-get install -y intel-media-va-driver || true
+      # intel-compute-runtime not in Debian bookworm, try to install but don't fail
+      apt-get install -y intel-compute-runtime || echo "intel-compute-runtime not available, using software decoding"
       # AMD iGPU/dGPU:
-      apt-get install -y mesa-va-drivers rocm-opencl-runtime || true
+      apt-get install -y mesa-va-drivers || true
+      apt-get install -y rocm-opencl-runtime || true
       # NVIDIA: requires proprietary driver matching host version exactly
       # apt-get install -y nvidia-driver-XXX
       

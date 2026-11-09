@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -52,7 +51,7 @@ func (d *DirectoryBackend) CreateMachine(name string, sizeGB int) error {
 	}
 
 	// Set group-writable permissions (use sudo since directory is now owned by root)
-	cmd := deploy.SudoHelper("chmod", "0775", machinePath)
+	cmd := deploy.Sudo("chmod", "0775", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("failed to set permissions on %s: %v (%s)", machinePath, err, string(output)))
 	}
@@ -71,7 +70,7 @@ func (d *DirectoryBackend) DeleteMachine(name string) error {
 	}
 
 	// Use sudo rm -rf to handle files owned by root (from container namespace)
-	cmd := deploy.SudoHelper("rm-rf", "-rf", machinePath)
+	cmd := deploy.Sudo("rm", "-rf", machinePath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to remove machine directory %s: %w (%s)", machinePath, err, string(output))
 	}
@@ -96,135 +95,6 @@ func (d *DirectoryBackend) MachineExists(name string) (bool, error) {
 // GetMachinePath returns the filesystem path for a machine
 func (d *DirectoryBackend) GetMachinePath(name string) string {
 	return filepath.Join(d.basePath, name)
-}
-
-// CreateSnapshot creates a snapshot by copying the directory
-func (d *DirectoryBackend) CreateSnapshot(machine, snapName string) error {
-	machinePath := d.GetMachinePath(machine)
-	snapshotPath := d.getSnapshotPath(machine, snapName)
-
-	// Check if machine exists
-	if _, err := os.Stat(machinePath); os.IsNotExist(err) {
-		return fmt.Errorf("machine %s does not exist", machine)
-	}
-
-	// Check if snapshot already exists
-	if _, err := os.Stat(snapshotPath); err == nil {
-		return fmt.Errorf("snapshot %s already exists", snapName)
-	}
-
-	// Create snapshot directory
-	if err := os.MkdirAll(filepath.Dir(snapshotPath), 0755); err != nil {
-		return fmt.Errorf("failed to create snapshot directory: %w", err)
-	}
-
-	// Use rsync for efficient copying if available, otherwise use cp
-	if _, err := exec.LookPath("rsync"); err == nil {
-		cmd := exec.Command("rsync", "-a", "--delete", machinePath+"/", snapshotPath+"/")
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("rsync failed: %w (%s)", err, string(output))
-		}
-	} else {
-		// Fallback to cp
-		cmd := exec.Command("cp", "-a", machinePath, snapshotPath)
-		if output, err := cmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("cp failed: %w (%s)", err, string(output))
-		}
-	}
-
-	logger.Info(fmt.Sprintf("Created directory snapshot %s for machine %s", snapName, machine))
-	return nil
-}
-
-// DeleteSnapshot deletes a snapshot directory
-func (d *DirectoryBackend) DeleteSnapshot(machine, snapName string) error {
-	snapshotPath := d.getSnapshotPath(machine, snapName)
-
-	// Check if exists
-	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
-		return fmt.Errorf("snapshot %s does not exist", snapName)
-	}
-
-	// Use sudo rm -rf to handle files owned by root
-	cmd := deploy.SudoHelper("rm-rf", "-rf", snapshotPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to remove snapshot %s: %w (%s)", snapName, err, string(output))
-	}
-
-	logger.Info(fmt.Sprintf("Deleted directory snapshot %s for machine %s", snapName, machine))
-	return nil
-}
-
-// ListSnapshots lists all snapshots for a machine
-func (d *DirectoryBackend) ListSnapshots(machine string) ([]SnapshotInfo, error) {
-	snapshotsDir := d.getSnapshotsDir(machine)
-	var snapshots []SnapshotInfo
-
-	// Check if snapshots directory exists
-	if _, err := os.Stat(snapshotsDir); os.IsNotExist(err) {
-		return snapshots, nil // No snapshots
-	}
-
-	// Read directory entries
-	entries, err := os.ReadDir(snapshotsDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read snapshots directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
-
-		info, err := entry.Info()
-		if err != nil {
-			continue
-		}
-
-		snapshots = append(snapshots, SnapshotInfo{
-			Name:      entry.Name(),
-			Machine:   machine,
-			Backend:   string(BackendDirectory),
-			CreatedAt: info.ModTime(),
-			Location:  filepath.Join(snapshotsDir, entry.Name()),
-		})
-	}
-
-	return snapshots, nil
-}
-
-// RollbackSnapshot rolls back a machine to a snapshot
-func (d *DirectoryBackend) RollbackSnapshot(machine, snapName string) error {
-	machinePath := d.GetMachinePath(machine)
-	snapshotPath := d.getSnapshotPath(machine, snapName)
-
-	// Check if snapshot exists
-	if _, err := os.Stat(snapshotPath); os.IsNotExist(err) {
-		return fmt.Errorf("snapshot %s does not exist", snapName)
-	}
-
-	// Create backup of current state
-	backupPath := machinePath + ".rollback-backup-" + fmt.Sprintf("%d", time.Now().Unix())
-	if err := os.Rename(machinePath, backupPath); err != nil {
-		return fmt.Errorf("failed to backup current state: %w", err)
-	}
-
-	// Copy snapshot to machine path
-	cmd := exec.Command("cp", "-a", snapshotPath, machinePath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		// Restore backup
-		os.Rename(backupPath, machinePath)
-		return fmt.Errorf("failed to restore snapshot: %w (%s)", err, string(output))
-	}
-
-	// Remove backup using sudo rm -rf
-	cmd = deploy.SudoHelper("rm-rf", backupPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn(fmt.Sprintf("failed to remove backup %s: %v (%s)", backupPath, err, string(output)))
-	}
-
-	logger.Info(fmt.Sprintf("Rolled back machine %s to snapshot %s", machine, snapName))
-	return nil
 }
 
 // GetUsage returns storage usage for the base path
@@ -255,19 +125,9 @@ func (d *DirectoryBackend) GetUsage() (int64, int64, error) {
 	return used, total, nil
 }
 
-// getSnapshotPath returns the path for a snapshot
-func (d *DirectoryBackend) getSnapshotPath(machine, snapName string) string {
-	return filepath.Join(d.getSnapshotsDir(machine), snapName)
-}
-
-// getSnapshotsDir returns the directory containing snapshots for a machine
-func (d *DirectoryBackend) getSnapshotsDir(machine string) string {
-	return filepath.Join(d.basePath, ".snapshots", machine)
-}
-
 // setOwnership sets the ownership of a path
 func setOwnership(path, user, group string) error {
-	cmd := deploy.SudoHelper("chown", fmt.Sprintf("%s:%s", user, group), path)
+	cmd := deploy.Sudo("chown", fmt.Sprintf("%s:%s", user, group), path)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}

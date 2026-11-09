@@ -21,6 +21,10 @@ provision:
     script: |
       #!/bin/bash
       set -eux -o pipefail
+      # Install ca-certificates first to fix GPG key warnings
+      apt-get update
+      apt-get install -y ca-certificates
+      
       # Update system
       apt-get update
       apt-get upgrade -y
