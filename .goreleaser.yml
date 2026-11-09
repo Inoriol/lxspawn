@@ -5,7 +5,9 @@ before:
     - go mod tidy
 
 builds:
-  - main: ./cmd/lxspawn/
+  - id: lxspawn
+    main: ./cmd/lxspawn
+    binary: lxspawn
     env:
       - CGO_ENABLED=0
     ldflags:
