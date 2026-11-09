@@ -311,6 +311,51 @@ func TestReadMemoryUsageUnlimited(t *testing.T) {
 	}
 }
 
+func TestReadMemoryUsageZero(t *testing.T) {
+	tmpDir := t.TempDir()
+	cgroupPath := filepath.Join(tmpDir, "cgroup")
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	memCurrentPath := filepath.Join(cgroupPath, "memory.current")
+	if err := os.WriteFile(memCurrentPath, []byte("0\n"), 0644); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	memMaxPath := filepath.Join(cgroupPath, "memory.max")
+	if err := os.WriteFile(memMaxPath, []byte("2147483648\n"), 0644); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	current, max, err := readMemoryUsage(cgroupPath)
+	if err != nil {
+		t.Fatalf("readMemoryUsage failed: %v", err)
+	}
+
+	if current != 0 {
+		t.Errorf("expected current 0, got %d", current)
+	}
+
+	if max != 2147483648 {
+		t.Errorf("expected max 2147483648, got %d", max)
+	}
+}
+
+func TestReadMemoryUsageFileNotExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	cgroupPath := filepath.Join(tmpDir, "cgroup")
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		t.Fatalf("setup failed: %v", err)
+	}
+
+	// Don't create memory.current file - simulate cgroup not having memory stats
+	_, _, err := readMemoryUsage(cgroupPath)
+	if err == nil {
+		t.Errorf("expected error when memory.current doesn't exist, got nil")
+	}
+}
+
 func TestReadDiskUsage(t *testing.T) {
 	tmpDir := t.TempDir()
 

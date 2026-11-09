@@ -2,11 +2,18 @@ package storage
 
 import (
 	"os"
-	"path/filepath"
+	"os/exec"
 	"testing"
 )
 
 func TestDirectoryBackend_CreateMachine(t *testing.T) {
+	if _, err := exec.LookPath("sudo"); err != nil {
+		t.Skip("sudo not available, skipping test")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("requires root privileges, skipping test")
+	}
+
 	tmpDir := t.TempDir()
 	backend, err := NewDirectoryBackend(tmpDir)
 	if err != nil {
@@ -57,84 +64,6 @@ func TestDirectoryBackend_CreateMachine(t *testing.T) {
 	}
 	if exists {
 		t.Error("MachineExists() returned true for deleted machine")
-	}
-}
-
-func TestDirectoryBackend_Snapshots(t *testing.T) {
-	tmpDir := t.TempDir()
-	backend, err := NewDirectoryBackend(tmpDir)
-	if err != nil {
-		t.Fatalf("NewDirectoryBackend() error = %v", err)
-	}
-
-	machineName := "test-machine"
-	snapName := "snap1"
-
-	// Create machine
-	if err := backend.CreateMachine(machineName, 10); err != nil {
-		t.Fatalf("CreateMachine() error = %v", err)
-	}
-
-	// Create a test file in the machine
-	machinePath := backend.GetMachinePath(machineName)
-	testFile := filepath.Join(machinePath, "test.txt")
-	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
-		t.Fatalf("Failed to create test file: %v", err)
-	}
-
-	// Test snapshot creation
-	if err := backend.CreateSnapshot(machineName, snapName); err != nil {
-		t.Fatalf("CreateSnapshot() error = %v", err)
-	}
-
-	// Verify snapshot exists
-	snapshots, err := backend.ListSnapshots(machineName)
-	if err != nil {
-		t.Fatalf("ListSnapshots() error = %v", err)
-	}
-	if len(snapshots) != 1 {
-		t.Errorf("ListSnapshots() returned %d snapshots, want 1", len(snapshots))
-	}
-	if snapshots[0].Name != snapName {
-		t.Errorf("Snapshot name = %s, want %s", snapshots[0].Name, snapName)
-	}
-
-	// Test duplicate snapshot
-	if err := backend.CreateSnapshot(machineName, snapName); err == nil {
-		t.Error("CreateSnapshot() should fail for duplicate snapshot")
-	}
-
-	// Modify the machine
-	if err := os.WriteFile(testFile, []byte("modified content"), 0644); err != nil {
-		t.Fatalf("Failed to modify test file: %v", err)
-	}
-
-	// Test rollback
-	if err := backend.RollbackSnapshot(machineName, snapName); err != nil {
-		t.Fatalf("RollbackSnapshot() error = %v", err)
-	}
-
-	// Verify rollback restored original content
-	content, err := os.ReadFile(testFile)
-	if err != nil {
-		t.Fatalf("Failed to read test file: %v", err)
-	}
-	if string(content) != "test content" {
-		t.Errorf("Rollback did not restore original content, got %s", string(content))
-	}
-
-	// Test snapshot deletion
-	if err := backend.DeleteSnapshot(machineName, snapName); err != nil {
-		t.Fatalf("DeleteSnapshot() error = %v", err)
-	}
-
-	// Verify snapshot removed
-	snapshots, err = backend.ListSnapshots(machineName)
-	if err != nil {
-		t.Fatalf("ListSnapshots() error = %v", err)
-	}
-	if len(snapshots) != 0 {
-		t.Errorf("ListSnapshots() returned %d snapshots after deletion, want 0", len(snapshots))
 	}
 }
 

@@ -274,3 +274,48 @@ func containsHelper(s, substr string) bool {
 	}
 	return false
 }
+
+func TestSudo(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantPath string
+		wantArgs []string
+	}{
+		{
+			name:     "simple command",
+			args:     []string{"rm", "-rf", "/var/lib/machines/test"},
+			wantPath: "sudo",
+			wantArgs: []string{"sudo", "rm", "-rf", "/var/lib/machines/test"},
+		},
+		{
+			name:     "btrfs command",
+			args:     []string{"btrfs", "subvolume", "create", "/var/lib/machines/test"},
+			wantPath: "sudo",
+			wantArgs: []string{"sudo", "btrfs", "subvolume", "create", "/var/lib/machines/test"},
+		},
+		{
+			name:     "nsenter command",
+			args:     []string{"nsenter", "-t", "1234", "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", "echo test"},
+			wantPath: "sudo",
+			wantArgs: []string{"sudo", "nsenter", "-t", "1234", "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", "echo test"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := Sudo(tt.args...)
+			if cmd.Path != tt.wantPath && cmd.Args[0] != tt.wantPath {
+				t.Errorf("Sudo() path = %v, want %v", cmd.Path, tt.wantPath)
+			}
+			if len(cmd.Args) != len(tt.wantArgs) {
+				t.Errorf("Sudo() args length = %v, want %v", len(cmd.Args), len(tt.wantArgs))
+			}
+			for i, arg := range cmd.Args {
+				if arg != tt.wantArgs[i] {
+					t.Errorf("Sudo() arg[%d] = %v, want %v", i, arg, tt.wantArgs[i])
+				}
+			}
+		})
+	}
+}

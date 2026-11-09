@@ -128,42 +128,45 @@ func compileHooks(cfg *config.Config) (string, map[string]string) {
 
 	b.WriteString("[Service]\n")
 
+	// Use local copies to avoid mutating the input config
+	preStart := cfg.Hooks.PreStart
+	postStart := cfg.Hooks.PostStart
+	postStop := cfg.Hooks.PostStop
+
 	// Generate host-side macvlan setup if host_access is enabled
 	if cfg.Network.HostAccess.Enabled && cfg.Network.Mode == config.NetworkMacvlan {
 		hostAccessScript := generateHostAccessScript(cfg)
-		if cfg.Hooks.PostStart != "" {
-			// Prepend to existing post_start hook
-			cfg.Hooks.PostStart = hostAccessScript + "\n" + cfg.Hooks.PostStart
+		if postStart != "" {
+			postStart = hostAccessScript + "\n" + postStart
 		} else {
-			cfg.Hooks.PostStart = hostAccessScript
+			postStart = hostAccessScript
 		}
 
 		// Generate cleanup script for post_stop
 		cleanupScript := generateHostAccessCleanupScript(cfg)
-		if cfg.Hooks.PostStop != "" {
-			// Prepend to existing post_stop hook
-			cfg.Hooks.PostStop = cleanupScript + "\n" + cfg.Hooks.PostStop
+		if postStop != "" {
+			postStop = cleanupScript + "\n" + postStop
 		} else {
-			cfg.Hooks.PostStop = cleanupScript
+			postStop = cleanupScript
 		}
 	}
 
-	if cfg.Hooks.PreStart != "" {
+	if preStart != "" {
 		scriptPath := hooksDir + "/pre_start.sh"
 		b.WriteString(fmt.Sprintf("ExecStartPre=%s\n", scriptPath))
-		scripts["pre_start.sh"] = ensureShebang(cfg.Hooks.PreStart)
+		scripts["pre_start.sh"] = ensureShebang(preStart)
 	}
 
-	if cfg.Hooks.PostStart != "" {
+	if postStart != "" {
 		scriptPath := hooksDir + "/post_start.sh"
 		b.WriteString(fmt.Sprintf("ExecStartPost=%s\n", scriptPath))
-		scripts["post_start.sh"] = ensureShebang(cfg.Hooks.PostStart)
+		scripts["post_start.sh"] = ensureShebang(postStart)
 	}
 
-	if cfg.Hooks.PostStop != "" {
+	if postStop != "" {
 		scriptPath := hooksDir + "/post_stop.sh"
 		b.WriteString(fmt.Sprintf("ExecStopPost=%s\n", scriptPath))
-		scripts["post_stop.sh"] = ensureShebang(cfg.Hooks.PostStop)
+		scripts["post_stop.sh"] = ensureShebang(postStop)
 	}
 
 	return b.String(), scripts

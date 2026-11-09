@@ -1,5 +1,5 @@
 name: nextcloud
-distro: debian:bookworm
+distro: ubuntu:noble
 
 resources:
   cpus: 2

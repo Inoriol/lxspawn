@@ -208,7 +208,7 @@ func (e *Engine) saveState(state *ProvisionState) error {
 		return err
 	}
 
-	return deploy.WriteFileAtomic(e.statePath, data, 0644)
+	return deploy.WriteFileAtomic(e.statePath, data, 0600)
 }
 
 func (e *Engine) GetState() (*ProvisionState, error) {

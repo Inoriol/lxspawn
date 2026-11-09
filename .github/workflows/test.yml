@@ -1,0 +1,42 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build
+        run: go build -ldflags "-X main.version=$(git describe --tags --always 2>/dev/null || echo dev)" -o lxspawn ./cmd/lxspawn/
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Unit tests (short)
+        run: go test -short -count=1 -timeout 2m ./...
+
+      - name: Unit tests with race detector
+        run: go test -race -count=1 -timeout 3m ./...
+
+      - name: Unit tests with coverage
+        run: go test -cover -coverprofile=coverage.out -count=1 -timeout 2m ./...
+
+      - name: Coverage summary
+        run: go tool cover -func=coverage.out
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: lxspawn-linux-amd64
+          path: lxspawn

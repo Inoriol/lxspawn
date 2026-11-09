@@ -466,15 +466,20 @@ provision:
       set -eux -o pipefail
       
       # Install GPU drivers based on detected hardware
-      # Intel:
-      apt-get install -y intel-media-va-driver non-free intel-compute-runtime
+      # Intel (intel-media-va-driver is in Debian repos):
+      apt-get install -y intel-media-va-driver || true
+      # intel-compute-runtime not in Debian bookworm, optional:
+      apt-get install -y intel-compute-runtime || echo "intel-compute-runtime not available"
       
       # AMD:
-      # apt-get install -y mesa-va-drivers
+      apt-get install -y mesa-va-drivers || true
+      apt-get install -y rocm-opencl-runtime || true
       
       # NVIDIA (must match host version):
       # apt-get install -y nvidia-driver
 ```
+
+**Note:** GPU driver packages may not be available in all distributions. Use `|| true` to make them optional and fall back to software decoding.
 
 ---
 
@@ -548,8 +553,14 @@ The built-in yq provisioner supports a **subset** of yq expression syntax. It is
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `url` | string | yes | URL or relative path to the script/file. Relative paths are resolved against the directory containing the YAML config. |
-| `digest` | string | no | Expected digest in `algorithm:hex` format (e.g. `sha256:abc123...`). Validated after download. |
+| `url` | string | yes | URL or relative path to the script/file. Relative paths are resolved against the directory containing the YAML config. **HTTPS only** - HTTP URLs are rejected for security. |
+| `digest` | string | no | Expected digest in `algorithm:hex` format (e.g. `sha256:abc123...`). Validated after download. Strongly recommended for remote files to prevent tampering. |
+
+**Security restrictions:**
+- Only HTTPS URLs are allowed (HTTP rejected with error)
+- Download size limited to 2GB maximum
+- Digest verification recommended for all remote files
+- Files cached locally in `~/.cache/lxspawn/scripts/` with permissions `0700`
 
 **Provisioning modes:**
 

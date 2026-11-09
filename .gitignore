@@ -3,3 +3,4 @@ lxspawn
 *.tmp
 internal-references/
 test-machine.md
+tests/E2E-TEST-RESULTS-EXT4-LVM.md

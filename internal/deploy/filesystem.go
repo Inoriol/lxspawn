@@ -14,8 +14,11 @@ const (
 	SystemdDir     = "/etc/systemd/system"
 	MachinesDir    = "/var/lib/machines"
 	LxspawnDataDir = "/var/lib/lxspawn"
-	SudoHelperPath = "/usr/libexec/lxspawn/sudo-helper"
 )
+
+func Sudo(args ...string) *exec.Cmd {
+	return exec.Command("sudo", args...)
+}
 
 func NspawnFilePath(name string) string {
 	return filepath.Join(NspawnDir, name+".nspawn")
@@ -115,9 +118,4 @@ func SetSELinuxContext(path, context string) error {
 		return nil
 	}
 	return exec.Command("chcon", "-t", context, path).Run()
-}
-
-func SudoHelper(args ...string) *exec.Cmd {
-	helperArgs := append([]string{SudoHelperPath}, args...)
-	return exec.Command("sudo", helperArgs...)
 }

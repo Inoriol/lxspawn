@@ -1,9 +1,5 @@
 package storage
 
-import (
-	"time"
-)
-
 // BackendType represents the type of storage backend
 type BackendType string
 
@@ -12,16 +8,6 @@ const (
 	BackendLVMThin   BackendType = "lvm-thin"
 	BackendDirectory BackendType = "directory"
 )
-
-// SnapshotInfo contains information about a snapshot
-type SnapshotInfo struct {
-	Name      string    `json:"name"`
-	Machine   string    `json:"machine"`
-	Backend   string    `json:"backend"`
-	CreatedAt time.Time `json:"created_at"`
-	Size      int64     `json:"size,omitempty"`      // Size in bytes (for directory mode)
-	Location  string    `json:"location,omitempty"` // Backend-specific location info
-}
 
 // StorageBackend defines the interface for storage operations
 type StorageBackend interface {
@@ -41,18 +27,6 @@ type StorageBackend interface {
 
 	// GetMachinePath returns the filesystem path for a machine's rootfs
 	GetMachinePath(name string) string
-
-	// CreateSnapshot creates a snapshot of a machine
-	CreateSnapshot(machine, snapName string) error
-
-	// DeleteSnapshot deletes a snapshot
-	DeleteSnapshot(machine, snapName string) error
-
-	// ListSnapshots lists all snapshots for a machine
-	ListSnapshots(machine string) ([]SnapshotInfo, error)
-
-	// RollbackSnapshot rolls back a machine to a snapshot
-	RollbackSnapshot(machine, snapName string) error
 
 	// GetUsage returns storage usage information
 	// Returns: used bytes, total bytes, error

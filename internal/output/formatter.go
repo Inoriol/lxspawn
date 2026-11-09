@@ -2,7 +2,6 @@ package output
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 )
 
@@ -49,26 +48,4 @@ func FormatMachineList(machines []MachineJSON) error {
 		Machines: machines,
 	}
 	return PrintJSON(data)
-}
-
-func FormatError(err error) error {
-	if !JSONMode {
-		return nil
-	}
-	return PrintError("UNKNOWN", err.Error())
-}
-
-func FormatErrorCode(code, message string) error {
-	if !JSONMode {
-		return nil
-	}
-	return PrintError(code, message)
-}
-
-func PrintSuccess(message string) error {
-	if !JSONMode {
-		fmt.Println(message)
-		return nil
-	}
-	return nil
 }
