@@ -137,7 +137,7 @@ func TestBootProvisionerEnablesService(t *testing.T) {
 		t.Fatalf("enable symlink not found: %v", err)
 	}
 
-	expectedTarget := filepath.Join(rootfs, "etc", "systemd", "system", "lxspawn-boot.service")
+	expectedTarget := "../lxspawn-boot.service"
 	if target != expectedTarget {
 		t.Errorf("symlink target = %q, want %q", target, expectedTarget)
 	}

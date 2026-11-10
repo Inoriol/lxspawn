@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func GetVersion() (major, minor int, err error) {
@@ -49,9 +50,10 @@ func CheckKernelVersion(minMajor, minMinor int) (bool, error) {
 }
 
 func IsBtrfs(path string) bool {
-	out, err := exec.Command("stat", "-f", "-c", "%T", path).Output()
-	if err != nil {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
 		return false
 	}
-	return strings.TrimSpace(string(out)) == "btrfs"
+	// Btrfs magic number: 0x9123683E
+	return stat.Type == 0x9123683E
 }

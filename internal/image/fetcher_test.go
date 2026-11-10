@@ -325,3 +325,33 @@ func TestDownloadRejectsHTTP(t *testing.T) {
 		t.Errorf("expected error to mention 'insecure HTTP', got: %v", err)
 	}
 }
+
+func TestUnixModeToFileMode(t *testing.T) {
+	tests := []struct {
+		name     string
+		unixMode int64
+		wantPerm os.FileMode
+		wantSet  os.FileMode
+	}{
+		{"regular file", 0644, 0644, 0},
+		{"executable", 0755, 0755, 0},
+		{"setuid", 04755, 0755, os.ModeSetuid},
+		{"setgid", 02755, 0755, os.ModeSetgid},
+		{"sticky", 01755, 0755, os.ModeSticky},
+		{"setuid+setgid", 06755, 0755, os.ModeSetuid | os.ModeSetgid},
+		{"all special bits", 07755, 0755, os.ModeSetuid | os.ModeSetgid | os.ModeSticky},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := unixModeToFileMode(tt.unixMode)
+			if got.Perm() != tt.wantPerm {
+				t.Errorf("perm = %o, want %o", got.Perm(), tt.wantPerm)
+			}
+			gotSpecial := got & (os.ModeSetuid | os.ModeSetgid | os.ModeSticky)
+			if gotSpecial != tt.wantSet {
+				t.Errorf("special bits = %v, want %v", gotSpecial, tt.wantSet)
+			}
+		})
+	}
+}

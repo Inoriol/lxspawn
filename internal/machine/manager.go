@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/compiler"
@@ -63,6 +64,11 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		return nil, fmt.Errorf("machine '%s' already exists", cfg.Name)
 	}
 
+	rootfsPath := deploy.MachineRootfsPath(cfg.Name)
+	if deploy.FileExists(rootfsPath) && isPopulatedRootfs(rootfsPath) {
+		return nil, fmt.Errorf("rootfs at %s already exists but is not managed by lxspawn. Remove it manually or use a different machine name", rootfsPath)
+	}
+
 	if kernel.IsBtrfs(deploy.MachinesDir) {
 		ok, err := kernel.CheckKernelVersion(5, 12)
 		if err != nil {
@@ -77,9 +83,7 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		return nil, fmt.Errorf("failed to compile config: %w", err)
 	}
 
-	rootfsPath := deploy.MachineRootfsPath(cfg.Name)
-	if !deploy.FileExists(rootfsPath) || !isPopulatedRootfs(rootfsPath) {
-		// Use storage backend to create machine storage
+	{
 		sizeGB, err := config.ParseSizeToGB(cfg.Storage.Size)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse storage size: %w", err)
@@ -201,10 +205,18 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	if len(cfg.Provision) > 0 {
 		engine, err := provision.NewEngine(cfg.Name)
 		if err != nil {
-			return filesWritten, fmt.Errorf("failed to create provision engine: %w", err)
+			cleanupCreatedFiles(filesWritten, compiled)
+			deploy.RemoveAll(lxspawnDir)
+			m.storage.DeleteMachine(cfg.Name)
+			m.state.UnregisterMachine(cfg.Name)
+			return nil, fmt.Errorf("failed to create provision engine: %w", err)
 		}
 		if err := engine.Provision(cfg, sourcePath); err != nil {
-			return filesWritten, fmt.Errorf("pre-boot provisioning failed: %w", err)
+			cleanupCreatedFiles(filesWritten, compiled)
+			deploy.RemoveAll(lxspawnDir)
+			m.storage.DeleteMachine(cfg.Name)
+			m.state.UnregisterMachine(cfg.Name)
+			return nil, fmt.Errorf("pre-boot provisioning failed: %w", err)
 		}
 	}
 
@@ -322,6 +334,11 @@ func (m *Manager) Delete(name string) error {
 		logger.Debug(fmt.Sprintf("machinectl terminate warning (may already be terminated): %v (%s)", err, string(output)))
 	}
 
+	state, _, err := m.systemd.GetMachineState(name)
+	if err == nil && state != "stopped" {
+		return fmt.Errorf("machine '%s' is still running (state: %s). Please stop it manually before deleting", name, state)
+	}
+
 	var paths []string
 	paths = append(paths, deploy.NspawnFilePath(name))
 	paths = append(paths, deploy.SliceFilePath(name))
@@ -431,8 +448,8 @@ func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
 		return nil, fmt.Errorf("machine '%s' not found", name)
 	}
 
-	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
-	cmd := deploy.Sudo("journalctl", "-u", unitName, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso")
+	// Use -M to read from container journal (same as text mode Logs)
+	cmd := exec.Command("journalctl", "-M", name, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso", "--no-pager")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get logs: %w", err)
@@ -451,7 +468,7 @@ func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
 
 		entry := LogEntry{
 			Timestamp: parts[0],
-			Priority:  6,
+			Priority:  6, // Default to info priority
 			Message:   parts[2],
 		}
 
@@ -502,6 +519,12 @@ func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
 	if err == nil {
 		status.State = state
 		status.Addresses = addrs
+	}
+
+	if status.State == "running" {
+		if leader, err := m.systemd.GetMachineLeader(name); err == nil {
+			status.Leader = leader
+		}
 	}
 
 	return status, nil
@@ -814,27 +837,100 @@ func readMemoryUsage(cgroupPath string) (int64, int64, error) {
 }
 
 func readDiskUsage(path string) (int64, int64, error) {
-	cmd := exec.Command("df", "-B1", path)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("df command failed for path %s: %w", path, err)
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0, 0, fmt.Errorf("failed to stat filesystem: %w", err)
 	}
 
-	lines := strings.Split(string(output), "\n")
-	if len(lines) < 2 {
-		return 0, 0, fmt.Errorf("unexpected df output for path %s: %q", path, string(output))
-	}
-
-	fields := strings.Fields(lines[1])
-	if len(fields) < 3 {
-		return 0, 0, fmt.Errorf("unexpected df output format for path %s: %q", path, string(output))
-	}
-
-	var total, used int64
-	fmt.Sscanf(fields[1], "%d", &total)
-	fmt.Sscanf(fields[2], "%d", &used)
+	// Calculate total and used space in bytes
+	total := int64(stat.Blocks) * int64(stat.Bsize)
+	free := int64(stat.Bfree) * int64(stat.Bsize)
+	used := total - free
 
 	return used, total, nil
+}
+
+func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
+	logger.Action(fmt.Sprintf("Applying config changes to machine '%s'", cfg.Name))
+
+	if _, exists := m.state.GetMachine(cfg.Name); !exists {
+		return fmt.Errorf("machine '%s' not found", cfg.Name)
+	}
+
+	compiled, err := compiler.Compile(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to compile config: %w", err)
+	}
+
+	var filesWritten []string
+
+	if err := deploy.WriteFileAtomic(compiled.NspawnPath, []byte(compiled.Nspawn), 0644); err != nil {
+		return fmt.Errorf("failed to write .nspawn file: %w", err)
+	}
+	filesWritten = append(filesWritten, compiled.NspawnPath)
+	logger.Debug(fmt.Sprintf("Wrote %s", compiled.NspawnPath))
+
+	if compiled.Slice != "" {
+		if err := deploy.WriteFileAtomic(compiled.SlicePath, []byte(compiled.Slice), 0644); err != nil {
+			return fmt.Errorf("failed to write slice file: %w", err)
+		}
+		filesWritten = append(filesWritten, compiled.SlicePath)
+		logger.Debug(fmt.Sprintf("Wrote %s", compiled.SlicePath))
+	}
+
+	if err := deploy.WriteFileAtomic(compiled.DropInPath, []byte(compiled.DropIn), 0644); err != nil {
+		return fmt.Errorf("failed to write drop-in file: %w", err)
+	}
+	filesWritten = append(filesWritten, compiled.DropInPath)
+	logger.Debug(fmt.Sprintf("Wrote %s", compiled.DropInPath))
+
+	if len(compiled.HookScripts) > 0 {
+		hooksDir := deploy.HooksDir(cfg.Name)
+		if err := os.MkdirAll(hooksDir, 0755); err != nil {
+			return fmt.Errorf("failed to create hooks directory: %w", err)
+		}
+
+		for name, content := range compiled.HookScripts {
+			scriptPath := hooksDir + "/" + name
+			if err := deploy.WriteFileAtomic(scriptPath, []byte(content), 0755); err != nil {
+				return fmt.Errorf("failed to write hook script %s: %w", name, err)
+			}
+			if err := deploy.SetSELinuxContext(scriptPath, "bin_t"); err != nil {
+				logger.Warn(fmt.Sprintf("failed to set SELinux context on %s: %v", scriptPath, err))
+			}
+			filesWritten = append(filesWritten, scriptPath)
+			logger.Debug(fmt.Sprintf("Wrote hook %s", scriptPath))
+		}
+
+		if err := deploy.WriteFileAtomic(compiled.HooksPath, []byte(compiled.HooksDropIn), 0644); err != nil {
+			return fmt.Errorf("failed to write hooks drop-in: %w", err)
+		}
+		filesWritten = append(filesWritten, compiled.HooksPath)
+		logger.Debug(fmt.Sprintf("Wrote %s", compiled.HooksPath))
+	}
+
+	machineInfo := deploy.MachineInfo{
+		Name:       cfg.Name,
+		Distro:     cfg.Distro,
+		SourcePath: sourcePath,
+		Files:      filesWritten,
+		Network:    string(cfg.Network.Mode),
+		CPUs:       cfg.Resources.CPUs,
+		Memory:     cfg.Resources.Memory,
+		Swap:       cfg.Resources.Swap,
+		Tasks:      cfg.Resources.Tasks,
+	}
+
+	if err := m.state.RegisterMachine(machineInfo); err != nil {
+		return fmt.Errorf("failed to update machine state: %w", err)
+	}
+
+	if err := m.systemd.ReloadDaemon(); err != nil {
+		return fmt.Errorf("failed to reload systemd: %w", err)
+	}
+
+	logger.Success(fmt.Sprintf("Configuration applied to machine '%s'", cfg.Name))
+	return nil
 }
 
 func cleanupCreatedFiles(filesWritten []string, compiled *compiler.CompiledFiles) {

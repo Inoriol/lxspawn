@@ -545,21 +545,23 @@ The built-in yq provisioner supports a **subset** of yq expression syntax. It is
 | `.path \|= . + value` | Append to an array | `.storage-options \|= . + ["overlay2"]` |
 | `.path += value` | Append to an array | `.items += ["new-item"]` |
 
-**Value types** are auto-detected: strings (quoted), numbers, booleans (`true`/`false`), `null`, JSON arrays/objects.
+**Value types** are auto-detected: strings (quoted or unquoted without special characters), integers, floats (must have exactly one decimal point), booleans (`true`/`false`), `null`, JSON arrays/objects. Values that look like IP addresses (e.g., `10.0.0.1`) or version strings (e.g., `1.2.3`) are kept as strings.
 
-**Not supported:** Complex yq expressions such as conditionals (`select()`), multi-document processing, array slicing, custom functions, pipes, or tag manipulation. For advanced use cases, use a `system` or `boot` provision step to invoke the `yq` binary directly inside the container.
+**Not supported:** Complex yq expressions such as conditionals (`select()`), multi-document processing, array slicing, custom functions, pipes, tag manipulation, or update expressions other than `. +`. Unsupported operators return an error.
 
 #### `file` reference
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `url` | string | yes | URL or relative path to the script/file. Relative paths are resolved against the directory containing the YAML config. **HTTPS only** - HTTP URLs are rejected for security. |
-| `digest` | string | no | Expected digest in `algorithm:hex` format (e.g. `sha256:abc123...`). Validated after download. Strongly recommended for remote files to prevent tampering. |
+| `digest` | string | yes for remote | Expected digest in `algorithm:hex` format (e.g. `sha256:abc123...`). **Required for remote files (HTTPS URLs)** to prevent tampering and cache poisoning. Optional for local files. |
 
 **Security restrictions:**
 - Only HTTPS URLs are allowed (HTTP rejected with error)
-- Download size limited to 2GB maximum
-- Digest verification recommended for all remote files
+- Digest is required for all remote files
+- HTTPS-to-HTTP redirects are blocked
+- Download size limited to 100MB maximum
+- Path traversal prevention for relative paths (cannot escape base directory)
 - Files cached locally in `~/.cache/lxspawn/scripts/` with permissions `0700`
 
 **Provisioning modes:**
@@ -605,6 +607,10 @@ provision:
 | `{{.Home}}` | Host home directory |
 | `{{.Dir}}` | Directory containing the YAML file |
 | `{{.Param.Key}}` | Value of a custom parameter |
+
+**Missing key handling:** Template rendering errors on missing keys (e.g., `{{.Param.nonexistent}}`). This prevents dangerous situations where a typo like `rm -rf /opt/{{.Param.dirr}}` would render as `rm -rf /opt/` instead of failing safely.
+
+**Environment variable export:** Parameters are also exported as `LXSPAWN_PARAM_Key` environment variables inside provision scripts. Parameter keys must be valid shell variable names (start with letter or underscore, contain only letters, digits, underscores). Invalid keys are silently skipped.
 
 ---
 

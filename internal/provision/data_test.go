@@ -3,6 +3,7 @@ package provision
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Inoriol/lxspawn/internal/config"
@@ -244,6 +245,9 @@ func TestDataProvisionerInvalidPermissions(t *testing.T) {
 }
 
 func TestDataProvisionerWithOwner(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("skipping test that requires root privileges")
+	}
 	rootfs := t.TempDir()
 	provisioner := NewDataProvisioner(rootfs)
 	ctx := testContext()
@@ -405,4 +409,126 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestSecureJoin(t *testing.T) {
+	rootfs := t.TempDir()
+
+	t.Run("simple path without symlinks", func(t *testing.T) {
+		result, err := secureJoin(rootfs, "/etc/config.yaml")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := filepath.Join(rootfs, "etc", "config.yaml")
+		if result != expected {
+			t.Errorf("secureJoin() = %q, want %q", result, expected)
+		}
+	})
+
+	t.Run("path with symlink pointing inside rootfs", func(t *testing.T) {
+		etcDir := filepath.Join(rootfs, "etc")
+		if err := os.MkdirAll(etcDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		linkTarget := filepath.Join(rootfs, "real-config")
+		if err := os.Symlink(linkTarget, filepath.Join(etcDir, "config-link")); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := secureJoin(rootfs, "/etc/config-link/file.txt")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := filepath.Join(rootfs, "real-config", "file.txt")
+		if result != expected {
+			t.Errorf("secureJoin() = %q, want %q", result, expected)
+		}
+	})
+
+	t.Run("path with absolute symlink escaping rootfs", func(t *testing.T) {
+		etcDir := filepath.Join(rootfs, "etc2")
+		if err := os.MkdirAll(etcDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/etc/shadow", filepath.Join(etcDir, "evil-link")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := secureJoin(rootfs, "/etc2/evil-link")
+		if err == nil {
+			t.Error("expected error for symlink escaping rootfs")
+		}
+	})
+
+	t.Run("path with relative symlink escaping rootfs", func(t *testing.T) {
+		etcDir := filepath.Join(rootfs, "etc3")
+		if err := os.MkdirAll(etcDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../../../etc/shadow", filepath.Join(etcDir, "evil-link")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := secureJoin(rootfs, "/etc3/evil-link")
+		if err == nil {
+			t.Error("expected error for symlink escaping rootfs")
+		}
+	})
+
+	t.Run("path with chained symlinks", func(t *testing.T) {
+		dir1 := filepath.Join(rootfs, "dir1")
+		dir2 := filepath.Join(rootfs, "dir2")
+		if err := os.MkdirAll(dir1, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir2, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(dir2, filepath.Join(dir1, "link-to-dir2")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(dir1, "link-to-dir2"), filepath.Join(rootfs, "link-to-link")); err != nil {
+			t.Fatal(err)
+		}
+
+		result, err := secureJoin(rootfs, "/link-to-link/file.txt")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := filepath.Join(dir2, "file.txt")
+		if result != expected {
+			t.Errorf("secureJoin() = %q, want %q", result, expected)
+		}
+	})
+
+	t.Run("non-existent path is allowed", func(t *testing.T) {
+		result, err := secureJoin(rootfs, "/nonexistent/path/file.txt")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		expected := filepath.Join(rootfs, "nonexistent", "path", "file.txt")
+		if result != expected {
+			t.Errorf("secureJoin() = %q, want %q", result, expected)
+		}
+	})
+}
+
+func TestValidatePathSymlinkEscape(t *testing.T) {
+	rootfs := t.TempDir()
+
+	etcDir := filepath.Join(rootfs, "etc")
+	if err := os.MkdirAll(etcDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/etc/shadow", filepath.Join(etcDir, "evil-link")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validatePath(rootfs, "/etc/evil-link")
+	if err == nil {
+		t.Error("expected error for path through symlink escaping rootfs")
+	}
+	if err != nil && !strings.Contains(err.Error(), "points outside root") {
+		t.Errorf("expected 'points outside root' error, got: %v", err)
+	}
 }

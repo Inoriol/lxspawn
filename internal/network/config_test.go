@@ -54,3 +54,33 @@ func TestLoadNetworkConfigNotFound(t *testing.T) {
 		t.Error("LoadNetworkConfig() should return error when config doesn't exist")
 	}
 }
+
+func TestNetworkConfigPermissions(t *testing.T) {
+	// Create temporary directory for test
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	SetConfigPathOverride(configPath)
+	defer SetConfigPathOverride("")
+
+	// Save config
+	cfg := &NetworkConfig{
+		AutoInterface: "enp2s0",
+		DetectedAt:    time.Now(),
+	}
+
+	err := SaveNetworkConfig(cfg)
+	if err != nil {
+		t.Fatalf("SaveNetworkConfig() error = %v", err)
+	}
+
+	// Check file permissions - should be 0644 (readable by group)
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("Failed to stat config file: %v", err)
+	}
+
+	perm := info.Mode().Perm()
+	if perm != 0644 {
+		t.Errorf("Config file permissions = %o, want 0644", perm)
+	}
+}

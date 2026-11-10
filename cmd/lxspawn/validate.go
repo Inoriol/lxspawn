@@ -15,8 +15,18 @@ var validateCmd = &cobra.Command{
 	Short: "Validate a YAML configuration file",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Parse(args[0])
+		cfg, err := config.ParseStrict(args[0])
 		if err != nil {
+			if output.IsJSONMode() {
+				return output.PrintJSON(map[string]interface{}{
+					"valid":  false,
+					"errors": []string{err.Error()},
+				})
+			}
+			return fmt.Errorf("validation failed: %w", err)
+		}
+
+		if err := config.Validate(cfg); err != nil {
 			if output.IsJSONMode() {
 				return output.PrintJSON(map[string]interface{}{
 					"valid":  false,

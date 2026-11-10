@@ -60,8 +60,18 @@ func buildExecSection(cfg *config.Config) ([]string, error) {
 		lines = append(lines, "NoNewPrivileges=yes")
 	}
 
-	if len(cfg.Security.Capabilities) > 0 {
-		lines = append(lines, fmt.Sprintf("Capability=%s", strings.Join(cfg.Security.Capabilities, " ")))
+	allCaps := make([]string, 0, len(cfg.Security.Capabilities)+4)
+	allCaps = append(allCaps, cfg.Security.Capabilities...)
+
+	if cfg.GPU.Enabled {
+		gpuCaps, err := getGPUCapabilities(cfg)
+		if err == nil {
+			allCaps = append(allCaps, gpuCaps...)
+		}
+	}
+
+	if len(allCaps) > 0 {
+		lines = append(lines, fmt.Sprintf("Capability=%s", strings.Join(allCaps, " ")))
 	}
 
 	if len(cfg.Security.DropCapabilities) > 0 {
@@ -151,6 +161,25 @@ func getGPUDevices(cfg *config.Config) ([]string, error) {
 	}
 
 	return gpu.GetDeviceNodes(selectedGPU), nil
+}
+
+func getGPUCapabilities(cfg *config.Config) ([]string, error) {
+	if len(cfg.GPU.Devices) > 0 {
+		return nil, nil
+	}
+
+	detector := gpu.NewDetector()
+	gpus, err := detector.DetectGPUs()
+	if err != nil {
+		return nil, err
+	}
+
+	selectedGPU, err := gpu.SelectGPU(cfg.GPU.Type, gpus)
+	if err != nil {
+		return nil, err
+	}
+
+	return gpu.GetRequiredCapabilities(selectedGPU), nil
 }
 
 func buildNetworkSection(cfg *config.Config) []string {

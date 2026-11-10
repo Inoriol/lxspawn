@@ -72,8 +72,11 @@ func ListPhysicalInterfaces() ([]InterfaceInfo, error) {
 			continue
 		}
 
-		// Extract interface name (remove trailing colon)
+		// Extract interface name (remove trailing colon and @... suffix)
 		name := strings.TrimSuffix(fields[1], ":")
+		if idx := strings.Index(name, "@"); idx != -1 {
+			name = name[:idx]
+		}
 
 		// Skip virtual interfaces
 		if isVirtualInterface(name) {
@@ -117,15 +120,11 @@ func isVirtualInterface(name string) bool {
 
 // isPhysicalInterface checks if an interface is physical
 func isPhysicalInterface(name string) bool {
-	// Check if /sys/class/net/<name>/device exists (physical device)
 	devicePath := fmt.Sprintf("/sys/class/net/%s/device", name)
 	if _, err := os.Stat(devicePath); err == nil {
 		return true
 	}
-
-	// Some physical interfaces might not have /device but are still physical
-	// Check if it's not in the virtual list
-	return !isVirtualInterface(name)
+	return false
 }
 
 // hasCarrier checks if an interface has carrier (link detected)

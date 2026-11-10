@@ -5,6 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
 	"github.com/Inoriol/lxspawn/internal/snapshot"
 )
@@ -17,6 +18,24 @@ var snapshotCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		machineName := args[0]
 		snapName := args[1]
+
+		machineMgr, err := machine.NewManager()
+		if err != nil {
+			return err
+		}
+		defer machineMgr.Close()
+
+		if _, exists := machineMgr.GetMachineInfo(machineName); !exists {
+			return fmt.Errorf("machine '%s' not found", machineName)
+		}
+
+		status, err := machineMgr.GetStatus(machineName)
+		if err != nil {
+			return fmt.Errorf("failed to get machine status: %w", err)
+		}
+		if status.State == "running" {
+			return fmt.Errorf("machine '%s' is running; stop it before creating a snapshot", machineName)
+		}
 
 		mgr, err := snapshot.NewManager(machineName)
 		if err != nil {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -24,13 +25,18 @@ var createCmd = &cobra.Command{
 			return fmt.Errorf("invalid config: %w", err)
 		}
 
+		sourcePath, err := filepath.Abs(args[0])
+		if err != nil {
+			return fmt.Errorf("failed to resolve source path: %w", err)
+		}
+
 		mgr, err := machine.NewManager()
 		if err != nil {
 			return err
 		}
 		defer mgr.Close()
 
-		filesWritten, err := mgr.Create(cfg, args[0])
+		filesWritten, err := mgr.Create(cfg, sourcePath)
 		if err != nil {
 			return err
 		}
@@ -38,7 +44,7 @@ var createCmd = &cobra.Command{
 		if output.IsJSONMode() {
 			return output.PrintJSON(&output.CreateData{
 				Machine:      cfg.Name,
-				SourcePath:   args[0],
+				SourcePath:   sourcePath,
 				FilesWritten: filesWritten,
 				Success:      true,
 			})

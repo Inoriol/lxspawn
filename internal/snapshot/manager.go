@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
@@ -21,6 +22,10 @@ type Manager struct {
 }
 
 func NewManager(machineName string) (*Manager, error) {
+	if err := config.ValidateMachineName(machineName); err != nil {
+		return nil, err
+	}
+
 	rootfsPath := deploy.MachineRootfsPath(machineName)
 	if !deploy.FileExists(rootfsPath) {
 		return nil, fmt.Errorf("machine rootfs not found at %s", rootfsPath)
@@ -31,17 +36,7 @@ func NewManager(machineName string) (*Manager, error) {
 		return nil, fmt.Errorf("failed to detect snapshot backend: %w", err)
 	}
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	dataDir := os.Getenv("XDG_DATA_HOME")
-	if dataDir == "" {
-		dataDir = filepath.Join(home, ".local", "share")
-	}
-
-	statePath := filepath.Join(dataDir, "lxspawn", machineName, "snapshots.json")
+	statePath := filepath.Join(deploy.LxspawnMachineDir(machineName), "snapshots.json")
 
 	mgr := &Manager{
 		stateFilePath: statePath,
@@ -126,6 +121,10 @@ func (m *Manager) RollbackSnapshot(snapName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := ValidateSnapshotName(snapName); err != nil {
+		return err
+	}
+
 	if err := m.backend.RollbackSnapshot(m.machineName, snapName, m.rootfsPath); err != nil {
 		return err
 	}
@@ -141,6 +140,10 @@ func (m *Manager) RollbackSnapshot(snapName string) error {
 func (m *Manager) DeleteSnapshot(snapName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if err := ValidateSnapshotName(snapName); err != nil {
+		return err
+	}
 
 	if err := m.backend.DeleteSnapshot(m.machineName, snapName, m.rootfsPath); err != nil {
 		return err

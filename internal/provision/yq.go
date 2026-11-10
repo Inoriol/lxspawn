@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -26,19 +27,16 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
 	}
 
-	// Read existing file
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", prov.Path, err)
 	}
 
-	// Determine format
 	format := prov.Format
 	if format == "" {
 		format = detectFormat(prov.Path)
 	}
 
-	// Parse the file
 	var content interface{}
 	switch format {
 	case "json":
@@ -53,7 +51,6 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 		return fmt.Errorf("unsupported format: %s", format)
 	}
 
-	// Apply expression (simplified - supports basic path assignments)
 	rendered, err := RenderTemplate(prov.Expression, ctx)
 	if err != nil {
 		return fmt.Errorf("failed to render expression: %w", err)
@@ -63,7 +60,6 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 		return fmt.Errorf("failed to apply expression: %w", err)
 	}
 
-	// Write back
 	var output []byte
 	switch format {
 	case "json":
@@ -75,9 +71,15 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 		return fmt.Errorf("failed to marshal output: %w", err)
 	}
 
-	if err := os.WriteFile(targetPath, output, 0644); err != nil {
+	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", prov.Path, err)
+	}
+	if _, err := f.Write(output); err != nil {
+		f.Close()
 		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
 	}
+	f.Close()
 
 	logger.Debug(fmt.Sprintf("Modified %s", prov.Path))
 	return nil
@@ -98,31 +100,67 @@ func detectFormat(path string) string {
 func applyExpression(content interface{}, expression string, format string) error {
 	expression = strings.TrimSpace(expression)
 	
-	if strings.Contains(expression, "|=") {
-		return applyUpdateExpression(content, expression)
+	// Parse operators more carefully to avoid false matches
+	// Order matters: check |= and += before = 
+	path, operator, value, err := parseOperator(expression)
+	if err != nil {
+		return err
 	}
-	
-	if strings.Contains(expression, "+=") {
-		return applyAppendExpression(content, expression)
+
+	switch operator {
+	case "|=":
+		return applyUpdateExpression(content, path, value)
+	case "+=":
+		return applyAppendExpression(content, path, value)
+	case "=":
+		return applySetExpression(content, path, value)
+	default:
+		return fmt.Errorf("unsupported operator: %s", operator)
 	}
-	
-	if strings.Contains(expression, "=") && !strings.Contains(expression, "==") {
-		return applySetExpression(content, expression)
-	}
-	
-	return fmt.Errorf("unsupported expression syntax: %s", expression)
 }
 
-func applySetExpression(content interface{}, expression string) error {
-	parts := strings.SplitN(expression, "=", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid expression format: %s", expression)
+// parseOperator extracts the path, operator, and value from an expression
+func parseOperator(expression string) (path, operator, value string, err error) {
+	// Find the first unquoted operator
+	operators := []string{"|=", "+=", "="}
+	
+	for i := 0; i < len(expression); i++ {
+		c := expression[i]
+		// Skip quoted strings
+		if c == '"' || c == '\'' {
+			quote := c
+			i++
+			for i < len(expression) && expression[i] != quote {
+				if expression[i] == '\\' {
+					i++ // Skip escaped character
+				}
+				i++
+			}
+			continue
+		}
+		
+		// Check for operators at this position
+		for _, op := range operators {
+			if i+len(op) <= len(expression) && expression[i:i+len(op)] == op {
+				// Make sure we don't match == as =
+				if op == "=" && i+1 < len(expression) && expression[i+1] == '=' {
+					continue
+				}
+				path = strings.TrimSpace(expression[:i])
+				value = strings.TrimSpace(expression[i+len(op):])
+				return path, op, value, nil
+			}
+		}
 	}
+	
+	return "", "", "", fmt.Errorf("no operator found in expression: %s", expression)
+}
 
-	path := strings.TrimSpace(parts[0])
-	value := strings.TrimSpace(parts[1])
-
+func applySetExpression(content interface{}, path string, value string) error {
 	path = strings.TrimPrefix(path, ".")
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
 	components := strings.Split(path, ".")
 
 	current, ok := content.(map[string]interface{})
@@ -148,16 +186,11 @@ func applySetExpression(content interface{}, expression string) error {
 	return nil
 }
 
-func applyUpdateExpression(content interface{}, expression string) error {
-	parts := strings.SplitN(expression, "|=", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid update expression: %s", expression)
-	}
-
-	path := strings.TrimSpace(parts[0])
-	updateExpr := strings.TrimSpace(parts[1])
-
+func applyUpdateExpression(content interface{}, path string, updateExpr string) error {
 	path = strings.TrimPrefix(path, ".")
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
 	components := strings.Split(path, ".")
 
 	current, ok := content.(map[string]interface{})
@@ -180,38 +213,38 @@ func applyUpdateExpression(content interface{}, expression string) error {
 	finalKey := components[len(components)-1]
 	currentValue := current[finalKey]
 
-	if strings.Contains(updateExpr, ". +") {
-		valuePart := strings.TrimSpace(strings.Split(updateExpr, ". +")[1])
-		newValue := parseValue(valuePart)
-		
-		if arr, ok := currentValue.([]interface{}); ok {
-			if newArr, ok := newValue.([]interface{}); ok {
-				current[finalKey] = append(arr, newArr...)
-			} else {
-				current[finalKey] = append(arr, newValue)
-			}
-		} else if currentValue == nil {
-			if newArr, ok := newValue.([]interface{}); ok {
-				current[finalKey] = newArr
-			} else {
-				current[finalKey] = []interface{}{newValue}
-			}
+	// Only support ". +" syntax for update
+	if !strings.HasPrefix(updateExpr, ". +") {
+		return fmt.Errorf("unsupported update expression (only '. +' is supported): %s", updateExpr)
+	}
+
+	valuePart := strings.TrimSpace(strings.TrimPrefix(updateExpr, ". +"))
+	newValue := parseValue(valuePart)
+	
+	if arr, ok := currentValue.([]interface{}); ok {
+		if newArr, ok := newValue.([]interface{}); ok {
+			current[finalKey] = append(arr, newArr...)
+		} else {
+			current[finalKey] = append(arr, newValue)
 		}
+	} else if currentValue == nil {
+		if newArr, ok := newValue.([]interface{}); ok {
+			current[finalKey] = newArr
+		} else {
+			current[finalKey] = []interface{}{newValue}
+		}
+	} else {
+		return fmt.Errorf("cannot update non-array value with +=")
 	}
 
 	return nil
 }
 
-func applyAppendExpression(content interface{}, expression string) error {
-	parts := strings.SplitN(expression, "+=", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid append expression: %s", expression)
-	}
-
-	path := strings.TrimSpace(parts[0])
-	value := strings.TrimSpace(parts[1])
-
+func applyAppendExpression(content interface{}, path string, value string) error {
 	path = strings.TrimPrefix(path, ".")
+	if path == "" {
+		return fmt.Errorf("empty path")
+	}
 	components := strings.Split(path, ".")
 
 	current, ok := content.(map[string]interface{})
@@ -247,6 +280,8 @@ func applyAppendExpression(content interface{}, expression string) error {
 		} else {
 			current[finalKey] = []interface{}{newValue}
 		}
+	} else {
+		return fmt.Errorf("cannot append to non-array value")
 	}
 
 	return nil
@@ -264,10 +299,33 @@ func parseValue(value string) interface{} {
 		return nil
 	}
 
-	// Try as number
-	var num float64
-	if _, err := fmt.Sscanf(value, "%f", &num); err == nil {
-		return num
+	// Remove quotes if present (check before number parsing)
+	if (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
+		(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
+		return value[1 : len(value)-1]
+	}
+
+	// Try as integer first (no decimal point)
+	if !strings.Contains(value, ".") {
+		var num int64
+		if _, err := fmt.Sscanf(value, "%d", &num); err == nil {
+			// Verify the entire string was consumed
+			if fmt.Sprintf("%d", num) == value {
+				return num
+			}
+		}
+	}
+
+	// Try as float (must have exactly one decimal point and be a valid number)
+	if strings.Count(value, ".") == 1 {
+		var num float64
+		if _, err := fmt.Sscanf(value, "%f", &num); err == nil {
+			// Verify it's not something like "10.0.0.1" (IP address)
+			// by checking that the string representation matches
+			if fmt.Sprintf("%g", num) == value || fmt.Sprintf("%f", num) == value {
+				return num
+			}
+		}
 	}
 
 	// Try as JSON array/object
@@ -276,12 +334,6 @@ func parseValue(value string) interface{} {
 		if err := json.Unmarshal([]byte(value), &parsed); err == nil {
 			return parsed
 		}
-	}
-
-	// Remove quotes if present
-	if (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
-		(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
-		return value[1 : len(value)-1]
 	}
 
 	// Return as string

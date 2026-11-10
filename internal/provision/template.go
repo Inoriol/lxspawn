@@ -59,7 +59,10 @@ var templateFuncs = template.FuncMap{
 }
 
 func RenderTemplate(text string, ctx *TemplateContext) (string, error) {
-	tmpl, err := template.New("provision").Funcs(templateFuncs).Parse(text)
+	tmpl, err := template.New("provision").
+		Funcs(templateFuncs).
+		Option("missingkey=error"). // Error on missing keys instead of rendering empty
+		Parse(text)
 	if err != nil {
 		return "", err
 	}

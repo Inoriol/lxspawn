@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -43,7 +44,6 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
 	}
 
-	// Check if file exists and overwrite is false
 	overwrite := true
 	if prov.Overwrite != nil {
 		overwrite = *prov.Overwrite
@@ -54,12 +54,10 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		return nil
 	}
 
-	// Create parent directories
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return fmt.Errorf("failed to create parent dirs: %w", err)
 	}
 
-	// Determine permissions
 	perm := os.FileMode(0644)
 	if prov.Permissions != "" {
 		parsed, err := strconv.ParseUint(prov.Permissions, 8, 32)
@@ -69,16 +67,25 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		perm = os.FileMode(parsed)
 	}
 
-	if err := os.WriteFile(targetPath, []byte(rendered), perm); err != nil {
+	f, err := openFileNoFollow(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	if err != nil {
+		return fmt.Errorf("failed to open file %s: %w", prov.Path, err)
+	}
+	if _, err := f.Write([]byte(rendered)); err != nil {
+		f.Close()
 		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
+	}
+	f.Close()
+
+	if err := os.Chmod(targetPath, perm); err != nil {
+		return fmt.Errorf("failed to chmod %s to %o: %w", prov.Path, perm, err)
 	}
 
 	logger.Debug(fmt.Sprintf("Wrote %s", prov.Path))
 
-	// Set ownership if specified
 	if prov.Owner != "" {
 		if err := setOwnership(targetPath, prov.Owner, d.rootfsPath); err != nil {
-			logger.Warn(fmt.Sprintf("failed to set ownership on %s: %v", prov.Path, err))
+			return fmt.Errorf("failed to set ownership on %s: %w", prov.Path, err)
 		}
 	}
 
@@ -193,5 +200,96 @@ func validatePath(rootfsPath, relativePath string) (string, error) {
 		return "", fmt.Errorf("path %q escapes rootfs directory %s", relativePath, rootfsPath)
 	}
 
-	return targetPath, nil
+	resolvedPath, err := secureJoin(cleanRootfs, relativePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve path %q: %w", relativePath, err)
+	}
+
+	if !strings.HasPrefix(resolvedPath, cleanRootfs+string(os.PathSeparator)) && resolvedPath != cleanRootfs {
+		return "", fmt.Errorf("path %q resolves outside rootfs (via symlink)", relativePath)
+	}
+
+	return resolvedPath, nil
+}
+
+func secureJoin(root, path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("path must be absolute: %s", path)
+	}
+
+	cleanRoot := filepath.Clean(root)
+
+	relPath := strings.TrimPrefix(filepath.Clean(path), "/")
+	if relPath == "" || relPath == "." {
+		return cleanRoot, nil
+	}
+
+	parts := strings.Split(relPath, string(os.PathSeparator))
+	current := cleanRoot
+
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		next := filepath.Join(current, part)
+
+		fi, err := os.Lstat(next)
+		if err != nil {
+			if os.IsNotExist(err) {
+				remaining := parts[i+1:]
+				if len(remaining) > 0 {
+					return filepath.Join(next, filepath.Join(remaining...)), nil
+				}
+				return next, nil
+			}
+			return "", err
+		}
+
+		// Resolve symlinks, including chained symlinks
+		for fi.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(next)
+			if err != nil {
+				return "", err
+			}
+
+			var resolved string
+			if filepath.IsAbs(linkTarget) {
+				// If the symlink target is already under the root, use it directly
+				if strings.HasPrefix(linkTarget, cleanRoot+string(os.PathSeparator)) || linkTarget == cleanRoot {
+					resolved = linkTarget
+				} else {
+					// Otherwise, it's trying to escape
+					return "", fmt.Errorf("symlink %q points outside root: %s", next, linkTarget)
+				}
+			} else {
+				resolved = filepath.Join(filepath.Dir(next), linkTarget)
+			}
+			resolved = filepath.Clean(resolved)
+
+			if !strings.HasPrefix(resolved, cleanRoot+string(os.PathSeparator)) && resolved != cleanRoot {
+				return "", fmt.Errorf("symlink %q points outside root: %s", next, linkTarget)
+			}
+
+			next = resolved
+			fi, err = os.Lstat(next)
+			if err != nil {
+				if os.IsNotExist(err) {
+					remaining := parts[i+1:]
+					if len(remaining) > 0 {
+						return filepath.Join(next, filepath.Join(remaining...)), nil
+					}
+					return next, nil
+				}
+				return "", err
+			}
+		}
+
+		current = next
+	}
+
+	return current, nil
+}
+
+func openFileNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
+	return os.OpenFile(path, flag|syscall.O_NOFOLLOW, perm)
 }

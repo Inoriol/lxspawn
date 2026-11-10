@@ -3,9 +3,8 @@ package storage
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
+	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -99,28 +98,15 @@ func (d *DirectoryBackend) GetMachinePath(name string) string {
 
 // GetUsage returns storage usage for the base path
 func (d *DirectoryBackend) GetUsage() (int64, int64, error) {
-	// Use df to get filesystem usage
-	cmd := exec.Command("df", "-B1", "--output=used,size", d.basePath)
-	output, err := cmd.Output()
-	if err != nil {
-		return 0, 0, fmt.Errorf("failed to get filesystem usage: %w", err)
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(d.basePath, &stat); err != nil {
+		return 0, 0, fmt.Errorf("failed to stat filesystem: %w", err)
 	}
 
-	// Parse df output (skip header line)
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) < 2 {
-		return 0, 0, fmt.Errorf("unexpected df output")
-	}
-
-	// Parse the data line
-	fields := strings.Fields(lines[1])
-	if len(fields) < 2 {
-		return 0, 0, fmt.Errorf("unexpected df output format")
-	}
-
-	var used, total int64
-	fmt.Sscanf(fields[0], "%d", &used)
-	fmt.Sscanf(fields[1], "%d", &total)
+	// Calculate total and used space in bytes
+	total := int64(stat.Blocks) * int64(stat.Bsize)
+	free := int64(stat.Bfree) * int64(stat.Bsize)
+	used := total - free
 
 	return used, total, nil
 }

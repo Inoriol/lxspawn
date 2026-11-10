@@ -4,12 +4,10 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/Inoriol/lxspawn/internal/config"
-	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
@@ -63,56 +61,27 @@ var editCmd = &cobra.Command{
 			return fmt.Errorf("machine name changed from '%s' to '%s'; use 'lxspawn delete' and 'lxspawn launch' instead", name, cfg.Name)
 		}
 
-		// Create backup by renaming rootfs for rollback protection
-		rootfsPath := deploy.MachineRootfsPath(name)
-		backupPath := rootfsPath + ".backup-" + fmt.Sprintf("%d", time.Now().Unix())
-		hasBackup := false
-		if deploy.FileExists(rootfsPath) {
-			if err := os.Rename(rootfsPath, backupPath); err != nil {
-				logger.Warn(fmt.Sprintf("failed to create rootfs backup: %v", err))
-			} else {
-				hasBackup = true
-				logger.Info("Created rootfs backup for rollback protection")
+		status, err := mgr.GetStatus(name)
+		if err != nil {
+			return fmt.Errorf("failed to get machine status: %w", err)
+		}
+		wasRunning := status.State == "running"
+
+		if wasRunning {
+			logger.Info("Stopping machine to apply changes...")
+			if err := mgr.Stop(name); err != nil {
+				return fmt.Errorf("failed to stop machine: %w", err)
 			}
 		}
 
-		if err := mgr.Delete(name); err != nil {
-			// Restore backup if delete failed
-			if hasBackup {
-				if restoreErr := os.Rename(backupPath, rootfsPath); restoreErr != nil {
-					logger.Warn(fmt.Sprintf("failed to restore rootfs backup: %v", restoreErr))
-				}
-			}
-			return fmt.Errorf("failed to delete old machine: %w", err)
+		if err := mgr.Apply(cfg, info.SourcePath); err != nil {
+			return fmt.Errorf("failed to apply config changes: %w", err)
 		}
 
-		if err := mgr.Launch(cfg, info.SourcePath); err != nil {
-			// Launch failed, try to restore from backup
-			if hasBackup {
-				logger.Warn("Launch failed, attempting to restore from backup")
-				// Delete the failed new rootfs if it exists
-				newRootfsPath := deploy.MachineRootfsPath(name)
-				if deploy.FileExists(newRootfsPath) {
-					os.RemoveAll(newRootfsPath)
-				}
-				// Restore backup
-				if restoreErr := os.Rename(backupPath, newRootfsPath); restoreErr != nil {
-					return fmt.Errorf("failed to launch updated machine: %w (also failed to restore backup: %v)", err, restoreErr)
-				}
-		// Try to launch again with the restored rootfs
-			if restoreErr := mgr.Launch(cfg, info.SourcePath); restoreErr != nil {
-				return fmt.Errorf("failed to launch updated machine: %w (backup restored but launch still failed: %v)", err, restoreErr)
-			}
-			logger.Info("Successfully restored from backup")
-			return nil
-		}
-		return fmt.Errorf("failed to launch updated machine: %w", err)
-		}
-
-		// Clean up backup if launch succeeded
-		if hasBackup {
-			if err := os.RemoveAll(backupPath); err != nil {
-				logger.Warn(fmt.Sprintf("failed to remove backup: %v", err))
+		if wasRunning {
+			logger.Info("Restarting machine...")
+			if err := mgr.Start(name); err != nil {
+				return fmt.Errorf("failed to restart machine: %w", err)
 			}
 		}
 

@@ -89,7 +89,7 @@ func (b *BootProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		}
 
 		enableLink := filepath.Join(enableDir, "lxspawn-boot.service")
-		if err := os.Symlink(servicePath, enableLink); err != nil {
+		if err := os.Symlink("../lxspawn-boot.service", enableLink); err != nil {
 			return fmt.Errorf("failed to enable boot service: %w", err)
 		}
 

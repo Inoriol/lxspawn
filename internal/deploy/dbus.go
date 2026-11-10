@@ -3,6 +3,7 @@ package deploy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	systemdbus "github.com/coreos/go-systemd/v22/dbus"
@@ -191,7 +192,10 @@ func (s *SystemdManager) GetMachineState(name string) (string, []string, error) 
 
 	prop, err := obj.GetProperty("org.freedesktop.machine1.Machine.State")
 	if err != nil {
-		return "stopped", nil, nil
+		if isMachineNotFound(err) {
+			return "stopped", nil, nil
+		}
+		return "", nil, fmt.Errorf("failed to get machine state: %w", err)
 	}
 
 	state, _ := prop.Value().(string)
@@ -199,6 +203,16 @@ func (s *SystemdManager) GetMachineState(name string) (string, []string, error) 
 	addresses := s.getMachineAddresses(name)
 
 	return state, addresses, nil
+}
+
+func isMachineNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "UnknownMachine") ||
+		strings.Contains(errStr, "unknown machine") ||
+		strings.Contains(errStr, "org.freedesktop.DBus.Error.UnknownObject")
 }
 
 func (s *SystemdManager) GetMachineLeader(name string) (int, error) {
@@ -245,7 +259,12 @@ func machineName(name string) string {
 	for i := 0; i < len(name); i++ {
 		c := name[i]
 		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
-			result = append(result, c)
+			// Escape leading digit (D-Bus object paths cannot start with a digit)
+			if i == 0 && c >= '0' && c <= '9' {
+				result = append(result, '_', hexDigit(c>>4), hexDigit(c&0x0f))
+			} else {
+				result = append(result, c)
+			}
 		} else {
 			result = append(result, '_', hexDigit(c>>4), hexDigit(c&0x0f))
 		}

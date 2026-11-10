@@ -947,6 +947,7 @@ func TestParseSizeToGB(t *testing.T) {
 		{"2048 megabytes", "2048M", 2, false},
 		{"1 megabyte rounds up to 1GB", "1M", 1, false},
 		{"100 megabytes rounds up to 1GB", "100M", 1, false},
+		{"0.5 gigabytes rounds up to 1GB", "0.5G", 1, false},
 		{"1.5 gigabytes", "1.5G", 1, false},
 		{"2.5 gigabytes", "2.5G", 2, false},
 		{"0.5 terabytes", "0.5T", 512, false},
@@ -969,5 +970,293 @@ func TestParseSizeToGB(t *testing.T) {
 				t.Errorf("ParseSizeToGB(%q) = %d, want %d", tt.size, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateMachineName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"valid simple", "testbox", false},
+		{"valid with hyphen", "test-box", false},
+		{"valid with underscore", "test_box", false},
+		{"valid single char", "a", false},
+		{"valid single digit", "1", false},
+		{"empty", "", true},
+		{"starts with hyphen", "-test", true},
+		{"ends with hyphen", "test-", true},
+		{"starts with dot", ".test", true},
+		{"contains slash", "test/box", true},
+		{"contains dotdot", "../etc", true},
+		{"contains space", "test box", true},
+		{"contains newline", "test\nbox", true},
+		{"too long", "a12345678901234567890123456789012345678901234567890123456789012345", true},
+		{"reserved system", "system", true},
+		{"reserved user", "user", true},
+		{"reserved shutdown", "shutdown", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateMachineName(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ValidateMachineName(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateHostnameWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Advanced: Advanced{
+			Hostname: "test\ninjection",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain newlines") {
+		t.Errorf("expected newline error, got: %v", err)
+	}
+}
+
+func TestValidateEnvironmentWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Advanced: Advanced{
+			Environment: map[string]string{
+				"FOO": "bar\ninjection",
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain newlines") {
+		t.Errorf("expected newline error, got: %v", err)
+	}
+}
+
+func TestValidateEnvironmentKeyWithEquals(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Advanced: Advanced{
+			Environment: map[string]string{
+				"FOO=BAR": "value",
+			},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain") {
+		t.Errorf("expected equals error, got: %v", err)
+	}
+}
+
+func TestValidateCapabilityWithoutPrefix(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Security: Security{
+			Capabilities: []string{"NET_ADMIN"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must start with CAP_") {
+		t.Errorf("expected CAP_ prefix error, got: %v", err)
+	}
+}
+
+func TestValidateCapabilityWithSpace(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Security: Security{
+			Capabilities: []string{"CAP_NET_ADMIN CAP_SYS_ADMIN"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain spaces") {
+		t.Errorf("expected space error, got: %v", err)
+	}
+}
+
+func TestValidateInaccessibleRelativePath(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Security: Security{
+			Inaccessible: []string{"relative/path"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must be absolute") {
+		t.Errorf("expected absolute path error, got: %v", err)
+	}
+}
+
+func TestValidateGPUDeviceWithDotDot(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/../etc/shadow"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || (!strings.Contains(err.Error(), "cannot contain '..'") && !strings.Contains(err.Error(), "must be clean")) {
+		t.Errorf("expected path traversal error, got: %v", err)
+	}
+}
+
+func TestValidateNetworkBridgeWithInvalidChars(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:   NetworkBridge,
+			Bridge: "br0; rm -rf /",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected invalid characters error, got: %v", err)
+	}
+}
+
+func TestValidateNetworkInterfaceWithInvalidChars(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Network: Network{
+			Mode:      NetworkMacvlan,
+			Interface: "eth0\ninjection",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected invalid characters error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeHostWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/mnt/data\n/etc/shadow", Mount: "/data"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain newlines") {
+		t.Errorf("expected newline error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeMountWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Host: "/mnt/data", Mount: "/data\ninjection"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "cannot contain newlines") {
+		t.Errorf("expected newline error, got: %v", err)
+	}
+}
+
+func TestValidateResourcesMemoryInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Resources: Resources{
+			Memory: "invalid",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "not a valid size") {
+		t.Errorf("expected invalid size error, got: %v", err)
+	}
+}
+
+func TestValidateResourcesTasksInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Resources: Resources{
+			Tasks: "not-a-number",
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must be a number or 'infinity'") {
+		t.Errorf("expected tasks error, got: %v", err)
+	}
+}
+
+func TestValidateResourcesTasksInfinity(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Resources: Resources{
+			Tasks: "infinity",
+		},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("unexpected error for infinity: %v", err)
+	}
+}
+
+func TestParseStrictRejectsUnknownFields(t *testing.T) {
+	path := writeTempYAML(t, `
+name: testbox
+distro: debian:bookworm
+memroy: 2G
+`)
+	_, err := ParseStrict(path)
+	if err == nil {
+		t.Fatal("ParseStrict should reject unknown fields")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestParseStrictAcceptsValidFields(t *testing.T) {
+	path := writeTempYAML(t, `
+name: testbox
+distro: debian:bookworm
+resources:
+  cpus: 2
+  memory: 2G
+`)
+	cfg, err := ParseStrict(path)
+	if err != nil {
+		t.Fatalf("ParseStrict should accept valid fields: %v", err)
+	}
+	if cfg.Name != "testbox" {
+		t.Errorf("Name = %q, want %q", cfg.Name, "testbox")
+	}
+	if cfg.Resources.CPUs != 2 {
+		t.Errorf("CPUs = %v, want %v", cfg.Resources.CPUs, 2)
+	}
+}
+
+func TestParseStrictRejectsTypoInNetworkMode(t *testing.T) {
+	path := writeTempYAML(t, `
+name: testbox
+distro: debian:bookworm
+network:
+  bridg: br0
+`)
+	_, err := ParseStrict(path)
+	if err == nil {
+		t.Fatal("ParseStrict should reject unknown fields")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
 	}
 }

@@ -30,17 +30,7 @@ type StateManager struct {
 }
 
 func NewStateManager() (*StateManager, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-
-	dataDir := os.Getenv("XDG_DATA_HOME")
-	if dataDir == "" {
-		dataDir = filepath.Join(home, ".local", "share")
-	}
-
-	statePath := filepath.Join(dataDir, "lxspawn", "machines.json")
+	statePath := filepath.Join(LxspawnDataDir, "machines.json")
 
 	sm := &StateManager{
 		StateFilePath: statePath,
@@ -76,6 +66,7 @@ func (sm *StateManager) lock() error {
 	sm.lockFile = f
 
 	if err := sm.load(); err != nil && !os.IsNotExist(err) {
+		sm.unlock()
 		return err
 	}
 
@@ -99,7 +90,12 @@ func (sm *StateManager) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, &sm.Machines)
+	var freshMap map[string]MachineInfo
+	if err := json.Unmarshal(data, &freshMap); err != nil {
+		return err
+	}
+	sm.Machines = freshMap
+	return nil
 }
 
 func (sm *StateManager) Save() error {

@@ -2,18 +2,16 @@ package snapshot
 
 import (
 	"fmt"
-	"os/exec"
-	"strings"
+	"syscall"
 )
 
 func DetectFilesystem(path string) (BackendType, error) {
-	// Check filesystem type
-	out, err := exec.Command("stat", "-f", "-c", "%T", path).Output()
-	if err != nil {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
 		return "", fmt.Errorf("failed to detect filesystem type for %s: %w", path, err)
 	}
 
-	fsType := strings.TrimSpace(string(out))
+	fsType := filesystemTypeToString(stat.Type)
 
 	switch fsType {
 	case "btrfs":
@@ -22,6 +20,23 @@ func DetectFilesystem(path string) (BackendType, error) {
 		return "", fmt.Errorf("ZFS snapshots are not yet supported (untested) for %s - please use btrfs", path)
 	default:
 		return "", fmt.Errorf("snapshots require btrfs filesystem - %s is on %s", path, fsType)
+	}
+}
+
+func filesystemTypeToString(fsType int64) string {
+	switch fsType {
+	case 0x9123683E:
+		return "btrfs"
+	case 0x2FC12FC1:
+		return "zfs"
+	case 0xEF53:
+		return "ext4"
+	case 0x01021994:
+		return "tmpfs"
+	case 0x58465342:
+		return "xfs"
+	default:
+		return fmt.Sprintf("unknown(0x%x)", fsType)
 	}
 }
 

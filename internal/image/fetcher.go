@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
@@ -22,6 +23,21 @@ import (
 const lxcImageBaseURL = "https://images.linuxcontainers.org/images"
 
 const maxDownloadSize = 2 * 1024 * 1024 * 1024 // 2 GB
+const maxDecompressedSize = 10 * 1024 * 1024 * 1024 // 10 GB
+
+func unixModeToFileMode(mode int64) os.FileMode {
+	fm := os.FileMode(mode & 0777)
+	if mode&syscall.S_ISUID != 0 {
+		fm |= os.ModeSetuid
+	}
+	if mode&syscall.S_ISGID != 0 {
+		fm |= os.ModeSetgid
+	}
+	if mode&syscall.S_ISVTX != 0 {
+		fm |= os.ModeSticky
+	}
+	return fm
+}
 
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
@@ -201,7 +217,12 @@ func (f *Fetcher) download(url string) (string, error) {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	tmpFile, err := os.CreateTemp("", "lxspawn-rootfs-*.tar.xz")
+	cacheDir := filepath.Join(deploy.LxspawnDataDir, "cache")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create cache directory: %w", err)
+	}
+
+	tmpFile, err := os.CreateTemp(cacheDir, "rootfs-*.tar.xz")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
@@ -234,9 +255,18 @@ func extractTarXz(tarXzPath, targetDir string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create xz reader: %w", err)
 	}
-	defer xzReader.Close()
+	defer func() {
+		if closeErr := xzReader.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("xz close error: %w", closeErr)
+		}
+	}()
 
-	tarReader := tar.NewReader(xzReader)
+	limitedReader := io.LimitReader(xzReader, maxDecompressedSize+1)
+	tarReader := tar.NewReader(limitedReader)
+
+	cleanTargetDir := filepath.Clean(targetDir)
+	symlinks := make(map[string]string)
+	var totalDecompressed int64
 
 	for {
 		header, err := tarReader.Next()
@@ -247,22 +277,57 @@ func extractTarXz(tarXzPath, targetDir string) error {
 			return fmt.Errorf("tar read error: %w", err)
 		}
 
-		target := filepath.Join(targetDir, header.Name)
+		totalDecompressed += header.Size
+		if totalDecompressed > maxDecompressedSize {
+			return fmt.Errorf("decompressed size exceeds maximum of %d bytes", maxDecompressedSize)
+		}
 
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(targetDir)+string(os.PathSeparator)) && filepath.Clean(target) != filepath.Clean(targetDir) {
+		name := header.Name
+		if strings.HasPrefix(name, "./") {
+			name = name[2:]
+		}
+		name = strings.TrimPrefix(name, "/")
+
+		if name == "" {
+			continue
+		}
+
+		target := filepath.Join(targetDir, name)
+
+		if !strings.HasPrefix(filepath.Clean(target), cleanTargetDir+string(os.PathSeparator)) && filepath.Clean(target) != cleanTargetDir {
 			return fmt.Errorf("tar entry escapes target directory: %s", header.Name)
+		}
+
+		resolvedTarget, err := resolvePath(target, targetDir, symlinks)
+		if err != nil {
+			return fmt.Errorf("failed to resolve path for %s: %w", header.Name, err)
+		}
+
+		if !strings.HasPrefix(resolvedTarget, cleanTargetDir+string(os.PathSeparator)) && resolvedTarget != cleanTargetDir {
+			return fmt.Errorf("tar entry resolves outside target directory (via symlink): %s", header.Name)
 		}
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)|0700); err != nil {
+			if err := os.MkdirAll(target, unixModeToFileMode(header.Mode)|0700); err != nil {
 				return err
+			}
+			if os.Geteuid() == 0 {
+				if err := os.Lchown(target, int(header.Uid), int(header.Gid)); err != nil {
+					return fmt.Errorf("failed to chown directory %s: %w", target, err)
+				}
+				if err := os.Chmod(target, unixModeToFileMode(header.Mode)); err != nil {
+					return fmt.Errorf("failed to chmod directory %s: %w", target, err)
+				}
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
 			}
-			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode))
+			if isSymlinkInPath(target, targetDir, symlinks) {
+				return fmt.Errorf("refusing to write file through symlink: %s", header.Name)
+			}
+			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, unixModeToFileMode(header.Mode))
 			if err != nil {
 				return err
 			}
@@ -271,27 +336,39 @@ func extractTarXz(tarXzPath, targetDir string) error {
 				return err
 			}
 			outFile.Close()
+			if os.Geteuid() == 0 {
+				if err := os.Lchown(target, int(header.Uid), int(header.Gid)); err != nil {
+					return fmt.Errorf("failed to chown file %s: %w", target, err)
+				}
+				if err := os.Chmod(target, unixModeToFileMode(header.Mode)); err != nil {
+					return fmt.Errorf("failed to chmod file %s: %w", target, err)
+				}
+			}
 		case tar.TypeSymlink:
 			parentDir := filepath.Dir(target)
 			if err := os.MkdirAll(parentDir, 0755); err != nil {
 				return fmt.Errorf("failed to create parent directory %s: %w", parentDir, err)
 			}
-			// Validate the symlink target doesn't escape the destination directory
 			linkTarget := header.Linkname
-			var resolvedTarget string
+			var resolvedLinkTarget string
 			if filepath.IsAbs(linkTarget) {
-				resolvedTarget = filepath.Join(targetDir, linkTarget)
+				resolvedLinkTarget = filepath.Join(targetDir, linkTarget)
 			} else {
-				resolvedTarget = filepath.Join(filepath.Dir(target), linkTarget)
+				resolvedLinkTarget = filepath.Join(filepath.Dir(target), linkTarget)
 			}
-			cleanTarget := filepath.Clean(resolvedTarget)
-			if !strings.HasPrefix(cleanTarget, filepath.Clean(targetDir)+string(os.PathSeparator)) && cleanTarget != filepath.Clean(targetDir) {
+			cleanLinkTarget := filepath.Clean(resolvedLinkTarget)
+			if !strings.HasPrefix(cleanLinkTarget, cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
 				return fmt.Errorf("symlink target escapes destination directory: %s -> %s", header.Name, header.Linkname)
 			}
 			os.Remove(target)
-			// Create symlink with original linkname (relative or absolute as specified)
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return fmt.Errorf("failed to create symlink %s -> %s: %w", target, header.Linkname, err)
+			}
+			symlinks[filepath.Clean(target)] = header.Linkname
+			if os.Geteuid() == 0 {
+				if err := os.Lchown(target, int(header.Uid), int(header.Gid)); err != nil {
+					return fmt.Errorf("failed to lchown symlink %s: %w", target, err)
+				}
 			}
 		case tar.TypeLink:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
@@ -299,8 +376,11 @@ func extractTarXz(tarXzPath, targetDir string) error {
 			}
 			linkTarget := filepath.Join(targetDir, header.Linkname)
 			cleanLinkTarget := filepath.Clean(linkTarget)
-			if !strings.HasPrefix(cleanLinkTarget, filepath.Clean(targetDir)+string(os.PathSeparator)) && cleanLinkTarget != filepath.Clean(targetDir) {
+			if !strings.HasPrefix(cleanLinkTarget, cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
 				return fmt.Errorf("hardlink target escapes destination directory: %s -> %s", header.Name, header.Linkname)
+			}
+			if isSymlinkInPath(linkTarget, targetDir, symlinks) {
+				return fmt.Errorf("refusing to create hardlink through symlink: %s", header.Name)
 			}
 			os.Remove(target)
 			if err := os.Link(linkTarget, target); err != nil {
@@ -310,6 +390,70 @@ func extractTarXz(tarXzPath, targetDir string) error {
 	}
 
 	return nil
+}
+
+func resolvePath(path, root string, symlinks map[string]string) (string, error) {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+
+	relPath, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return "", err
+	}
+
+	parts := strings.Split(relPath, string(os.PathSeparator))
+	current := cleanRoot
+
+	for _, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		next := filepath.Join(current, part)
+
+		if linkTarget, isSymlink := symlinks[next]; isSymlink {
+			var resolved string
+			if filepath.IsAbs(linkTarget) {
+				resolved = filepath.Join(cleanRoot, linkTarget)
+			} else {
+				resolved = filepath.Join(filepath.Dir(next), linkTarget)
+			}
+			current = filepath.Clean(resolved)
+		} else {
+			current = next
+		}
+	}
+
+	return current, nil
+}
+
+func isSymlinkInPath(path, root string, symlinks map[string]string) bool {
+	cleanRoot := filepath.Clean(root)
+	cleanPath := filepath.Clean(path)
+
+	relPath, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil {
+		return false
+	}
+
+	parts := strings.Split(relPath, string(os.PathSeparator))
+	current := cleanRoot
+
+	for i, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		if i == len(parts)-1 {
+			break
+		}
+		next := filepath.Join(current, part)
+
+		if _, isSymlink := symlinks[next]; isSymlink {
+			return true
+		}
+		current = next
+	}
+
+	return false
 }
 
 type nopReadCloser struct {

@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
@@ -87,8 +88,25 @@ var editNetworkCmd = &cobra.Command{
 			return fmt.Errorf("failed to write YAML: %w", err)
 		}
 
+		cfg, err := config.Parse(info.SourcePath)
+		if err != nil {
+			return fmt.Errorf("failed to parse updated config: %w", err)
+		}
+
+		if err := config.Validate(cfg); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+
+		if err := mgr.Apply(cfg, info.SourcePath); err != nil {
+			return fmt.Errorf("failed to apply changes: %w", err)
+		}
+
 		logger.Success(fmt.Sprintf("Updated network config for machine '%s'", args[0]))
-		logger.Info("Restart the machine for changes to take effect")
+
+		status, err := mgr.GetStatus(args[0])
+		if err == nil && status.State == "running" {
+			logger.Info("Restart the machine for changes to take effect")
+		}
 
 		if output.IsJSONMode() {
 			return output.PrintJSON(&output.LifecycleData{

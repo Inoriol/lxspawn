@@ -76,6 +76,7 @@ var setupCmd = &cobra.Command{
 			desc string
 		}{
 			{deploy.LxspawnDataDir, "machine data"},
+			{filepath.Join(deploy.LxspawnDataDir, "cache"), "download cache"},
 			{deploy.MachinesDir, "machine rootfs"},
 			{deploy.NspawnDir, "container configs"},
 			{deploy.SystemdDir, "systemd units"},
@@ -213,29 +214,25 @@ func installSudoersRules() error {
 		rules = append(rules, "# btrfs operations")
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume create /var/lib/machines/*", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume delete /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume delete /var/lib/machines/*/.snapshots/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume delete /var/lib/machines/*.snapshots/*", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume show /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume list -o /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume list -o /var/lib/machines/*.snapshots", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*/.snapshots/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*.snapshots/*", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot /var/lib/machines/* /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot /var/lib/machines/*/.snapshots/* /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot /var/lib/machines/*.snapshots/* /var/lib/machines/*", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s filesystem usage -b /var/lib/machines", bin))
 	}
 
 	if bin := findBinary("lvs"); bin != "" {
 		rules = append(rules, "")
-		rules = append(rules, "# LVM operations")
+		rules = append(rules, "# LVM storage operations (snapshots not yet supported)")
 		if bin := findBinary("lvs"); bin != "" {
 			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --noheadings *", bin))
 			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s */lxspawn-*", bin))
 		}
 		if bin := findBinary("lvcreate"); bin != "" {
 			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --name lxspawn-* *", bin))
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --snapshot --name lxspawn-* *", bin))
-		}
-		if bin := findBinary("lvconvert"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --merge */lxspawn-*", bin))
 		}
 		if bin := findBinary("lvremove"); bin != "" {
 			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -f */lxspawn-*", bin))
@@ -249,14 +246,6 @@ func installSudoersRules() error {
 		if bin := findBinary("umount"); bin != "" {
 			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s /var/lib/machines/*", bin))
 		}
-	}
-
-	if bin := findBinary("zfs"); bin != "" {
-		rules = append(rules, "")
-		rules = append(rules, "# ZFS operations")
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s snapshot lxspawn/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s rollback -r lxspawn/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s destroy lxspawn/*", bin))
 	}
 
 	content := strings.Join(rules, "\n") + "\n"

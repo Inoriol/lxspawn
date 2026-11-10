@@ -1,4 +1,4 @@
-lxspawn
+/lxspawn
 *.tar.xz
 *.tmp
 internal-references/

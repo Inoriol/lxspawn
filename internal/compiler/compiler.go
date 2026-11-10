@@ -53,7 +53,10 @@ func Compile(cfg *config.Config) (*CompiledFiles, error) {
 	cf.DropInPath = fmt.Sprintf("/etc/systemd/system/systemd-nspawn@%s.service.d/lxspawn.conf", cfg.Name)
 
 	if hasHooks(cfg) || hasHostAccess(cfg) {
-		hooksDropIn, scripts := compileHooks(cfg)
+		hooksDropIn, scripts, err := compileHooks(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to compile hooks: %w", err)
+		}
 		cf.HooksDropIn = hooksDropIn
 		cf.HooksPath = fmt.Sprintf("/etc/systemd/system/systemd-nspawn@%s.service.d/lxspawn-hooks.conf", cfg.Name)
 		cf.HookScripts = scripts
@@ -106,7 +109,7 @@ func resolveNetworkMode(cfg *config.Config) error {
 	// Enable host access
 	cfg.Network.HostAccess.Enabled = true
 	if cfg.Network.HostAccess.Interface == "" {
-		cfg.Network.HostAccess.Interface = "mv-lxspawn"
+		cfg.Network.HostAccess.Interface = generateHostAccessInterfaceName(cfg.Name)
 	}
 	if cfg.Network.HostAccess.IP == "" {
 		ip, err := generateHostAccessIP(iface, cfg.Name)
@@ -170,6 +173,29 @@ func parseIPAndCIDR(ipWithCIDR string) ([4]byte, int, error) {
 	}
 
 	return ip, cidr, nil
+}
+
+func generateHostAccessInterfaceName(machineName string) string {
+	// Linux interface names are limited to 15 characters (IFNAMSIZ - 1)
+	// Format: mv-<machinename>, truncated if necessary
+	const maxLen = 15
+	const prefix = "mv-"
+	
+	if len(machineName) <= maxLen-len(prefix) {
+		return prefix + machineName
+	}
+	// Truncate machine name to fit, keeping it unique by using the hash
+	h := fnv.New32a()
+	h.Write([]byte(machineName))
+	hash := h.Sum32()
+	hashSuffix := fmt.Sprintf("%x", hash)[:4] // 4 char hash suffix
+	
+	availLen := maxLen - len(prefix) - len(hashSuffix) - 1 // -1 for separator
+	if availLen < 0 {
+		availLen = 0
+	}
+	truncated := machineName[:availLen]
+	return fmt.Sprintf("%s%s-%s", prefix, truncated, hashSuffix)
 }
 
 
