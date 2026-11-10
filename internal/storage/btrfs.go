@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -121,15 +122,21 @@ func (b *BtrfsBackend) GetUsage() (int64, int64, error) {
 		return 0, 0, fmt.Errorf("failed to get btrfs usage: %w", err)
 	}
 
-	// Parse output for "Device size" and "Used"
 	var total, used int64
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "Device size") {
-			fmt.Sscanf(line, "Device size: %d", &total)
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Device size:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				fmt.Sscanf(parts[2], "%d", &total)
+			}
 		}
-		if strings.Contains(line, "Used") {
-			fmt.Sscanf(line, "Used: %d", &used)
+		if strings.HasPrefix(line, "Used:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				fmt.Sscanf(parts[1], "%d", &used)
+			}
 		}
 	}
 
@@ -138,37 +145,14 @@ func (b *BtrfsBackend) GetUsage() (int64, int64, error) {
 
 // deleteChildSubvolumes recursively deletes child subvolumes
 func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
-	// List child subvolumes
-	listCmd := deploy.Sudo("btrfs", "subvolume", "list", "-o", parentPath)
-	output, err := listCmd.Output()
+	children, err := findChildSubvolumes(parentPath)
 	if err != nil {
-		return fmt.Errorf("failed to list child subvolumes: %w", err)
+		return err
 	}
 
-	// Delete children (deepest first)
-	lines := strings.Split(string(output), "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-
-		// btrfs subvolume list output format:
-		// ID <id> gen <gen> gen2 <gen2> cgen <cgen> top level <top> otrans <otrans> ... path <path>
-		// Minimum fields: ID, gen, top level, path = at least 8 fields
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-
-		childPath := fields[len(fields)-1]
-		// Make path absolute if relative
-		if !filepath.IsAbs(childPath) {
-			// btrfs subvolume list returns paths relative to the btrfs filesystem root
-			// which is typically /, so we just prepend /
-			childPath = "/" + childPath
-		}
-
+	// Delete children (deepest first - they're already sorted by depth)
+	for i := len(children) - 1; i >= 0; i-- {
+		childPath := children[i]
 		deleteCmd := deploy.Sudo("btrfs", "subvolume", "delete", childPath)
 		if deleteOutput, deleteErr := deleteCmd.CombinedOutput(); deleteErr != nil {
 			logger.Warn(fmt.Sprintf("failed to delete child subvolume %s: %v (%s)", childPath, deleteErr, string(deleteOutput)))
@@ -176,4 +160,37 @@ func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
 	}
 
 	return nil
+}
+
+func findChildSubvolumes(parentPath string) ([]string, error) {
+	entries, err := os.ReadDir(parentPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory %s: %w", parentPath, err)
+	}
+
+	var subvols []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		entryPath := filepath.Join(parentPath, entry.Name())
+		if isBtrfsSubvolume(entryPath) {
+			children, err := findChildSubvolumes(entryPath)
+			if err != nil {
+				return nil, err
+			}
+			subvols = append(subvols, children...)
+			subvols = append(subvols, entryPath)
+		}
+	}
+
+	return subvols, nil
+}
+
+func isBtrfsSubvolume(path string) bool {
+	var stat syscall.Stat_t
+	if err := syscall.Stat(path, &stat); err != nil {
+		return false
+	}
+	return stat.Ino == 256 && stat.Mode&syscall.S_IFDIR != 0
 }

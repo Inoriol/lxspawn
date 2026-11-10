@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -24,13 +25,18 @@ var launchCmd = &cobra.Command{
 			return fmt.Errorf("invalid config: %w", err)
 		}
 
+		sourcePath, err := filepath.Abs(args[0])
+		if err != nil {
+			return fmt.Errorf("failed to resolve source path: %w", err)
+		}
+
 		mgr, err := machine.NewManager()
 		if err != nil {
 			return err
 		}
 		defer mgr.Close()
 
-		if err := mgr.Launch(cfg, args[0]); err != nil {
+		if err := mgr.Launch(cfg, sourcePath); err != nil {
 			return err
 		}
 

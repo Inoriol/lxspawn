@@ -153,9 +153,34 @@ func buildEnvExport(params map[string]string) string {
 	}
 	var lines []string
 	for k, v := range params {
+		// Validate key is a valid shell variable name
+		if !isValidEnvVarName(k) {
+			continue // Skip invalid keys
+		}
 		escaped := strings.ReplaceAll(v, "'", "'\"'\"'")
 		lines = append(lines, fmt.Sprintf("export LXSPAWN_PARAM_%s='%s'", k, escaped))
 	}
 	sort.Strings(lines)
 	return strings.Join(lines, "\n")
+}
+
+// isValidEnvVarName checks if a string is a valid shell environment variable name
+func isValidEnvVarName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, c := range name {
+		if i == 0 {
+			// First character must be letter or underscore
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return false
+			}
+		} else {
+			// Subsequent characters can be letters, digits, or underscores
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') {
+				return false
+			}
+		}
+	}
+	return true
 }

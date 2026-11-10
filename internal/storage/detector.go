@@ -2,8 +2,8 @@ package storage
 
 import (
 	"fmt"
-	"os/exec"
 	"strings"
+	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -63,39 +63,51 @@ func DetectBackend(basePath string) (StorageBackend, error) {
 
 // getFilesystemType returns the filesystem type for a path
 func getFilesystemType(path string) (string, error) {
-	cmd := exec.Command("df", "--output=fstype", path)
-	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("df failed: %w", err)
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return "", fmt.Errorf("failed to stat filesystem: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) < 2 {
-		return "", fmt.Errorf("unexpected df output")
-	}
+	return filesystemTypeToString(stat.Type), nil
+}
 
-	return strings.TrimSpace(lines[len(lines)-1]), nil
+func filesystemTypeToString(fsType int64) string {
+	switch fsType {
+	case 0x9123683E:
+		return "btrfs"
+	case 0x2FC12FC1:
+		return "zfs"
+	case 0xEF53:
+		return "ext4"
+	case 0xEF51:
+		return "ext2"
+	case 0xEF52:
+		return "ext3"
+	case 0x01021994:
+		return "tmpfs"
+	case 0x58465342:
+		return "xfs"
+	default:
+		return fmt.Sprintf("unknown(0x%x)", fsType)
+	}
 }
 
 // isLVM checks if a path is on an LVM volume
 func isLVM(path string) bool {
-	cmd := exec.Command("df", "--output=source", path)
-	output, err := cmd.Output()
-	if err != nil {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
 		return false
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) < 2 {
+	// Get the device name from Statfs
+	device := fmt.Sprintf("%v", stat.Fsid)
+	if device == "" || device == "0" {
 		return false
 	}
-
-	device := strings.TrimSpace(lines[len(lines)-1])
 
 	// Check if device is an LVM volume
-
-	cmd = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
-	output, err = cmd.CombinedOutput()
+	cmd := deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return false
 	}
@@ -105,22 +117,18 @@ func isLVM(path string) bool {
 
 // getVGName returns the VG name for an LVM path
 func getVGName(path string) (string, error) {
-	cmd := exec.Command("df", "--output=source", path)
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return "", fmt.Errorf("failed to stat filesystem: %w", err)
+	}
+
+	device := fmt.Sprintf("%v", stat.Fsid)
+	if device == "" || device == "0" {
+		return "", fmt.Errorf("could not determine device for %s", path)
+	}
+
+	cmd := deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
 	output, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("df failed: %w", err)
-	}
-
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	if len(lines) < 2 {
-		return "", fmt.Errorf("unexpected df output")
-	}
-
-	device := strings.TrimSpace(lines[len(lines)-1])
-
-
-	cmd = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name", device)
-	output, err = cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get VG name: %w", err)
 	}

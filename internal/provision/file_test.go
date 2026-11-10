@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -180,6 +181,62 @@ func TestResolveFileRefSubdirectory(t *testing.T) {
 	}
 
 	filePath := filepath.Join(subDir, "setup.sh")
+	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	fh := &FileHandler{CacheDir: t.TempDir()}
+	got, err := fh.ResolveFileRef("scripts/setup.sh", "", baseDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if got != filePath {
+		t.Errorf("got %q, want %q", got, filePath)
+	}
+}
+
+func TestResolveFileRefRejectsHTTP(t *testing.T) {
+	fh := &FileHandler{CacheDir: t.TempDir()}
+	_, err := fh.ResolveFileRef("http://example.com/script.sh", "sha256:abc", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for http:// URL")
+	}
+	if !strings.Contains(err.Error(), "insecure URL rejected") {
+		t.Errorf("expected insecure URL error, got: %v", err)
+	}
+}
+
+func TestResolveFileRefRequiresDigestForHTTPS(t *testing.T) {
+	fh := &FileHandler{CacheDir: t.TempDir()}
+	_, err := fh.ResolveFileRef("https://example.com/script.sh", "", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for missing digest")
+	}
+	if !strings.Contains(err.Error(), "digest is required") {
+		t.Errorf("expected digest required error, got: %v", err)
+	}
+}
+
+func TestResolveFileRefRejectsPathTraversal(t *testing.T) {
+	baseDir := t.TempDir()
+	fh := &FileHandler{CacheDir: t.TempDir()}
+	
+	_, err := fh.ResolveFileRef("../../../etc/passwd", "", baseDir)
+	if err == nil {
+		t.Fatal("expected error for path traversal")
+	}
+	if !strings.Contains(err.Error(), "escapes base directory") {
+		t.Errorf("expected path traversal error, got: %v", err)
+	}
+}
+
+func TestResolveFileRefAllowsValidRelativePaths(t *testing.T) {
+	baseDir := t.TempDir()
+	filePath := filepath.Join(baseDir, "scripts", "setup.sh")
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
 		t.Fatal(err)
 	}

@@ -33,6 +33,32 @@ func TestIsVirtualInterface(t *testing.T) {
 	}
 }
 
+func TestIsPhysicalInterface(t *testing.T) {
+	// Test that non-existent interfaces are not physical
+	tests := []struct {
+		name     string
+		iface    string
+		expected bool
+	}{
+		{"non-existent interface", "nonexistent0", false},
+		{"loopback", "lo", false},
+		{"docker bridge", "docker0", false},
+		{"user bridge", "br0", false},
+		{"bond interface", "bond0", false},
+		{"nspawn veth", "ve-testbox", false},
+		{"macvlan host interface", "mv-lxspawn", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isPhysicalInterface(tt.iface)
+			if result != tt.expected {
+				t.Errorf("isPhysicalInterface(%s) = %v, want %v", tt.iface, result, tt.expected)
+			}
+		})
+	}
+}
+
 func TestGetInterfaceType(t *testing.T) {
 	// This test requires actual system interfaces, so we'll just test the function exists
 	// and doesn't panic on invalid input

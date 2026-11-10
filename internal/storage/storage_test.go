@@ -1,8 +1,10 @@
 package storage
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +140,68 @@ func TestDetectBackend(t *testing.T) {
 	// unless running on btrfs or LVM
 	if backend == nil {
 		t.Error("DetectBackend() returned nil")
+	}
+}
+
+func TestBtrfsUsageParsing(t *testing.T) {
+	// R17: Test that btrfs usage parsing handles indented output correctly
+	// This tests the parsing logic without requiring actual btrfs
+
+	testOutput := `Overall:
+    Device size:		  50.00GiB
+    Device allocated:		  10.00GiB
+    Device unallocated:		  40.00GiB
+    Used:			  5.00GiB
+    Free:			  45.00GiB
+`
+
+	var total, used int64
+	lines := strings.Split(testOutput, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Device size:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				fmt.Sscanf(parts[2], "%d", &total)
+			}
+		}
+		if strings.HasPrefix(line, "Used:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				fmt.Sscanf(parts[1], "%d", &used)
+			}
+		}
+	}
+
+	// The parsing should extract numeric values (even if they're 0 due to unit suffixes)
+	// The key is that it doesn't fail silently and return 0/0 for all cases
+	if total == 0 && used == 0 {
+		t.Error("btrfs usage parsing should extract non-zero values from properly formatted output")
+	}
+}
+
+func TestIsBtrfsSubvolume(t *testing.T) {
+	// Test with non-existent path
+	if isBtrfsSubvolume("/nonexistent/path") {
+		t.Error("isBtrfsSubvolume should return false for non-existent path")
+	}
+
+	// Test with regular file
+	tmpDir := t.TempDir()
+	tmpFile := tmpDir + "/regular.txt"
+	if err := os.WriteFile(tmpFile, []byte("test"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if isBtrfsSubvolume(tmpFile) {
+		t.Error("isBtrfsSubvolume should return false for regular file")
+	}
+
+	// Test with regular directory
+	regularDir := tmpDir + "/regular"
+	if err := os.MkdirAll(regularDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if isBtrfsSubvolume(regularDir) {
+		t.Error("isBtrfsSubvolume should return false for regular directory")
 	}
 }

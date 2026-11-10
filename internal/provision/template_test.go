@@ -171,12 +171,12 @@ func TestRenderTemplateInvalidTemplate(t *testing.T) {
 
 func TestRenderTemplateMissingParam(t *testing.T) {
 	ctx := testContext()
-	got, err := RenderTemplate("{{.Param.nonexistent}}", ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	_, err := RenderTemplate("{{.Param.nonexistent}}", ctx)
+	if err == nil {
+		t.Fatal("expected error for missing param")
 	}
-	if got != "<no value>" {
-		t.Errorf("got %q, want %q", got, "<no value>")
+	if !strings.Contains(err.Error(), "map has no entry") {
+		t.Errorf("expected map has no entry error, got: %v", err)
 	}
 }
 
@@ -185,12 +185,9 @@ func TestRenderTemplateNilParam(t *testing.T) {
 		Name:  "test",
 		Param: nil,
 	}
-	got, err := RenderTemplate("{{.Param.port}}", ctx)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got != "<no value>" {
-		t.Errorf("got %q, want %q", got, "<no value>")
+	_, err := RenderTemplate("{{.Param.port}}", ctx)
+	if err == nil {
+		t.Fatal("expected error for nil param")
 	}
 }
 
@@ -279,5 +276,33 @@ func TestRenderTemplateShellEscapeFuncSafe(t *testing.T) {
 	}
 	if got != "echo simple" {
 		t.Errorf("got %q, want %q", got, "echo simple")
+	}
+}
+
+func TestIsValidEnvVarName(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"valid simple", "port", true},
+		{"valid underscore", "my_var", true},
+		{"valid uppercase", "MY_VAR", true},
+		{"valid with numbers", "var123", true},
+		{"valid underscore prefix", "_var", true},
+		{"empty", "", false},
+		{"starts with number", "123var", false},
+		{"contains dash", "my-var", false},
+		{"contains dot", "my.var", false},
+		{"contains space", "my var", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isValidEnvVarName(tt.input)
+			if got != tt.want {
+				t.Errorf("isValidEnvVarName(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
 	}
 }

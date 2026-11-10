@@ -399,3 +399,51 @@ func TestStateFilePermissions(t *testing.T) {
 		t.Errorf("state file permissions = %o, want %o", info.Mode().Perm(), expectedPerm)
 	}
 }
+
+func TestLoadUsesFreshMap(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "machines.json")
+
+	// Create initial state with one machine
+	sm1 := &StateManager{
+		StateFilePath: statePath,
+		Machines:      make(map[string]MachineInfo),
+	}
+	sm1.RegisterMachine(MachineInfo{Name: "box1", Distro: "debian:bookworm"})
+
+	// Create new manager and load state
+	sm2 := &StateManager{
+		StateFilePath: statePath,
+		Machines:      make(map[string]MachineInfo),
+	}
+	if err := sm2.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	// Verify box1 exists
+	if _, ok := sm2.Machines["box1"]; !ok {
+		t.Fatal("box1 not found after load")
+	}
+
+	// Now unregister box1
+	sm2.UnregisterMachine("box1")
+
+	// Create another manager and load state
+	sm3 := &StateManager{
+		StateFilePath: statePath,
+		Machines:      make(map[string]MachineInfo),
+	}
+	if err := sm3.load(); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	// Verify box1 is gone (not resurrected)
+	if _, ok := sm3.Machines["box1"]; ok {
+		t.Error("box1 should not exist after unregister and reload")
+	}
+
+	// Verify the map is truly empty
+	if len(sm3.Machines) != 0 {
+		t.Errorf("expected 0 machines, got %d", len(sm3.Machines))
+	}
+}

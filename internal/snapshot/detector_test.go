@@ -66,7 +66,7 @@ func TestLVMBackendType(t *testing.T) {
 func TestBtrfsSnapshotDir(t *testing.T) {
 	b, _ := NewBtrfsBackend("test")
 	rootfsPath := "/var/lib/machines/test"
-	expected := "/var/lib/machines/test/.snapshots"
+	expected := "/var/lib/machines/test.snapshots"
 	result := b.snapshotDir(rootfsPath)
 	if result != expected {
 		t.Errorf("snapshotDir() = %v, want %v", result, expected)

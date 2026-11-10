@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime/debug"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -23,6 +25,8 @@ var rootCmd = &cobra.Command{
 	Long: `lxspawn is a daemonless, lightweight "Light VM" orchestrator for
 immutable desktop OSs and server homelabs. It fills the gap between
 Podman (app containers) and KVM/QEMU (full VMs).`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		logger.SetQuiet(quiet)
 		logger.SetVerbose(verbose)
@@ -78,6 +82,11 @@ func main() {
 			output.PrintError("COMMAND_FAILED", err.Error())
 		} else {
 			fmt.Fprintln(os.Stderr, err)
+		}
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+				os.Exit(status.ExitStatus())
+			}
 		}
 		os.Exit(1)
 	}

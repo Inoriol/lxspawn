@@ -206,3 +206,143 @@ func TestDetectorIdentifyDRMDevice(t *testing.T) {
 		})
 	}
 }
+
+func TestIsDiscreteGPU(t *testing.T) {
+	tmpDir := t.TempDir()
+	devicePath := filepath.Join(tmpDir, "device")
+	os.MkdirAll(devicePath, 0755)
+
+	// Write a VGA class code (0x0300)
+	os.WriteFile(filepath.Join(devicePath, "class"), []byte("0x030000\n"), 0644)
+
+	tests := []struct {
+		name         string
+		resourceData string
+		wantDiscrete bool
+	}{
+		{
+			name: "large VRAM (discrete)",
+			// start end flags - 1GB region (0xe0000000 to 0x11fffffff)
+			resourceData:   "0x00000000e0000000 0x000000011fffffff 0x000000000004020c\n",
+			wantDiscrete:   true,
+		},
+		{
+			name: "small VRAM (integrated)",
+			// start end flags - 16MB region
+			resourceData:   "0x00000000e0000000 0x00000000e0ffffff 0x000000000004020c\n",
+			wantDiscrete:   false,
+		},
+		{
+			name: "invalid resource format",
+			resourceData:   "invalid\n",
+			wantDiscrete:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.WriteFile(filepath.Join(devicePath, "resource"), []byte(tt.resourceData), 0644)
+			
+			d := &Detector{drmPath: tmpDir, pciPath: tmpDir}
+			got := d.isDiscreteGPU(devicePath)
+			
+			if got != tt.wantDiscrete {
+				t.Errorf("isDiscreteGPU() = %v, want %v", got, tt.wantDiscrete)
+			}
+		})
+	}
+}
+
+func TestFindRenderNode(t *testing.T) {
+	tmpDir := t.TempDir()
+	cardPath := filepath.Join(tmpDir, "card0")
+	drmPath := filepath.Join(cardPath, "device", "drm")
+	os.MkdirAll(drmPath, 0755)
+
+	tests := []struct {
+		name        string
+		setupFiles  []string
+		wantRender  string
+	}{
+		{
+			name:       "renderD128 exists",
+			setupFiles: []string{"renderD128"},
+			wantRender: "/dev/dri/renderD128",
+		},
+		{
+			name:       "renderD129 exists",
+			setupFiles: []string{"renderD129"},
+			wantRender: "/dev/dri/renderD129",
+		},
+		{
+			name:       "no render node",
+			setupFiles: []string{"card0"},
+			wantRender: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Clean up drm directory
+			entries, _ := os.ReadDir(drmPath)
+			for _, e := range entries {
+				os.Remove(filepath.Join(drmPath, e.Name()))
+			}
+			
+			// Create test files
+			for _, f := range tt.setupFiles {
+				os.WriteFile(filepath.Join(drmPath, f), []byte{}, 0644)
+			}
+			
+			d := &Detector{drmPath: tmpDir, pciPath: tmpDir}
+			got := d.findRenderNode(cardPath)
+			
+			if got != tt.wantRender {
+				t.Errorf("findRenderNode() = %q, want %q", got, tt.wantRender)
+			}
+		})
+	}
+}
+
+func TestIsNVIDIAGPUDetected(t *testing.T) {
+	d := &Detector{}
+	
+	tests := []struct {
+		name     string
+		existing []GPUInfo
+		nvGPU    GPUInfo
+		want     bool
+	}{
+		{
+			name: "NVIDIA already detected via DRM",
+			existing: []GPUInfo{
+				{Vendor: VendorNVIDIA, Devices: []string{"/dev/dri/card0", "/dev/dri/renderD128"}},
+			},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0", "/dev/dri/card0"}},
+			want:  true,
+		},
+		{
+			name: "NVIDIA not detected",
+			existing: []GPUInfo{
+				{Vendor: VendorIntel, Devices: []string{"/dev/dri/card0"}},
+			},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0"}},
+			want:  false,
+		},
+		{
+			name:     "empty existing list",
+			existing: []GPUInfo{},
+			nvGPU:    GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0"}},
+			want:     false,
+		},
+	}
+	
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := d.isNVIDIAGPUDetected(tt.existing, tt.nvGPU)
+			if got != tt.want {
+				t.Errorf("isNVIDIAGPUDetected() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

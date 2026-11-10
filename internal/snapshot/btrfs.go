@@ -1,11 +1,14 @@
 package snapshot
 
 import (
+	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
@@ -25,7 +28,8 @@ func (b *BtrfsBackend) Type() BackendType {
 }
 
 func (b *BtrfsBackend) snapshotDir(rootfsPath string) string {
-	return filepath.Join(rootfsPath, ".snapshots")
+	parentDir := filepath.Dir(rootfsPath)
+	return filepath.Join(parentDir, b.machineName+".snapshots")
 }
 
 func (b *BtrfsBackend) CreateSnapshot(machine, snapName, rootfsPath string) error {
@@ -59,43 +63,32 @@ func (b *BtrfsBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo
 		return []SnapshotInfo{}, nil
 	}
 
-	out, err := deploy.Sudo("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
+	entries, err := os.ReadDir(snapDir)
 	if err != nil {
-		return nil, fmt.Errorf("failed to list btrfs subvolumes: %w", err)
+		return nil, fmt.Errorf("failed to read snapshot directory: %w", err)
 	}
 
 	var snapshots []SnapshotInfo
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
-		if line == "" {
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
 
-		fields := strings.Fields(line)
-		if len(fields) < 9 {
-			continue
-		}
-
-		subvolPath := fields[len(fields)-1]
-
-		fullPath := filepath.Join("/", subvolPath)
-		if !strings.HasPrefix(fullPath, snapDir) {
-			continue
-		}
-
-		snapName := filepath.Base(subvolPath)
-		if snapName == ".snapshots" {
+		entryPath := filepath.Join(snapDir, entry.Name())
+		if !isBtrfsSubvolume(entryPath) {
 			continue
 		}
 
 		info := SnapshotInfo{
-			Name:    snapName,
+			Name:    entry.Name(),
 			Machine: machine,
 			Backend: string(BackendBtrfs),
-			Path:    fullPath,
+			Path:    entryPath,
 		}
 
-		if stat, err := os.Stat(fullPath); err == nil {
+		if createdAt := getBtrfsSubvolumeCreatedAt(entryPath); createdAt != nil {
+			info.CreatedAt = FormatCreatedAt(*createdAt)
+		} else if stat, err := os.Stat(entryPath); err == nil {
 			info.CreatedAt = FormatCreatedAt(stat.ModTime())
 		} else {
 			info.CreatedAt = FormatCreatedAt(time.Now())
@@ -104,30 +97,64 @@ func (b *BtrfsBackend) ListSnapshots(machine, rootfsPath string) ([]SnapshotInfo
 		snapshots = append(snapshots, info)
 	}
 
+	sort.Slice(snapshots, func(i, j int) bool {
+		return snapshots[i].Name < snapshots[j].Name
+	})
+
 	return snapshots, nil
 }
 
-func (b *BtrfsBackend) listChildSubvolumes(rootfsPath string) ([]string, error) {
-	out, err := deploy.Sudo("btrfs", "subvolume", "list", "-o", rootfsPath).Output()
+func isBtrfsSubvolume(path string) bool {
+	var stat syscall.Stat_t
+	if err := syscall.Stat(path, &stat); err != nil {
+		return false
+	}
+	return stat.Ino == 256 && stat.Mode&syscall.S_IFDIR != 0
+}
+
+func getBtrfsSubvolumeCreatedAt(path string) *time.Time {
+	cmd := exec.Command("sudo", "btrfs", "subvolume", "show", path)
+	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to list child subvolumes: %w", err)
+		return nil
+	}
+
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "Creation time:") {
+			timeStr := strings.TrimPrefix(line, "Creation time:")
+			timeStr = strings.TrimSpace(timeStr)
+			if t, err := time.Parse("2006-01-02 15:04:05 -0700", timeStr); err == nil {
+				return &t
+			}
+		}
+	}
+	return nil
+}
+
+func (b *BtrfsBackend) listChildSubvolumes(rootfsPath string) ([]string, error) {
+	entries, err := os.ReadDir(rootfsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read directory: %w", err)
 	}
 
 	var subvols []string
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	for _, line := range lines {
-		if line == "" {
+	for _, entry := range entries {
+		if !entry.IsDir() {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) < 9 {
-			continue
+		entryPath := filepath.Join(rootfsPath, entry.Name())
+		if isBtrfsSubvolume(entryPath) {
+			children, err := b.listChildSubvolumes(entryPath)
+			if err != nil {
+				return nil, err
+			}
+			subvols = append(subvols, children...)
+			subvols = append(subvols, entryPath)
 		}
-		subvolPath := filepath.Join("/", fields[len(fields)-1])
-		subvols = append(subvols, subvolPath)
 	}
 
-	sort.Sort(sort.Reverse(sort.StringSlice(subvols)))
 	return subvols, nil
 }
 
@@ -164,6 +191,7 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName, rootfsPath string) er
 
 	parentDir := filepath.Dir(rootfsPath)
 	tempPath := filepath.Join(parentDir, b.machineName+".rollback-temp")
+	oldPath := filepath.Join(parentDir, b.machineName+".rollback-old")
 
 	if _, err := os.Stat(tempPath); err == nil {
 		logger.Info("Cleaning up leftover rollback temp")
@@ -172,22 +200,35 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName, rootfsPath string) er
 		}
 	}
 
+	if _, err := os.Stat(oldPath); err == nil {
+		logger.Info("Cleaning up leftover rollback old")
+		if err := b.deleteSubvolumeTree(oldPath); err != nil {
+			return fmt.Errorf("failed to clean up leftover old: %w", err)
+		}
+	}
+
 	cmd := deploy.Sudo("btrfs", "subvolume", "snapshot", snapPath, tempPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to create writable snapshot for rollback: %w (%s)", err, string(output))
 	}
 
-	if err := b.deleteSubvolumeTree(rootfsPath); err != nil {
+	cmd = deploy.Sudo("mv", rootfsPath, oldPath)
+	if output, err := cmd.CombinedOutput(); err != nil {
 		deploy.Sudo("btrfs", "subvolume", "delete", tempPath)
-		return fmt.Errorf("failed to delete old rootfs: %w", err)
+		return fmt.Errorf("failed to move old rootfs aside: %w (%s)", err, string(output))
 	}
 
 	cmd = deploy.Sudo("mv", tempPath, rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
+		deploy.Sudo("mv", oldPath, rootfsPath)
 		return fmt.Errorf("failed to rename restored snapshot: %w (%s)", err, string(output))
 	}
 
-	cmd = deploy.Sudo("chown", fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), rootfsPath)
+	if err := b.deleteSubvolumeTree(oldPath); err != nil {
+		logger.Warn(fmt.Sprintf("failed to delete old rootfs (can be cleaned up manually): %v", err))
+	}
+
+	cmd = deploy.Sudo("chown", "-R", "0:0", rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		logger.Warn(fmt.Sprintf("chown warning: %v (%s)", err, string(output)))
 	}

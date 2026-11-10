@@ -81,9 +81,9 @@ func TestParseValueNull(t *testing.T) {
 
 func TestParseValueInteger(t *testing.T) {
 	got := parseValue("42")
-	num, ok := got.(float64)
+	num, ok := got.(int64)
 	if !ok {
-		t.Fatalf("got %T, want float64", got)
+		t.Fatalf("got %T, want int64", got)
 	}
 	if num != 42 {
 		t.Errorf("got %v, want 42", num)
@@ -123,6 +123,96 @@ func TestParseValueJSONObject(t *testing.T) {
 	}
 }
 
+func TestParseValueIPAddress(t *testing.T) {
+	// IP addresses should be returned as strings, not parsed as numbers
+	got := parseValue("10.0.0.1")
+	str, ok := got.(string)
+	if !ok {
+		t.Fatalf("got %T (%v), want string", got, got)
+	}
+	if str != "10.0.0.1" {
+		t.Errorf("got %q, want %q", str, "10.0.0.1")
+	}
+}
+
+func TestParseValueVersionString(t *testing.T) {
+	// Version strings like "1.2.3" should be returned as strings
+	got := parseValue("1.2.3")
+	str, ok := got.(string)
+	if !ok {
+		t.Fatalf("got %T (%v), want string", got, got)
+	}
+	if str != "1.2.3" {
+		t.Errorf("got %q, want %q", str, "1.2.3")
+	}
+}
+
+func TestParseOperator(t *testing.T) {
+	tests := []struct {
+		name       string
+		expression string
+		wantPath   string
+		wantOp     string
+		wantValue  string
+		wantErr    bool
+	}{
+		{
+			name:       "simple set",
+			expression: ".key = value",
+			wantPath:   ".key",
+			wantOp:     "=",
+			wantValue:  "value",
+		},
+		{
+			name:       "update operator",
+			expression: ".arr |= . + [1,2]",
+			wantPath:   ".arr",
+			wantOp:     "|=",
+			wantValue:  ". + [1,2]",
+		},
+		{
+			name:       "append operator",
+			expression: ".arr += item",
+			wantPath:   ".arr",
+			wantOp:     "+=",
+			wantValue:  "item",
+		},
+		{
+			name:       "value contains operator",
+			expression: `.key = "x|=y"`,
+			wantPath:   ".key",
+			wantOp:     "=",
+			wantValue:  `"x|=y"`,
+		},
+		{
+			name:       "no operator",
+			expression: "just a string",
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path, op, value, err := parseOperator(tt.expression)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parseOperator() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if path != tt.wantPath {
+					t.Errorf("path = %q, want %q", path, tt.wantPath)
+				}
+				if op != tt.wantOp {
+					t.Errorf("op = %q, want %q", op, tt.wantOp)
+				}
+				if value != tt.wantValue {
+					t.Errorf("value = %q, want %q", value, tt.wantValue)
+				}
+			}
+		})
+	}
+}
+
 func TestApplyExpressionSimpleKey(t *testing.T) {
 	content := map[string]interface{}{
 		"existing": "value",
@@ -152,8 +242,8 @@ func TestApplyExpressionNestedKey(t *testing.T) {
 	}
 
 	server := content["server"].(map[string]interface{})
-	if server["port"] != float64(8080) {
-		t.Errorf("port = %v, want 8080", server["port"])
+	if server["port"] != int64(8080) {
+		t.Errorf("port = %v (%T), want int64(8080)", server["port"], server["port"])
 	}
 	if server["host"] != "localhost" {
 		t.Error("host was modified")

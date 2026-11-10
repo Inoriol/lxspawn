@@ -2,7 +2,7 @@ package snapshot
 
 import (
 	"fmt"
-	"os/exec"
+	"os"
 	"strings"
 	"time"
 
@@ -23,19 +23,26 @@ func (l *LVMBackend) Type() BackendType {
 }
 
 func (l *LVMBackend) getMachineLVInfo(rootfsPath string) (vgName, lvName string, err error) {
-	out, err := exec.Command("df", "--output=source", rootfsPath).Output()
+	// Read /proc/mounts to find the device for the mount point
+	data, err := os.ReadFile("/proc/mounts")
 	if err != nil {
-		return "", "", fmt.Errorf("failed to get device for %s: %w", rootfsPath, err)
+		return "", "", fmt.Errorf("failed to read /proc/mounts: %w", err)
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) < 2 {
-		return "", "", fmt.Errorf("unexpected df output")
+	var device string
+	for _, line := range strings.Split(string(data), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == rootfsPath {
+			device = fields[0]
+			break
+		}
 	}
 
-	device := strings.TrimSpace(lines[len(lines)-1])
+	if device == "" {
+		return "", "", fmt.Errorf("could not find device for %s", rootfsPath)
+	}
 
-	out, err = deploy.Sudo("lvs", "--noheadings", "-o", "vg_name,lv_name", device).Output()
+	out, err := deploy.Sudo("lvs", "--noheadings", "-o", "vg_name,lv_name", device).Output()
 	if err != nil {
 		return "", "", fmt.Errorf("failed to get LVM info for %s: %w", device, err)
 	}

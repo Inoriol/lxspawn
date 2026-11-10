@@ -61,7 +61,13 @@ func (d *Detector) DetectGPUs() ([]GPUInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect NVIDIA GPUs: %w", err)
 	}
-	gpus = append(gpus, nvidiaGPUs...)
+	
+	// Deduplicate: only add NVIDIA GPUs not already detected via DRM
+	for _, nvGPU := range nvidiaGPUs {
+		if !d.isNVIDIAGPUDetected(gpus, nvGPU) {
+			gpus = append(gpus, nvGPU)
+		}
+	}
 
 	armGPUs, err := d.detectARMGPUs()
 	if err != nil {
@@ -69,7 +75,8 @@ func (d *Detector) DetectGPUs() ([]GPUInfo, error) {
 	}
 	gpus = append(gpus, armGPUs...)
 
-	sort.Slice(gpus, func(i, j int) bool {
+	// Use stable sort to preserve order for equal elements
+	sort.SliceStable(gpus, func(i, j int) bool {
 		if gpus[i].Type == TypeDiscrete && gpus[j].Type != TypeDiscrete {
 			return true
 		}
@@ -84,6 +91,23 @@ func (d *Detector) DetectGPUs() ([]GPUInfo, error) {
 	}
 
 	return gpus, nil
+}
+
+// isNVIDIAGPUDetected checks if an NVIDIA GPU was already detected via DRM
+func (d *Detector) isNVIDIAGPUDetected(existing []GPUInfo, nvGPU GPUInfo) bool {
+	for _, gpu := range existing {
+		if gpu.Vendor == VendorNVIDIA {
+			// Check if any device nodes overlap
+			for _, existingDev := range gpu.Devices {
+				for _, nvDev := range nvGPU.Devices {
+					if existingDev == nvDev {
+						return true
+					}
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (d *Detector) detectDRMGPUs() ([]GPUInfo, error) {
@@ -116,9 +140,18 @@ func (d *Detector) detectDRMGPUs() ([]GPUInfo, error) {
 			fmt.Sprintf("/dev/dri/%s", name),
 		}
 
-		renderNode := fmt.Sprintf("/dev/dri/renderD%d", 128+cardIndex)
-		if _, err := os.Stat(renderNode); err == nil {
+		// Read render node from sysfs instead of calculating from cardIndex
+		// This handles cases where some cardN entries are not recognized GPUs
+		renderNode := d.findRenderNode(cardPath)
+		if renderNode != "" {
 			devices = append(devices, renderNode)
+		}
+
+		// For AMD GPUs, also include /dev/kfd for ROCm support
+		if vendor == VendorAMD {
+			if _, err := os.Stat("/dev/kfd"); err == nil {
+				devices = append(devices, "/dev/kfd")
+			}
 		}
 
 		gpuType := TypeIGPU
@@ -138,6 +171,23 @@ func (d *Detector) detectDRMGPUs() ([]GPUInfo, error) {
 	}
 
 	return gpus, nil
+}
+
+// findRenderNode reads the render node for a card from sysfs
+func (d *Detector) findRenderNode(cardPath string) string {
+	// Look for renderD* in the card's device/drm directory
+	drmPath := filepath.Join(cardPath, "device", "drm")
+	entries, err := os.ReadDir(drmPath)
+	if err != nil {
+		return ""
+	}
+
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "renderD") {
+			return fmt.Sprintf("/dev/dri/%s", entry.Name())
+		}
+	}
+	return ""
 }
 
 func (d *Detector) identifyDRMDevice(devicePath string) (Vendor, string, error) {
@@ -192,13 +242,19 @@ func (d *Detector) isDiscreteGPU(devicePath string) bool {
 			return false
 		}
 
+		// PCI resource file format: start end flags (one per line)
+		// Size = end - start + 1
 		lines := strings.Split(string(resources), "\n")
 		for _, line := range lines {
 			fields := strings.Fields(line)
 			if len(fields) >= 3 {
-				size, err := strconv.ParseInt(fields[2], 0, 64)
-				if err == nil && size > 256*1024*1024 {
-					return true
+				start, errStart := strconv.ParseInt(fields[0], 0, 64)
+				end, errEnd := strconv.ParseInt(fields[1], 0, 64)
+				if errStart == nil && errEnd == nil && end > start {
+					size := end - start + 1
+					if size > 256*1024*1024 {
+						return true
+					}
 				}
 			}
 		}
@@ -294,13 +350,6 @@ func GetDeviceAllowRules(gpu *GPUInfo) []string {
 
 	for _, device := range gpu.Devices {
 		rules = append(rules, fmt.Sprintf("%s rw", device))
-	}
-
-	switch gpu.Vendor {
-	case VendorAMD:
-		if _, err := os.Stat("/dev/kfd"); err == nil {
-			rules = append(rules, "/dev/kfd rw")
-		}
 	}
 
 	return rules

@@ -563,9 +563,8 @@ All state is filesystem-based:
 - `/etc/systemd/system/machine-<name>.slice` - Resource limits
 - `/var/lib/machines/<name>/` - Container rootfs
 - `/var/lib/lxspawn/<name>/` - Machine metadata and provision state
-- `~/.local/share/lxspawn/machines.json` - Machine registry
-- `~/.local/share/lxspawn/<name>/snapshots.json` - Snapshot metadata
-
+- `/var/lib/lxspawn/machines.json` - Machine registry (system-wide)
+- `/var/lib/lxspawn/<name>/snapshots.json` - Snapshot metadata
 ## Security Model
 
 lxspawn implements multiple layers of security:
@@ -632,29 +631,24 @@ The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/
 
 **btrfs operations (when btrfs is detected):**
 - `btrfs subvolume create/delete/show /var/lib/machines/*` - Manage machine subvolumes
-- `btrfs subvolume delete /var/lib/machines/*/.snapshots/*` - Delete snapshot subvolumes
-- `btrfs subvolume list -o /var/lib/machines/*` - List child subvolumes
+- `btrfs subvolume delete /var/lib/machines/*.snapshots/*` - Delete snapshot subvolumes
+- `btrfs subvolume list -o /var/lib/machines/*.snapshots` - List child subvolumes
 - `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*` - Create read-only snapshots
-- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*/.snapshots/*` - Create snapshots in .snapshots directory
+- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*.snapshots/*` - Create snapshots in sibling .snapshots directory
 - `btrfs subvolume snapshot /var/lib/machines/* /var/lib/machines/*` - Create writable snapshots
-- `btrfs subvolume snapshot /var/lib/machines/*/.snapshots/* /var/lib/machines/*` - Restore from snapshots
+- `btrfs subvolume snapshot /var/lib/machines/*.snapshots/* /var/lib/machines/*` - Restore from snapshots
 - `btrfs filesystem usage -b /var/lib/machines` - Check filesystem usage
 
-**LVM operations (when LVM is detected):**
+**LVM storage operations (when LVM is detected):**
 - `lvs --noheadings *` - List logical volumes (with noheadings flag)
 - `lvs */lxspawn-*` - List lxspawn logical volumes
 - `lvcreate --name lxspawn-* *` - Create thin volumes
-- `lvcreate --snapshot --name lxspawn-* *` - Create LVM snapshots
-- `lvconvert --merge */lxspawn-*` - Merge snapshots
 - `lvremove -f */lxspawn-*` - Remove logical volumes
 - `mkfs.ext4 -q /dev/*/lxspawn-*` - Format volumes
 - `mount /dev/*/lxspawn-* /var/lib/machines/*` - Mount volumes
 - `umount /var/lib/machines/*` - Unmount volumes
 
-**ZFS operations (when ZFS is detected):**
-- `zfs snapshot lxspawn/*` - Create ZFS snapshots
-- `zfs rollback -r lxspawn/*` - Rollback to snapshots
-- `zfs destroy lxspawn/*` - Destroy snapshots
+Note: LVM snapshot operations (`lvcreate --snapshot`, `lvconvert --merge`) and ZFS operations are not included in sudoers rules since these backends are disabled pending testing infrastructure.
 
 Each rule is scoped to specific paths and arguments with pattern matching, preventing privilege escalation while allowing necessary operations. Argument patterns use regex-like wildcards (e.g., `[0-9]*` for numeric values only).
 

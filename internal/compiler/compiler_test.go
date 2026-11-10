@@ -359,6 +359,37 @@ func TestCompileSliceDefaultIOWeight(t *testing.T) {
 	}
 }
 
+func TestCompileSliceCPUQuotaRounding(t *testing.T) {
+	tests := []struct {
+		name     string
+		cpus     float64
+		expected string
+	}{
+		{"integer CPUs", 2.0, "CPUQuota=200%"},
+		{"fractional CPUs rounds correctly", 0.29, "CPUQuota=29%"},
+		{"fractional CPUs 0.5", 0.5, "CPUQuota=50%"},
+		{"fractional CPUs 1.5", 1.5, "CPUQuota=150%"},
+		{"fractional CPUs 0.33", 0.33, "CPUQuota=33%"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &config.Config{
+				Name: "testbox",
+				Resources: config.Resources{
+					CPUs: tt.cpus,
+				},
+			}
+
+			slice := compileSlice(cfg)
+
+			if !strings.Contains(slice, tt.expected) {
+				t.Errorf("expected %q for CPUs=%.2f, got:\n%s", tt.expected, tt.cpus, slice)
+			}
+		})
+	}
+}
+
 func TestCompileDropInWithResources(t *testing.T) {
 	cfg := &config.Config{
 		Name: "testbox",
@@ -428,7 +459,10 @@ func TestCompileHooks(t *testing.T) {
 		},
 	}
 
-	dropin, scripts := compileHooks(cfg)
+	dropin, scripts, err := compileHooks(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(dropin, "ExecStartPre=/var/lib/lxspawn/testbox/.hooks/pre_start.sh") {
 		t.Errorf("hooks drop-in missing ExecStartPre:\n%s", dropin)
@@ -442,6 +476,141 @@ func TestCompileHooks(t *testing.T) {
 
 	if scripts["pre_start.sh"] != "#!/bin/bash\necho pre\n" {
 		t.Errorf("pre_start.sh = %q", scripts["pre_start.sh"])
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"simple", "eth0", "'eth0'"},
+		{"with space", "eth 0", "'eth 0'"},
+		{"with single quote", "eth'0", "'eth'\"'\"'0'"},
+		{"with semicolon", "eth0; rm -rf /", "'eth0; rm -rf /'"},
+		{"with newline", "eth0\ninjection", "'eth0\ninjection'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shellQuote(tc.input)
+			if got != tc.expect {
+				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.expect)
+			}
+		})
+	}
+}
+
+func TestGenerateHostAccessScriptInvalidInterface(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.Network{
+			Mode:      config.NetworkMacvlan,
+			Interface: "eth0; rm -rf /",
+			HostAccess: config.HostAccess{
+				Enabled:   true,
+				Interface: "mv-lxspawn",
+			},
+		},
+	}
+
+	_, err := generateHostAccessScript(cfg)
+	if err == nil {
+		t.Error("expected error for invalid interface name")
+	}
+	if !strings.Contains(err.Error(), "invalid interface name") {
+		t.Errorf("expected interface name error, got: %v", err)
+	}
+}
+
+func TestGenerateHostAccessScriptInvalidHostInterface(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.Network{
+			Mode:      config.NetworkMacvlan,
+			Interface: "eth0",
+			HostAccess: config.HostAccess{
+				Enabled:   true,
+				Interface: "mv-lxspawn; rm -rf /",
+			},
+		},
+	}
+
+	_, err := generateHostAccessScript(cfg)
+	if err == nil {
+		t.Error("expected error for invalid host interface name")
+	}
+	if !strings.Contains(err.Error(), "invalid host interface name") {
+		t.Errorf("expected host interface name error, got: %v", err)
+	}
+}
+
+func TestGenerateHostAccessScriptInvalidIP(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.Network{
+			Mode:      config.NetworkMacvlan,
+			Interface: "eth0",
+			HostAccess: config.HostAccess{
+				Enabled:   true,
+				Interface: "mv-lxspawn",
+				IP:        "not-an-ip; rm -rf /",
+			},
+		},
+	}
+
+	_, err := generateHostAccessScript(cfg)
+	if err == nil {
+		t.Error("expected error for invalid IP")
+	}
+	if !strings.Contains(err.Error(), "invalid IP") {
+		t.Errorf("expected IP error, got: %v", err)
+	}
+}
+
+func TestGenerateHostAccessScriptValidConfig(t *testing.T) {
+	cfg := &config.Config{
+		Network: config.Network{
+			Mode:      config.NetworkMacvlan,
+			Interface: "eth0",
+			HostAccess: config.HostAccess{
+				Enabled:   true,
+				Interface: "mv-lxspawn",
+				IP:        "192.168.0.201/24",
+			},
+		},
+	}
+
+	script, err := generateHostAccessScript(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Values should be shell-quoted
+	if !strings.Contains(script, "'mv-lxspawn'") {
+		t.Error("host interface should be quoted")
+	}
+	if !strings.Contains(script, "'eth0'") {
+		t.Error("parent interface should be quoted")
+	}
+	if !strings.Contains(script, "'192.168.0.201/24'") {
+		t.Error("IP should be quoted")
+	}
+}
+
+func TestCompileHooksReturnsErrorForInvalidConfig(t *testing.T) {
+	cfg := &config.Config{
+		Name: "testbox",
+		Network: config.Network{
+			Mode:      config.NetworkMacvlan,
+			Interface: "eth0",
+			HostAccess: config.HostAccess{
+				Enabled:   true,
+				Interface: "invalid;interface",
+			},
+		},
+	}
+
+	_, _, err := compileHooks(cfg)
+	if err == nil {
+		t.Error("expected error for invalid host access config")
 	}
 }
 
@@ -782,12 +951,12 @@ func TestCompileHostAccessScriptGeneration(t *testing.T) {
 		t.Fatal("post_start.sh hook script not generated")
 	}
 
-	// Should contain macvlan creation
-	if !strings.Contains(postStartScript, "ip link add mv-lxspawn") {
-		t.Error("post_start script should create host-side macvlan")
+	// Should contain macvlan creation (values are now shell-quoted)
+	if !strings.Contains(postStartScript, "ip link add 'mv-lxspawn'") {
+		t.Errorf("post_start script should create host-side macvlan, got:\n%s", postStartScript)
 	}
-	if !strings.Contains(postStartScript, "link enp2s0") {
-		t.Error("post_start script should reference parent interface")
+	if !strings.Contains(postStartScript, "link 'enp2s0'") {
+		t.Errorf("post_start script should reference parent interface, got:\n%s", postStartScript)
 	}
 
 	// Should contain custom hook
@@ -800,8 +969,8 @@ func TestCompileHostAccessScriptGeneration(t *testing.T) {
 	if !ok {
 		t.Fatal("post_stop.sh hook script not generated")
 	}
-	if !strings.Contains(postStopScript, "ip link del mv-lxspawn") {
-		t.Error("post_stop script should cleanup host-side macvlan")
+	if !strings.Contains(postStopScript, "ip link del 'mv-lxspawn'") {
+		t.Errorf("post_stop script should cleanup host-side macvlan, got:\n%s", postStopScript)
 	}
 }
 
@@ -837,9 +1006,9 @@ func TestCompileHostAccessWithStaticIP(t *testing.T) {
 		t.Fatal("post_start.sh hook script not generated")
 	}
 
-	// Should contain static IP assignment
-	if !strings.Contains(postStartScript, "ip addr add 192.168.0.201/24") {
-		t.Error("post_start script should assign static IP")
+	// Should contain static IP assignment (value is now shell-quoted)
+	if !strings.Contains(postStartScript, "ip addr add '192.168.0.201/24'") {
+		t.Errorf("post_start script should assign static IP, got:\n%s", postStartScript)
 	}
 }
 
@@ -1047,4 +1216,131 @@ func TestHostAccessIPGeneration(t *testing.T) {
 	if ip == ip3 {
 		t.Errorf("different machine names should produce different IPs, both got %s", ip)
 	}
+}
+
+func TestCompileDropInNoCapability(t *testing.T) {
+	// R12: Capability= should NOT be in drop-in (it's an nspawn [Exec] key)
+	cfg := &config.Config{
+		Name: "testbox",
+		Security: config.Security{
+			Capabilities: []string{"CAP_NET_ADMIN"},
+		},
+		GPU: config.GPU{
+			Enabled: true,
+			Type:    "intel",
+		},
+	}
+
+	dropin := compileDropIn(cfg)
+
+	// Drop-in should NOT contain Capability=
+	if strings.Contains(dropin, "Capability=") {
+		t.Errorf("drop-in should NOT contain Capability= (it's an nspawn key):\n%s", dropin)
+	}
+}
+
+func TestCompileNspawnIncludesGPUCapabilities(t *testing.T) {
+	// R12: GPU capabilities should be in .nspawn file's Capability= line
+	cfg := &config.Config{
+		Name: "testbox",
+		Security: config.Security{
+			Capabilities: []string{"CAP_NET_ADMIN"},
+		},
+		GPU: config.GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0", "/dev/dri/renderD128"},
+		},
+	}
+
+	nspawn, err := compileNspawn(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// .nspawn should contain Capability= with user-specified caps
+	if !strings.Contains(nspawn, "Capability=CAP_NET_ADMIN") {
+		t.Errorf(".nspawn should contain Capability=CAP_NET_ADMIN:\n%s", nspawn)
+	}
+}
+
+func TestCompileNspawnIncludesSecurityCapabilities(t *testing.T) {
+	// Security capabilities should be in .nspawn file
+	cfg := &config.Config{
+		Name: "testbox",
+		Security: config.Security{
+			Capabilities: []string{"CAP_NET_ADMIN", "CAP_NET_BIND_SERVICE"},
+		},
+	}
+
+	nspawn, err := compileNspawn(cfg)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(nspawn, "Capability=CAP_NET_ADMIN CAP_NET_BIND_SERVICE") {
+		t.Errorf(".nspawn should contain all capabilities:\n%s", nspawn)
+	}
+}
+
+func TestGenerateHostAccessInterfaceName(t *testing.T) {
+	tests := []struct {
+		name        string
+		machineName string
+		maxLen      int
+		check       func(string) bool
+	}{
+		{
+			name:        "short name",
+			machineName: "test",
+			maxLen:      15,
+			check: func(s string) bool {
+				return s == "mv-test" && len(s) <= 15
+			},
+		},
+		{
+			name:        "exact fit",
+			machineName: "twelvechars", // 11 chars + 3 prefix = 14
+			maxLen:      15,
+			check: func(s string) bool {
+				return strings.HasPrefix(s, "mv-") && len(s) <= 15
+			},
+		},
+		{
+			name:        "long name truncated",
+			machineName: "very-long-machine-name-that-exceeds-limit",
+			maxLen:      15,
+			check: func(s string) bool {
+				return strings.HasPrefix(s, "mv-") && len(s) <= 15
+			},
+		},
+		{
+			name:        "different machines get different names",
+			machineName: "machine1",
+			maxLen:      15,
+			check: func(s string) bool {
+				return strings.HasPrefix(s, "mv-")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := generateHostAccessInterfaceName(tc.machineName)
+			if len(result) > tc.maxLen {
+				t.Errorf("interface name %q exceeds max length %d", result, tc.maxLen)
+			}
+			if !tc.check(result) {
+				t.Errorf("interface name %q failed check for machine %q", result, tc.machineName)
+			}
+		})
+	}
+
+	// Test uniqueness for long names
+	t.Run("uniqueness", func(t *testing.T) {
+		name1 := generateHostAccessInterfaceName("very-long-machine-name-alpha")
+		name2 := generateHostAccessInterfaceName("very-long-machine-name-beta")
+		if name1 == name2 {
+			t.Errorf("different long machine names should produce different interface names: both got %q", name1)
+		}
+	})
 }

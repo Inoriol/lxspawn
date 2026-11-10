@@ -183,7 +183,7 @@ lxspawn/
    - /etc/systemd/system/systemd-nspawn@<name>.service.d/lxspawn.conf
    - /var/lib/lxspawn/<name>/.hooks/*.sh (if hooks)
    ↓
-9. state.RegisterMachine() saves metadata to ~/.local/share/lxspawn/machines.json
+9. state.RegisterMachine() saves metadata to /var/lib/lxspawn/machines.json
    ↓
 10. provision.Engine.Provision() runs pre-boot provisioning:
     - boot mode: writes scripts to rootfs
@@ -205,10 +205,10 @@ lxspawn/
 
 ### State Management
 
-State is filesystem-based with a JSON metadata file:
+State is filesystem-based with a system-wide JSON metadata file:
 
 ```
-~/.local/share/lxspawn/machines.json
+/var/lib/lxspawn/machines.json
 ```
 
 Structure:
@@ -231,11 +231,16 @@ Structure:
 }
 ```
 
+**Why system-wide state?**
+- All users see the same machine list (no per-user registry confusion)
+- Works correctly with Cockpit web UI (no user-switching issues)
+- State file has 0600 permissions (owner read/write only)
+- Atomic writes via temp file + rename with file locking
+
 **Why not a database?**
 - Simpler to debug (just `cat` the file)
 - Git-trackable (if desired)
 - No additional dependencies
-- Atomic writes via temp file + rename
 - Sufficient for the use case (hundreds of machines, not millions)
 
 ## Provisioning Engine
@@ -565,9 +570,11 @@ The `adaptive` network mode automatically selects between bridge and macvlan bas
 - `internal/compiler/slice.go:generateHostAccessScript()` creates host-side macvlan in post_start hook
 
 **Host access for macvlan:**
-When falling back to macvlan, lxspawn creates a host-side macvlan interface (`mv-lxspawn` by default)
+When falling back to macvlan, lxspawn creates a host-side macvlan interface (`mv-<machinename>`)
 so the host can reach the container. This solves the kernel limitation where the host cannot ping
-macvlan containers. The interface is created in `post_start` and removed in `post_stop`.
+macvlan containers. The interface name is per-machine (truncated to 15 characters with hash suffix
+for uniqueness) to prevent conflicts when multiple adaptive machines exist. The interface is created
+in `post_start` and removed in `post_stop`.
 
 ### 13. DNS Resolution in Containers
 
@@ -592,7 +599,11 @@ share the host kernel, so we bind-mount device nodes and configure cgroup device
 **Implementation:**
 - `internal/gpu/detect.go` - Detects GPUs by parsing `/sys/class/drm/card*` and `/dev/nvidia*`
 - Identifies vendor (Intel/AMD/NVIDIA/ARM) by reading PCI vendor IDs
-- Prioritizes discrete GPUs over integrated GPUs
+- Render nodes read from sysfs (`/sys/class/drm/cardN/device/drm/renderD*`) instead of calculated from card index (handles unrecognized GPUs)
+- Discrete GPU detection uses PCI resource file (computes size as `end - start + 1`)
+- NVIDIA GPUs deduplicated (DRM scan and `/dev/nvidia*` scan)
+- For AMD GPUs, `/dev/kfd` is bind-mounted for ROCm compute support
+- Prioritizes discrete GPUs over integrated GPUs (stable sort)
 - Generates bind mounts for device nodes in `.nspawn` file
 - Generates `DeviceAllow` rules in slice/drop-in for cgroup access
 - Adds required capabilities (e.g., `CAP_SYS_ADMIN` for NVIDIA)
@@ -607,6 +618,10 @@ share the host kernel, so we bind-mount device nodes and configure cgroup device
 - Driver version in container MUST match host exactly
 - No driver virtualization (unlike AMD/Intel)
 - Requires proprietary userspace libraries
+
+**AMD ROCm support:**
+- `/dev/kfd` (Kernel Fusion Driver) bind-mounted for compute workloads
+- Enables ROCm runtime in containers for GPU compute
 
 **ARM GPU support:**
 - Mali (`/dev/mali*`) and Adreno (`/dev/kgsl-3d0`) detected
@@ -640,8 +655,8 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 **Btrfs implementation:**
 - Machine rootfs automatically created as btrfs subvolume when host is btrfs
 - Snapshots created with `btrfs subvolume snapshot -r` (read-only)
-- Snapshots stored in `<rootfs>/.snapshots/<name>`
-- Rollback: creates writable snapshot to sibling location, recursively deletes old rootfs tree (children first), renames snapshot to rootfs path
+- Snapshots stored in `<machine>.snapshots/<name>` (sibling directory, not child of rootfs)
+- Rollback: uses safe rename-aside pattern - renames old rootfs to `.old`, moves snapshot copy in, deletes `.old` only on success. Snapshots preserved since they're in a separate directory.
 - Delete: recursively deletes child subvolumes (deepest first) before deleting parent
 - List: parses `btrfs subvolume list -o` output
 
@@ -679,7 +694,7 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - Suitable for testing and small machines, not recommended for production with large rootfs
 
 **State tracking:**
-- Snapshot metadata stored in `~/.local/share/lxspawn/<name>/snapshots.json`
+- Snapshot metadata stored in `/var/lib/lxspawn/<name>/snapshots.json`
 - Tracks snapshot name, backend, creation time, and location
 
 **Sudoers requirements:**
@@ -759,7 +774,7 @@ The `adaptive` network mode automatically selects the best network mode based on
 
 **Host access for macvlan:**
 
-When falling back to macvlan, lxspawn creates a host-side macvlan interface so the host can reach the container. This solves the kernel limitation where the host cannot ping macvlan containers.
+When falling back to macvlan, lxspawn creates a host-side macvlan interface (`mv-<machinename>`) so the host can reach the container. This solves the kernel limitation where the host cannot ping macvlan containers. The interface name is per-machine to prevent conflicts when multiple adaptive machines exist.
 
 **IP address generation:**
 
@@ -1082,7 +1097,7 @@ Memory stats are read from:
 
 **Disk Usage:**
 
-Disk stats are read using `df -B1 <rootfs-path>` which returns usage in bytes.
+Disk stats are read using `syscall.Statfs()` which returns filesystem usage in bytes. This is more efficient and reliable than shelling out to `df -B1`.
 
 **Permissions:**
 
@@ -1098,8 +1113,9 @@ The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/
 
 - **Core operations**: `rm`, `chown`, `chmod`, `mv`, `mkdir`, `nsenter`, `journalctl`
 - **btrfs operations**: `btrfs subvolume create/delete/show/list/snapshot`, `btrfs filesystem usage`
-- **LVM operations**: `lvs`, `lvcreate`, `lvconvert`, `lvremove`, `mkfs.ext4`, `mount`, `umount`
-- **ZFS operations**: `zfs snapshot/rollback/destroy` (when available)
+- **LVM storage operations**: `lvs`, `lvcreate`, `lvremove`, `mkfs.ext4`, `mount`, `umount` (snapshots disabled)
+
+Note: ZFS and LVM snapshot rules are not generated since these backends are disabled pending testing infrastructure (see Phase 6).
 
 Each rule is scoped to specific paths and arguments. For example:
 ```
@@ -1184,6 +1200,43 @@ This prevents confusing warnings when deleting machines that were already stoppe
 - Users expect `lxspawn delete` to work regardless of machine state
 - Warnings about "machine already stopped" are confusing and noisy
 - Debug-level logging preserves information for troubleshooting without cluttering normal output
+
+### 29. Download Cache
+
+Image downloads are cached in `/var/lib/lxspawn/cache/` instead of `/tmp` to avoid issues with tmpfs on Fedora and other distributions.
+
+**Why not `/tmp`:**
+
+On Fedora and some other distributions, `/tmp` is mounted as tmpfs (RAM-backed filesystem). This causes several problems:
+
+1. **Disk space exhaustion** - Large rootfs images (500MB-2GB) consume RAM instead of disk space
+2. **Volatility** - Downloads are lost on reboot, requiring re-download
+3. **Size limits** - tmpfs is limited by available RAM, which may be less than disk space
+
+**Cache directory:**
+
+The cache directory is created during `lxspawn setup` with appropriate permissions:
+
+```bash
+/var/lib/lxspawn/cache/  # 0700, root:root
+```
+
+Temporary download files are created in this directory and cleaned up after extraction.
+
+**Decompression safety:**
+
+To prevent disk exhaustion attacks, lxspawn enforces a 10GB limit on decompressed image size. This is checked during tar extraction by tracking the cumulative size of all extracted files.
+
+**Filesystem detection:**
+
+Filesystem type detection uses `syscall.Statfs()` instead of shelling out to GNU-specific commands like `stat -f -c %T` or `df --output`. This is:
+
+1. **More efficient** - No process spawning overhead
+2. **More reliable** - No text parsing of command output
+3. **Cleaner code** - Direct syscall instead of command execution
+4. **Portable** - Works on any Unix-like system with syscall support
+
+The same approach is used for disk usage reporting in `lxspawn stats`.
 
 ## Security Model
 
