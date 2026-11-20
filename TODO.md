@@ -45,16 +45,16 @@ Completed phases:
 
 **Priority 2: Medium Effort (half day each)**
 
-- [ ] **C6: Embed templates** - Use `go:embed` to embed `examples/templates/*.yaml` in binary. Update `list_templates.go` to check embedded templates first. Update Makefile to install templates to `/usr/share/lxspawn/templates/`.
-- [ ] **C4: Canonical config copy** - On `create`/`launch`, copy YAML to `/var/lib/lxspawn/<name>/config.yaml`. On `apply`, update canonical copy. `config`/`status` read from canonical copy. State stores `ConfigPath`. Fallback to `SourcePath` for backwards compat.
-- [ ] **C13: Logs for viewer** - Make JSON and text modes read from same source (container journal with `-M`). Add `--since` and `--priority` flags. Add `--follow` streaming mode. Make `--lines` work in both modes.
-- [ ] **C14: Batched stats** - Add `stats --all --json` or `list --stats --json`. Return cumulative counters with timestamp. UI computes rates from consecutive samples (no 100ms sleep). Eliminates N processes per polling cycle.
+- [x] **C6: Embed templates** - Use `go:embed` to embed `examples/templates/*.yaml` in binary. Update `list_templates.go` to check embedded templates first. Update Makefile to install templates to `/usr/share/lxspawn/templates/`.
+- [x] **C4: Canonical config copy** - On `create`/`launch`, copy YAML to `/var/lib/lxspawn/<name>/config.yaml`. On `apply`, update canonical copy. `config`/`status` read from canonical copy. State stores `ConfigPath`. Fallback to `SourcePath` for backwards compat.
+- [x] **C13: Logs for viewer** - Make JSON and text modes read from same source (container journal with `-M`). Add `--since` and `--priority` flags. Add `--follow` streaming mode. Make `--lines` work in both modes.
+- [x] **C14: Batched stats** - Add `stats --all --json` or `list --stats --json`. Return cumulative counters with timestamp. UI computes rates from consecutive samples (no 100ms sleep). Eliminates N processes per polling cycle.
 
 **Priority 3: Large Effort (full day+ each)**
 
-- [ ] **C5: Create flow** - `create -` / `launch -` reads YAML from stdin. `create --template NAME --name N` uses embedded template. `--param key=value` (repeatable) overrides template params. Refactor create/launch to share config-loading logic.
-- [ ] **C9: Structured error codes** - Define error codes: `MACHINE_NOT_FOUND`, `MACHINE_RUNNING`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `STORAGE_ERROR`, `PROVISION_FAILED`. Replace `COMMAND_FAILED`. Add field-level validation errors. Map to distinct exit codes.
-- [ ] **C10: Progress stream** - Add `--progress=json` flag to `create`/`launch`. Newline-delimited JSON events: `downloading`, `extracting`, `provisioning`, `probe`, `done`. Add `creating` state. Operation lock. Cancellation via context.
+- [x] **C5: Create flow** - `create -` / `launch -` reads YAML from stdin. `create --template NAME --name N` uses embedded template. `--param key=value` (repeatable) overrides template params. Refactor create/launch to share config-loading logic.
+- [x] **C9: Structured error codes** - Define error codes: `MACHINE_NOT_FOUND`, `MACHINE_RUNNING`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `STORAGE_ERROR`, `PROVISION_FAILED`. Replace `COMMAND_FAILED`. Add field-level validation errors. Map to distinct exit codes.
+- [x] **C10: Progress stream** - Add `--progress=json` flag to `create`/`launch`. Newline-delimited JSON events: `downloading`, `extracting`, `provisioning`, `probe`, `done`. Add `creating` state. Operation lock. Cancellation via context.
 
 ### Phase 5B: Cockpit UI Components
 

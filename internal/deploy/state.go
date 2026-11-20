@@ -13,6 +13,7 @@ type MachineInfo struct {
 	Name       string   `json:"name"`
 	Distro     string   `json:"distro"`
 	SourcePath string   `json:"source_path"`
+	ConfigPath string   `json:"config_path,omitempty"`
 	Files      []string `json:"files"`
 	Network    string   `json:"network"`
 	CPUs       float64  `json:"cpus,omitempty"`

@@ -95,26 +95,34 @@ lxspawn setup network            # Detect and select network interface for conta
 ### Lifecycle
 
 ```bash
-lxspawn create <yaml>            # Create machine (don't start)
-lxspawn launch <yaml>            # Create + start machine
-lxspawn start <name>             # Start existing machine
-lxspawn stop <name>              # Stop machine (graceful)
-lxspawn stop --force <name>      # Force stop (poweroff, terminate, SIGKILL)
-lxspawn restart <name>           # Restart machine (stop then start)
-lxspawn delete <name>            # Delete machine and all data
-lxspawn provision <name>         # Re-run provisioning (full cycle)
-lxspawn edit <name>              # Edit config and re-apply
-lxspawn apply <name> <yaml>      # Apply config from file (preserves rootfs)
-lxspawn autostart <name> on      # Enable machine autostart at boot
-lxspawn autostart <name> off     # Disable machine autostart at boot
+lxspawn create [yaml]                    # Create machine (don't start)
+lxspawn create --template NAME --name N  # Create from embedded template
+lxspawn create -                         # Create from stdin
+lxspawn launch [yaml]                    # Create + start machine
+lxspawn launch --template NAME --name N  # Launch from embedded template
+lxspawn start <name>                     # Start existing machine
+lxspawn stop <name>                      # Stop machine (graceful)
+lxspawn stop --force <name>              # Force stop (poweroff, terminate, SIGKILL)
+lxspawn restart <name>                   # Restart machine (stop then start)
+lxspawn delete <name>                    # Delete machine and all data
+lxspawn provision <name>                 # Re-run provisioning (full cycle)
+lxspawn edit <name>                      # Edit config and re-apply
+lxspawn apply <name> <yaml>              # Apply config from file (preserves rootfs)
+lxspawn autostart <name> on              # Enable machine autostart at boot
+lxspawn autostart <name> off             # Disable machine autostart at boot
 ```
+
+Template flags: `--template NAME` uses an embedded template, `--name N` overrides the machine name, `--param key=value` (repeatable) overrides template parameters. Add `--progress` to emit newline-delimited JSON progress events.
 
 ### Access
 
 ```bash
-lxspawn shell <name>             # Interactive shell
-lxspawn exec <name> -- <cmd>     # Run command
-lxspawn logs <name>              # Follow logs (journalctl -M)
+lxspawn shell <name>                     # Interactive shell
+lxspawn exec <name> -- <cmd>             # Run command
+lxspawn logs <name>                      # Follow logs (journalctl -M)
+lxspawn logs <name> --since "1h ago"     # Logs since a date/time
+lxspawn logs <name> --priority err       # Filter by priority level
+lxspawn logs <name> --lines 50           # Last 50 lines
 ```
 
 ### Snapshots
@@ -134,7 +142,8 @@ lxspawn delete-snapshot <name> <snap>  # Delete snapshot
 lxspawn list                     # List all machines
 lxspawn status <name>            # Detailed machine info
 lxspawn show <name>              # Display generated config files
-lxspawn stats <name>             # Runtime CPU/memory/disk stats
+lxspawn stats [name]             # Runtime CPU/memory/disk stats
+lxspawn stats --all              # Stats for all machines (efficient for UI polling)
 lxspawn config <name>            # Show detailed configuration
 lxspawn provision-status <name>  # Show provisioning status
 ```
@@ -475,18 +484,6 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed security model and privilege
 - **Permissions:** Root for setup, `lxspawn` group for management
 - **SELinux:** If enforcing, hook scripts are automatically labeled with `bin_t` context
 - **Images:** systemd-based distributions (Debian, Ubuntu, Fedora, etc.). Note: Arch Linux is not supported on btrfs hosts due to filesystem compatibility issues.
-
-## Comparison
-
-| Feature | lxspawn | Podman | KVM/QEMU |
-|---------|---------|--------|----------|
-| Boot time | ~2s | ~1s | ~30s |
-| Memory overhead | ~50MB | ~30MB | ~512MB |
-| Full init system | Yes | No | Yes |
-| Systemd integration | Native | Via quadlet | Manual |
-| Resource limits | Via slices | Via cgroups | Via libvirt |
-| Networking | systemd-nspawn | CNI/Netavark | TAP/bridge |
-| Use case | System containers | App containers | Full VMs |
 
 ## Documentation
 

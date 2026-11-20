@@ -114,14 +114,21 @@ type SnapshotData struct {
 }
 
 type StatsData struct {
-	Name              string  `json:"name"`
-	State             string  `json:"state"`
-	CPUUsagePercent   float64 `json:"cpu_usage_percent"`
-	MemoryUsedBytes   int64   `json:"memory_used_bytes"`
-	MemoryTotalBytes  int64   `json:"memory_total_bytes"`
+	Name               string  `json:"name"`
+	State              string  `json:"state"`
+	CPUUsagePercent    float64 `json:"cpu_usage_percent"`
+	MemoryUsedBytes    int64   `json:"memory_used_bytes"`
+	MemoryTotalBytes   int64   `json:"memory_total_bytes"`
 	MemoryUsagePercent float64 `json:"memory_usage_percent"`
-	DiskUsedBytes     int64   `json:"disk_used_bytes,omitempty"`
-	DiskTotalBytes    int64   `json:"disk_total_bytes,omitempty"`
+	DiskUsedBytes      int64   `json:"disk_used_bytes,omitempty"`
+	DiskTotalBytes     int64   `json:"disk_total_bytes,omitempty"`
+	CPUUsageUsec       int64   `json:"cpu_usage_usec,omitempty"`
+	Timestamp          string  `json:"timestamp,omitempty"`
+}
+
+type AllStatsData struct {
+	Timestamp string      `json:"timestamp"`
+	Machines  []StatsData `json:"machines"`
 }
 
 type NetworkConfigJSON struct {

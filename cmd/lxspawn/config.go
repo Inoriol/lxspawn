@@ -27,13 +27,25 @@ var configCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", args[0])
 		}
 
-		if info.SourcePath == "" {
-			return fmt.Errorf("machine '%s' has no source YAML path", args[0])
+		configPath := info.ConfigPath
+		if configPath == "" {
+			configPath = info.SourcePath
 		}
 
-		cfg, err := config.Parse(info.SourcePath)
+		if configPath == "" {
+			return fmt.Errorf("machine '%s' has no config path", args[0])
+		}
+
+		cfg, err := config.Parse(configPath)
 		if err != nil {
-			return fmt.Errorf("failed to parse config: %w", err)
+			if info.SourcePath != "" && info.SourcePath != configPath {
+				cfg, err = config.Parse(info.SourcePath)
+				if err != nil {
+					return fmt.Errorf("failed to parse config: %w", err)
+				}
+			} else {
+				return fmt.Errorf("failed to parse config: %w", err)
+			}
 		}
 
 		if output.IsJSONMode() {

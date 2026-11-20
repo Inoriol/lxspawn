@@ -51,6 +51,7 @@ lxspawn/
 │   ├── setup.go              # First-run system configuration
 │   ├── create.go             # Create machine (don't start)
 │   ├── launch.go             # Create + start
+│   ├── config_loader.go      # Shared config loading (file, stdin, template)
 │   ├── start.go              # Start existing machine
 │   ├── stop.go               # Stop machine (with --force flag)
 │   ├── restart.go            # Restart machine (stop then start)
@@ -80,6 +81,11 @@ lxspawn/
 │   ├── version.go            # Show version and system info
 │   ├── doctor.go             # Check system configuration
 │   └── apply.go              # Declarative config apply
+│
+├── templates/                # Embedded machine templates
+│   ├── embed.go              # go:embed for templates/*.yaml
+│   ├── *.yaml                # Machine template configs
+│   └── *.md                  # Template documentation
 │
 ├── internal/
 │   ├── config/               # YAML parsing and validation
@@ -139,6 +145,12 @@ lxspawn/
 │   ├── gpu/                  # GPU detection and pass-through
 │   │   ├── detect.go         # GPU detection, vendor identification, device selection
 │   │   └── detect_test.go    # Tests for GPU detection
+│   │
+│   ├── errors/               # Structured error types
+│   │   └── errors.go         # Error codes, types, exit code mapping
+│   │
+│   ├── progress/             # Progress event streaming
+│   │   └── progress.go       # Newline-delimited JSON progress reporter
 │   │
 │   ├── deploy/               # Systemd integration (adapted from comquad)
 │   │   ├── dbus.go           # systemd D-Bus connection (always system bus)

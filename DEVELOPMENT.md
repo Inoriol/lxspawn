@@ -59,6 +59,7 @@ go tool cover -html=coverage.out
 
 ```
 cmd/lxspawn/          # CLI commands (one file per command)
+templates/            # Embedded machine templates (go:embed *.yaml)
 internal/
 ├── config/           # YAML parsing and validation
 ├── compiler/         # Generate systemd files (.nspawn, slice, drop-in)
@@ -69,6 +70,8 @@ internal/
 ├── snapshot/         # Snapshot management
 ├── network/          # Network detection and configuration
 ├── gpu/              # GPU detection and pass-through
+├── errors/           # Structured error types and exit codes
+├── progress/         # Progress event streaming (newline-delimited JSON)
 ├── deploy/           # Systemd integration (D-Bus, state, filesystem)
 ├── logger/           # Logging utilities
 └── output/           # JSON formatting
@@ -340,10 +343,10 @@ func DetectBackend(basePath string) (StorageBackend, error) {
 
 ## Adding a New Template
 
-1. **Create YAML template** in `examples/templates/`:
+1. **Create YAML template** in `templates/`:
 
 ```yaml
-# examples/templates/mytemplate.yaml
+# templates/mytemplate.yaml
 name: mytemplate
 distro: debian:bookworm
 
@@ -379,7 +382,7 @@ probes:
       until curl -sf http://localhost/health; do sleep 2; done
 ```
 
-2. **Create documentation** in `examples/templates/mytemplate.md`:
+2. **Create documentation** in `templates/mytemplate.md`:
 
 ```markdown
 # MyTemplate
@@ -396,7 +399,7 @@ Description of the template.
 ## Usage
 
 ```bash
-lxspawn launch examples/templates/mytemplate.yaml
+lxspawn launch --template mytemplate --name mymachine
 ```
 
 ## Post-Installation
