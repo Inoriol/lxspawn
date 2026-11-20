@@ -10,11 +10,13 @@ type SystemdClient interface {
 	StartUnit(unitName string) error
 	StopUnit(unitName string) error
 	RestartUnit(unitName string) error
+	ResetFailedUnit(unitName string) error
 	ListUnitsByNames(unitNames []string) ([]systemdbus.UnitStatus, error)
 	ListAllUnits() ([]systemdbus.UnitStatus, error)
 	GetUnitProperties(unitName string) (map[string]interface{}, error)
 	ListRunningMachines() ([]RunningMachineInfo, error)
 	GetMachineState(name string) (string, []string, error)
+	GetMachineLeader(name string) (int, error)
 }
 
 type StateStore interface {

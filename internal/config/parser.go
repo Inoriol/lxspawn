@@ -71,46 +71,6 @@ func parseString(data string, strict bool) (*Config, error) {
 		cfg.Security.NoNewPrivileges = &t
 	}
 
-	return &cfg, nil
-}
-
-func parse(filename string, strict bool) (*Config, error) {
-	absPath, err := filepath.Abs(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve path: %w", err)
-	}
-
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	var cfg Config
-	if strict {
-		decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-	} else {
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-	}
-
-	if cfg.Network.Mode == "" {
-		cfg.Network.Mode = NetworkHost
-	}
-
-	if cfg.Advanced.Hostname == "" {
-		cfg.Advanced.Hostname = cfg.Name
-	}
-
-	if cfg.Security.NoNewPrivileges == nil {
-		t := true
-		cfg.Security.NoNewPrivileges = &t
-	}
-
 	if cfg.Security.Seccomp == nil {
 		t := true
 		cfg.Security.Seccomp = &t
@@ -125,6 +85,20 @@ func parse(filename string, strict bool) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func parse(filename string, strict bool) (*Config, error) {
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	return parseString(string(data), strict)
 }
 
 func Validate(cfg *Config) error {

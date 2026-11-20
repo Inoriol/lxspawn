@@ -117,7 +117,11 @@ lxspawn/
 │   │   └── network.go        # Inject systemd-networkd configs
 │   │
 │   ├── machine/              # Machine lifecycle management
-│   │   └── manager.go        # Create, start, stop, force stop, restart, delete, shell, exec, status, apply
+│   │   ├── manager.go        # Create, launch, start, stop, force stop, restart, delete, status, apply, provision
+│   │   ├── stats.go          # Runtime CPU/memory/disk stats (cgroup readers)
+│   │   ├── shell.go          # Shell, exec, logs, log quoting
+│   │   ├── manager_test.go   # Unit tests for standalone functions
+│   │   └── manager_integration_test.go  # Integration tests using fakes
 │   │
 │   ├── storage/              # Storage backend abstraction
 │   │   ├── backend.go        # StorageBackend interface
@@ -155,16 +159,20 @@ lxspawn/
 │   ├── deploy/               # Systemd integration (adapted from comquad)
 │   │   ├── dbus.go           # systemd D-Bus connection (always system bus)
 │   │   ├── state.go          # State management (machines.json)
-│   │   ├── filesystem.go     # File operations, paths, atomic writes, SELinux
+│   │   ├── filesystem.go     # File operations, atomic writes, SELinux
+│   │   ├── paths.go          # Configurable filesystem paths (PathConfig)
 │   │   ├── interfaces.go     # SystemdClient, StateStore interfaces
 │   │   └── is_rootless.go    # Root detection
 │   │
 │   ├── logger/               # Logging (adapted from comquad)
 │   │   └── logger.go         # Colored output, verbose/quiet modes
 │   │
-│   └── output/               # JSON formatting (adapted from comquad)
-│       ├── formatter.go      # JSON envelope, print helpers
-│       └── schemas.go        # Machine-specific JSON schemas
+│   ├── output/               # JSON formatting (adapted from comquad)
+│   │   ├── formatter.go      # JSON envelope, print helpers
+│   │   └── schemas.go        # Machine-specific JSON schemas
+│   │
+│   └── testutil/             # Test fakes and helpers
+│       └── fakes.go          # FakeSystemdClient, FakeStorageBackend
 │
 └── examples/                 # Example YAML configurations
     └── myserver.yaml
@@ -905,6 +913,66 @@ Disk stats are read using `syscall.Statfs()` which returns filesystem usage in b
 
 All cgroup files are world-readable, so the stats command works without sudo or special permissions.
 
+### 21. Configurable Filesystem Paths (PathConfig)
+
+All filesystem paths used by lxspawn are configurable via `deploy.PathConfig`:
+
+```go
+type PathConfig struct {
+    NspawnDir      string  // .nspawn files (default: /etc/systemd/nspawn)
+    SystemdDir     string  // slice/drop-in units (default: /etc/systemd/system)
+    MachinesDir    string  // machine rootfs (default: /var/lib/machines)
+    LxspawnDataDir string  // lxspawn metadata (default: /var/lib/lxspawn)
+}
+```
+
+**Why configurable paths?**
+
+- **NixOS support** - NixOS uses `/etc/nspawn/` and `/var/lib/lxspawn/` instead of standard paths
+- **Custom installations** - Users may want machines on a different partition
+- **Testing** - Tests use `t.TempDir()` paths without touching system directories
+
+**Implementation:**
+
+- `deploy.SetPaths(cfg)` sets global paths (thread-safe via `sync.RWMutex`)
+- `deploy.GetPaths()` returns current paths
+- `deploy.ResetPaths()` restores defaults
+- All path helper functions (`NspawnFilePath()`, `MachineRootfsPath()`, etc.) read from the global config
+- Backward-compatible constants (`deploy.NspawnDir`, `deploy.MachinesDir`) still exist and equal the defaults
+
+**Trade-offs:**
+- Global mutable state (mitigated by mutex and `ResetPaths()` for tests)
+- Tests must call `ResetPaths()` in cleanup to avoid cross-test pollution
+
+### 22. Dependency Injection for Testing
+
+The `machine.Manager` accepts its dependencies via interfaces, enabling testing without real systemd:
+
+```go
+func NewManagerWithDeps(
+    state   deploy.StateStore,      // interface
+    systemd deploy.SystemdClient,   // interface
+    storage storage.StorageBackend,  // interface
+) *Manager
+```
+
+**Why dependency injection?**
+
+- **Testability** - Tests use `FakeSystemdClient` and `FakeStorageBackend` from `internal/testutil`
+- **No root required** - Integration tests run without systemd, real state files, or storage backends
+- **Error injection** - Tests can simulate systemd failures, storage errors, etc.
+
+**Implementation:**
+
+- `NewManager()` (production) creates real dependencies via `deploy.NewStateManager()`, `deploy.NewSystemdManager()`, `storage.DetectBackend()`
+- `NewManagerWithDeps()` (testing) accepts pre-constructed fakes
+- `FakeSystemdClient` records all method calls for assertion (`GetCalls("StartUnit")`)
+- `FakeStorageBackend` tracks machine creation/deletion in a map
+
+**Trade-offs:**
+- Two constructors instead of one (but `NewManager()` is unchanged for production code)
+- Interfaces must stay in sync with concrete implementations (compile-time checks: `var _ SystemdClient = (*SystemdManager)(nil)`)
+
 ## Security Model
 
 ### Privilege Model
@@ -1022,7 +1090,7 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 
 ### Unit Tests
 
-**320 tests across 22 test files, all passing (1 skipped, requires root):**
+**340+ tests across 23 test files, all passing (1 skipped, requires root):**
 
 - `internal/config/parser_test.go` - Config parsing and validation (64 tests)
 - `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
@@ -1040,6 +1108,7 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 - `internal/image/network_test.go` - Network config injection for all modes (10 tests)
 - `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
 - `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests)
+- `internal/machine/manager_integration_test.go` - Lifecycle integration tests with fakes: Start, Stop, Restart, Delete, GetStatus, ListMachines, ListMachinesWithState, Close (20 tests)
 - `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
 - `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
 - `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
@@ -1049,6 +1118,24 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 - `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests)
 
 ### Integration Tests
+
+Integration tests use fake implementations (`FakeSystemdClient`, `FakeStorageBackend`) from `internal/testutil` to test the `Manager` lifecycle methods without requiring real systemd, root privileges, or actual storage backends.
+
+**Covered scenarios:**
+- Start/Stop/Restart lifecycle with state verification
+- Delete with state cleanup and storage deletion
+- GetStatus with machine state from fake systemd
+- ListMachines and ListMachinesWithState with running machine detection
+- Error paths (machine not found, systemd failures)
+- NewManagerWithDeps constructor injection
+
+**Test infrastructure:**
+- `deploy.SetPaths()` / `deploy.ResetPaths()` configure filesystem paths per-test using `t.TempDir()`
+- `FakeSystemdClient` records all method calls for assertion
+- `FakeStorageBackend` tracks machine creation/deletion
+- `FakeSystemdClient.MachineState` map controls reported machine states
+
+### Manual E2E Tests
 
 - Full lifecycle (create → start → shell → stop → delete)
 - Networking modes (host, private, bridge, zone)

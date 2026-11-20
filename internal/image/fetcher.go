@@ -217,7 +217,7 @@ func (f *Fetcher) download(url string) (string, error) {
 		return "", fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
 
-	cacheDir := filepath.Join(deploy.LxspawnDataDir, "cache")
+	cacheDir := filepath.Join(deploy.LxspawnDataDirPath(), "cache")
 	if err := os.MkdirAll(cacheDir, 0700); err != nil {
 		return "", fmt.Errorf("failed to create cache directory: %w", err)
 	}

@@ -5,8 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/compiler"
@@ -21,8 +19,8 @@ import (
 )
 
 type Manager struct {
-	state   *deploy.StateManager
-	systemd *deploy.SystemdManager
+	state   deploy.StateStore
+	systemd deploy.SystemdClient
 	storage storage.StorageBackend
 }
 
@@ -37,19 +35,22 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("failed to connect to systemd: %w", err)
 	}
 
-	// Detect and initialize storage backend
-	storageBackend, err := storage.DetectBackend(deploy.MachinesDir)
+	storageBackend, err := storage.DetectBackend(deploy.MachinesDirPath())
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage backend: %w", err)
 	}
 
 	logger.Info(fmt.Sprintf("Using storage backend: %s", storageBackend.Type()))
 
+	return NewManagerWithDeps(state, systemd, storageBackend), nil
+}
+
+func NewManagerWithDeps(state deploy.StateStore, systemd deploy.SystemdClient, storage storage.StorageBackend) *Manager {
 	return &Manager{
 		state:   state,
 		systemd: systemd,
-		storage: storageBackend,
-	}, nil
+		storage: storage,
+	}
 }
 
 func (m *Manager) Close() {
@@ -70,7 +71,7 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		return nil, lxerrors.NewStorageError(fmt.Sprintf("rootfs at %s already exists but is not managed by lxspawn. Remove it manually or use a different machine name", rootfsPath), nil)
 	}
 
-	if kernel.IsBtrfs(deploy.MachinesDir) {
+	if kernel.IsBtrfs(deploy.MachinesDirPath()) {
 		ok, err := kernel.CheckKernelVersion(5, 12)
 		if err != nil {
 			logger.Warn(fmt.Sprintf("could not check kernel version: %v", err))
@@ -208,7 +209,6 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		return nil, fmt.Errorf("failed to register machine in state: %w", err)
 	}
 
-	// Run pre-boot provisioning if configured
 	if len(cfg.Provision) > 0 {
 		engine, err := provision.NewEngine(cfg.Name)
 		if err != nil {
@@ -243,7 +243,6 @@ func (m *Manager) Launch(cfg *config.Config, sourcePath string) error {
 		return err
 	}
 
-	// Run post-boot provisioning if configured
 	hasPostBoot := false
 	for _, p := range cfg.Provision {
 		if p.Mode == config.ProvisionSystem || p.Mode == config.ProvisionUser {
@@ -299,15 +298,15 @@ func (m *Manager) Stop(name string) error {
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
 	if err := m.systemd.StopUnit(unitName); err != nil {
 		logger.Debug(fmt.Sprintf("stop unit warning: %v", err))
-		
+
 		if err := m.systemd.ResetFailedUnit(unitName); err != nil {
 			logger.Debug(fmt.Sprintf("reset failed warning: %v", err))
 		}
-		
+
 		cleanupCmd := exec.Command("machinectl", "terminate", name)
 		if output, err := cleanupCmd.CombinedOutput(); err != nil {
 			logger.Debug(fmt.Sprintf("machinectl terminate warning: %v (%s)", err, string(output)))
-			
+
 			systemctlCmd := deploy.Sudo("systemctl", "stop", unitName)
 			if output, err := systemctlCmd.CombinedOutput(); err != nil {
 				return fmt.Errorf("failed to stop machine: %w (%s)", err, string(output))
@@ -381,15 +380,15 @@ func (m *Manager) Delete(name string) error {
 	}
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
-	
+
 	if err := m.systemd.StopUnit(unitName); err != nil {
 		logger.Debug(fmt.Sprintf("stop unit warning (may already be stopped): %v", err))
 	}
-	
+
 	if err := m.systemd.ResetFailedUnit(unitName); err != nil {
 		logger.Debug(fmt.Sprintf("reset failed warning (may not be in failed state): %v", err))
 	}
-	
+
 	cleanupCmd := exec.Command("machinectl", "terminate", name)
 	if output, err := cleanupCmd.CombinedOutput(); err != nil {
 		logger.Debug(fmt.Sprintf("machinectl terminate warning (may already be terminated): %v (%s)", err, string(output)))
@@ -410,7 +409,6 @@ func (m *Manager) Delete(name string) error {
 		return fmt.Errorf("failed to remove files: %w", err)
 	}
 
-	// Use storage backend to delete machine storage
 	if err := m.storage.DeleteMachine(name); err != nil {
 		return fmt.Errorf("failed to delete machine storage: %w", err)
 	}
@@ -427,182 +425,18 @@ func (m *Manager) Delete(name string) error {
 	return nil
 }
 
-func (m *Manager) Shell(name string) error {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
-	}
-
-	cmd := exec.Command("machinectl", "shell", name)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func (m *Manager) Exec(name string, command []string) error {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
-	}
-
-	shellCmd := shellQuoteArgs(command)
-	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
-
-	args := []string{"systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
-	cmd := deploy.Sudo(args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func shellQuoteArgs(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		quoted[i] = shellQuote(arg)
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	needsQuoting := false
-	for _, c := range s {
-		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-			c == '-' || c == '_' || c == '/' || c == '.' || c == '=' || c == '@' || c == '+' || c == ',') {
-			needsQuoting = true
-			break
-		}
-	}
-	if !needsQuoting {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}
-
-func (m *Manager) Logs(name string) error {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
-	}
-
-	cmd := exec.Command("journalctl", "-M", name, "-f")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-type LogOptions struct {
-	Lines    int
-	Since    string
-	Priority string
-	Follow   bool
-}
-
-func (m *Manager) LogsWithOptions(name string, opts LogOptions) error {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
-	}
-
-	args := []string{"-M", name}
-
-	if opts.Follow {
-		args = append(args, "-f")
-	} else {
-		args = append(args, "--no-pager")
-		if opts.Lines > 0 {
-			args = append(args, "-n", fmt.Sprintf("%d", opts.Lines))
-		}
-	}
-
-	if opts.Since != "" {
-		args = append(args, "--since", opts.Since)
-	}
-
-	if opts.Priority != "" {
-		args = append(args, "-p", opts.Priority)
-	}
-
-	args = append(args, "-o", "short-iso")
-
-	cmd := exec.Command("journalctl", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-type LogEntry struct {
-	Timestamp string
-	Priority  int
-	Message   string
-}
-
-func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
-	return m.GetLogsWithOptions(name, LogOptions{Lines: lines})
-}
-
-func (m *Manager) GetLogsWithOptions(name string, opts LogOptions) ([]LogEntry, error) {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return nil, fmt.Errorf("machine '%s' not found", name)
-	}
-
-	args := []string{"-M", name, "--no-pager", "-o", "short-iso"}
-
-	if opts.Lines > 0 {
-		args = append(args, "-n", fmt.Sprintf("%d", opts.Lines))
-	}
-
-	if opts.Since != "" {
-		args = append(args, "--since", opts.Since)
-	}
-
-	if opts.Priority != "" {
-		args = append(args, "-p", opts.Priority)
-	}
-
-	cmd := exec.Command("journalctl", args...)
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get logs: %w", err)
-	}
-
-	var entries []LogEntry
-	for _, line := range strings.Split(string(output), "\n") {
-		if line == "" {
-			continue
-		}
-
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) < 3 {
-			continue
-		}
-
-		entry := LogEntry{
-			Timestamp: parts[0],
-			Priority:  6, // Default to info priority
-			Message:   parts[2],
-		}
-
-		entries = append(entries, entry)
-	}
-
-	return entries, nil
-}
-
 type MachineStatus struct {
-	Name      string
-	Distro    string
-	State     string
-	Leader    int
-	Addresses []string
-	Network   string
-	CreatedAt string
+	Name       string
+	Distro     string
+	State      string
+	Leader     int
+	Addresses  []string
+	Network    string
+	CreatedAt  string
 	SourcePath string
-	Files     []string
-	Ephemeral bool
-	ReadOnly  bool
+	Files      []string
+	Ephemeral  bool
+	ReadOnly   bool
 }
 
 func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
@@ -721,7 +555,6 @@ func (m *Manager) Provision(cfg *config.Config, sourcePath string) error {
 		}
 	}
 
-	// Run pre-boot provisioning (boot, data, yq modes)
 	hasPreBoot := false
 	for _, p := range cfg.Provision {
 		if p.Mode == config.ProvisionBoot || p.Mode == config.ProvisionData || p.Mode == config.ProvisionYQ {
@@ -789,246 +622,6 @@ func fixRootfsOwnership(rootfsPath string) error {
 		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
 	}
 	return nil
-}
-
-type MachineStats struct {
-	Name               string
-	State              string
-	CPUUsagePercent    float64
-	CPUUsageUsec       int64
-	MemoryUsedBytes    int64
-	MemoryTotalBytes   int64
-	MemoryUsagePercent float64
-	DiskUsedBytes      int64
-	DiskTotalBytes     int64
-}
-
-func (m *Manager) GetStats(name string) (*MachineStats, error) {
-	if _, exists := m.state.GetMachine(name); !exists {
-		return nil, fmt.Errorf("machine '%s' not found", name)
-	}
-
-	state, _, err := m.systemd.GetMachineState(name)
-	if err != nil {
-		state = "stopped"
-	}
-
-	stats := &MachineStats{
-		Name:  name,
-		State: state,
-	}
-
-	if state != "running" {
-		return stats, nil
-	}
-
-	cgroupPath, err := m.getMachineCgroupPath(name)
-	if err != nil {
-		return stats, nil
-	}
-
-	if cpuUsage, err := readCPUUsage(cgroupPath); err == nil {
-		stats.CPUUsagePercent = cpuUsage
-	}
-
-	if memUsed, memTotal, err := readMemoryUsage(cgroupPath); err == nil {
-		stats.MemoryUsedBytes = memUsed
-		stats.MemoryTotalBytes = memTotal
-		if memTotal > 0 {
-			stats.MemoryUsagePercent = float64(memUsed) / float64(memTotal) * 100
-		}
-	}
-
-	if diskUsed, diskTotal, err := readDiskUsage(deploy.MachineRootfsPath(name)); err == nil {
-		stats.DiskUsedBytes = diskUsed
-		stats.DiskTotalBytes = diskTotal
-	}
-
-	return stats, nil
-}
-
-func (m *Manager) GetAllStats() ([]MachineStats, error) {
-	machines := m.state.ListMachines()
-	statsList := make([]MachineStats, 0, len(machines))
-
-	for _, machine := range machines {
-		state, _, err := m.systemd.GetMachineState(machine.Name)
-		if err != nil {
-			state = "stopped"
-		}
-
-		stats := MachineStats{
-			Name:  machine.Name,
-			State: state,
-		}
-
-		if state == "running" {
-			cgroupPath, err := m.getMachineCgroupPath(machine.Name)
-			if err == nil {
-				if cpuUsageUsec, err := readCPUUsageUsec(cgroupPath); err == nil {
-					stats.CPUUsageUsec = cpuUsageUsec
-				}
-
-				if memUsed, memTotal, err := readMemoryUsage(cgroupPath); err == nil {
-					stats.MemoryUsedBytes = memUsed
-					stats.MemoryTotalBytes = memTotal
-					if memTotal > 0 {
-						stats.MemoryUsagePercent = float64(memUsed) / float64(memTotal) * 100
-					}
-				}
-
-				if diskUsed, diskTotal, err := readDiskUsage(deploy.MachineRootfsPath(machine.Name)); err == nil {
-					stats.DiskUsedBytes = diskUsed
-					stats.DiskTotalBytes = diskTotal
-				}
-			}
-		}
-
-		statsList = append(statsList, stats)
-	}
-
-	return statsList, nil
-}
-
-func (m *Manager) getMachineCgroupPath(name string) (string, error) {
-	leader, err := m.systemd.GetMachineLeader(name)
-	if err != nil {
-		return "", fmt.Errorf("failed to get machine leader: %w", err)
-	}
-
-	cgroupFile := fmt.Sprintf("/proc/%d/cgroup", leader)
-	data, err := os.ReadFile(cgroupFile)
-	if err != nil {
-		return "", fmt.Errorf("failed to read cgroup file: %w", err)
-	}
-
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.Contains(line, "machine.slice") {
-			parts := strings.Split(line, "::")
-			if len(parts) == 2 {
-				cgroupPath := parts[1]
-				cgroupPath = strings.TrimSuffix(cgroupPath, "/systemd-nspawn@"+name+".service/payload/init.scope")
-				cgroupPath = strings.TrimSuffix(cgroupPath, "/systemd-nspawn@"+name+".service")
-				return "/sys/fs/cgroup" + cgroupPath, nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("machine cgroup not found")
-}
-
-func readCPUUsage(cgroupPath string) (float64, error) {
-	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
-	
-	data1, err := os.ReadFile(cpuStatPath)
-	if err != nil {
-		return 0, err
-	}
-
-	var usageUsec1 int64
-	for _, line := range strings.Split(string(data1), "\n") {
-		if strings.HasPrefix(line, "usage_usec") {
-			fmt.Sscanf(line, "usage_usec %d", &usageUsec1)
-			break
-		}
-	}
-
-	if usageUsec1 == 0 {
-		return 0, nil
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	data2, err := os.ReadFile(cpuStatPath)
-	if err != nil {
-		return 0, err
-	}
-
-	var usageUsec2 int64
-	for _, line := range strings.Split(string(data2), "\n") {
-		if strings.HasPrefix(line, "usage_usec") {
-			fmt.Sscanf(line, "usage_usec %d", &usageUsec2)
-			break
-		}
-	}
-
-	deltaUsec := usageUsec2 - usageUsec1
-	if deltaUsec < 0 {
-		return 0, nil
-	}
-
-	intervalUsec := int64(100000)
-	cpuPercent := float64(deltaUsec) / float64(intervalUsec) * 100.0
-
-	// Normalize by number of allocated CPUs if quota is set
-	cpuMaxPath := filepath.Join(cgroupPath, "cpu.max")
-	if data, err := os.ReadFile(cpuMaxPath); err == nil {
-		var quota, period int64
-		if n, _ := fmt.Sscanf(string(data), "%d %d", &quota, &period); n == 2 && quota > 0 && period > 0 {
-			numCPUs := float64(quota) / float64(period)
-			if numCPUs > 0 {
-				cpuPercent = cpuPercent / numCPUs
-			}
-		}
-	}
-
-	return cpuPercent, nil
-}
-
-func readCPUUsageUsec(cgroupPath string) (int64, error) {
-	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
-
-	data, err := os.ReadFile(cpuStatPath)
-	if err != nil {
-		return 0, err
-	}
-
-	var usageUsec int64
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.HasPrefix(line, "usage_usec") {
-			fmt.Sscanf(line, "usage_usec %d", &usageUsec)
-			break
-		}
-	}
-
-	return usageUsec, nil
-}
-
-func readMemoryUsage(cgroupPath string) (int64, int64, error) {
-	memoryCurrentPath := filepath.Join(cgroupPath, "memory.current")
-	memoryMaxPath := filepath.Join(cgroupPath, "memory.max")
-
-	memCurrentData, err := os.ReadFile(memoryCurrentPath)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	var memCurrent int64
-	fmt.Sscanf(strings.TrimSpace(string(memCurrentData)), "%d", &memCurrent)
-
-	var memMax int64
-	if memMaxData, err := os.ReadFile(memoryMaxPath); err == nil {
-		memMaxStr := strings.TrimSpace(string(memMaxData))
-		if memMaxStr != "max" {
-			fmt.Sscanf(memMaxStr, "%d", &memMax)
-		}
-	}
-
-	return memCurrent, memMax, nil
-}
-
-func readDiskUsage(path string) (int64, int64, error) {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
-		return 0, 0, fmt.Errorf("failed to stat filesystem: %w", err)
-	}
-
-	// Calculate total and used space in bytes
-	total := int64(stat.Blocks) * int64(stat.Bsize)
-	free := int64(stat.Bfree) * int64(stat.Bsize)
-	used := total - free
-
-	return used, total, nil
 }
 
 func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {

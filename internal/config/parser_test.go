@@ -1316,3 +1316,93 @@ network:
 		t.Errorf("expected 'not found' error, got: %v", err)
 	}
 }
+
+func TestParseStringDefaults(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Network.Mode != NetworkHost {
+		t.Errorf("Network.Mode = %q, want %q", cfg.Network.Mode, NetworkHost)
+	}
+	if cfg.Advanced.Hostname != "testbox" {
+		t.Errorf("Hostname = %q, want %q", cfg.Advanced.Hostname, "testbox")
+	}
+	if cfg.Security.NoNewPrivileges == nil || !*cfg.Security.NoNewPrivileges {
+		t.Error("NoNewPrivileges should default to true")
+	}
+	if cfg.Security.Seccomp == nil || !*cfg.Security.Seccomp {
+		t.Error("Seccomp should default to true")
+	}
+	if cfg.Resources.IOWeight != 100 {
+		t.Errorf("IOWeight = %d, want 100", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "10G" {
+		t.Errorf("Storage.Size = %q, want %q", cfg.Storage.Size, "10G")
+	}
+}
+
+func TestParseStringDefaultsMatchParse(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+resources:
+  cpus: 2
+`
+	path := writeTempYAML(t, yaml)
+
+	cfgFile, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	cfgString, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfgFile.Security.Seccomp == nil || cfgString.Security.Seccomp == nil {
+		t.Fatal("Seccomp should not be nil in either parser")
+	}
+	if *cfgFile.Security.Seccomp != *cfgString.Security.Seccomp {
+		t.Errorf("Seccomp mismatch: Parse=%v, ParseString=%v", *cfgFile.Security.Seccomp, *cfgString.Security.Seccomp)
+	}
+	if cfgFile.Resources.IOWeight != cfgString.Resources.IOWeight {
+		t.Errorf("IOWeight mismatch: Parse=%d, ParseString=%d", cfgFile.Resources.IOWeight, cfgString.Resources.IOWeight)
+	}
+	if cfgFile.Storage.Size != cfgString.Storage.Size {
+		t.Errorf("Storage.Size mismatch: Parse=%q, ParseString=%q", cfgFile.Storage.Size, cfgString.Storage.Size)
+	}
+}
+
+func TestParseStringPreservesExplicitValues(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+security:
+  seccomp: false
+resources:
+  io_weight: 200
+storage:
+  size: 20G
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Security.Seccomp == nil || *cfg.Security.Seccomp != false {
+		t.Error("Seccomp should be false when explicitly set")
+	}
+	if cfg.Resources.IOWeight != 200 {
+		t.Errorf("IOWeight = %d, want 200", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "20G" {
+		t.Errorf("Storage.Size = %q, want %q", cfg.Storage.Size, "20G")
+	}
+}

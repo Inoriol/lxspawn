@@ -56,6 +56,15 @@ Completed phases:
 - [x] **C9: Structured error codes** - Define error codes: `MACHINE_NOT_FOUND`, `MACHINE_RUNNING`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `STORAGE_ERROR`, `PROVISION_FAILED`. Replace `COMMAND_FAILED`. Add field-level validation errors. Map to distinct exit codes.
 - [x] **C10: Progress stream** - Add `--progress=json` flag to `create`/`launch`. Newline-delimited JSON events: `downloading`, `extracting`, `provisioning`, `probe`, `done`. Add `creating` state. Operation lock. Cancellation via context.
 
+**Priority 4: Testability (completed)**
+
+- [x] **Configurable filesystem paths (PathConfig)** - All paths configurable via `deploy.SetPaths()`. Enables NixOS support and testing with temp dirs.
+- [x] **Dependency injection for Manager** - `NewManagerWithDeps()` accepts interfaces. `Manager` fields use `StateStore` and `SystemdClient` interfaces.
+- [x] **Fake implementations** - `FakeSystemdClient` and `FakeStorageBackend` in `internal/testutil`.
+- [x] **Integration tests** - 20+ lifecycle tests in `manager_integration_test.go` using fakes.
+- [x] **Fix ParseString() defaults bug** - `ParseString()` now sets same defaults as `Parse()` (Seccomp, IOWeight, Storage.Size).
+- [x] **Split manager.go** - Extracted `stats.go` and `shell.go` from the 1143-line god object.
+
 ### Phase 5B: Cockpit UI Components
 
 **Priority 1: Quick Wins (1-2 hours each)**

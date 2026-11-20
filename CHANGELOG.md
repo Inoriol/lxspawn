@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Configurable filesystem paths (`PathConfig`)** - All filesystem paths (nspawn dir, systemd dir, machines dir, lxspawn data dir) are now configurable via `deploy.SetPaths()`. Enables support for non-standard layouts such as NixOS. Default paths remain unchanged (`/etc/systemd/nspawn`, `/etc/systemd/system`, `/var/lib/machines`, `/var/lib/lxspawn`).
+- **Dependency injection for `machine.Manager`** - Added `NewManagerWithDeps(state, systemd, storage)` constructor accepting `deploy.StateStore`, `deploy.SystemdClient`, and `storage.StorageBackend` interfaces. Enables unit and integration testing without real systemd, state files, or storage backends.
+- **Fake implementations for testing** - New `internal/testutil` package with `FakeSystemdClient` and `FakeStorageBackend`. Both record method calls for assertion and support custom function hooks for error injection.
+- **Integration tests for machine lifecycle** - 20+ tests in `manager_integration_test.go` covering Start, Stop, Restart, Delete, GetStatus, ListMachines, ListMachinesWithState, Close, and error paths. All tests use fakes, no root or systemd required.
+
+### Changed
+
+- **`machine/manager.go` split into focused files** - Extracted `stats.go` (MachineStats, GetStats, GetAllStats, cgroup readers) and `shell.go` (Shell, Exec, Logs, LogsWithOptions, shell quoting). `manager.go` now contains only core lifecycle and state methods.
+- **`Manager` fields use interface types** - `state` changed from `*deploy.StateManager` to `deploy.StateStore`, `systemd` changed from `*deploy.SystemdManager` to `deploy.SystemdClient`. `storage` was already an interface.
+- **`SystemdClient` interface expanded** - Added `ResetFailedUnit` and `GetMachineLeader` methods to match what `Manager` actually calls.
+- **`parse()` refactored to call `parseString()`** - Eliminated duplicated default-setting logic. Both `Parse()` and `ParseString()` now share the same code path.
+
+### Fixed
+
+- **`ParseString()` missing defaults** - `ParseString()` (used by templates and stdin) was missing defaults for `security.seccomp` (`true`), `resources.io_weight` (`100`), and `storage.size` (`"10G"`). Templates loaded via `--template` or stdin now get the same defaults as file-based configs.
+
+## [0.1.3] - 2026-11-21
+
+### Added
+
 - **Snapshot description (C12)** - `lxspawn snapshot` now accepts `--description` flag to store a description with the snapshot. Description is included in JSON output from `list-snapshots`.
 - **`edit-resources` new flags** - Added `--memory-high` (soft memory limit) and `--io-weight` (IO scheduling priority) flags to `edit-resources` command.
 - **Complete `config --json` output (C3)** - `config --json` now returns full configuration including `hooks`, `provision`, `param`, `probes`, `journal`, `resources.memory_high`, and `resources.io_weight` fields. Previously only returned basic fields.

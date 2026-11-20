@@ -66,13 +66,17 @@ internal/
 ├── provision/        # Provisioning engine (boot, data, yq, system, user)
 ├── image/            # Rootfs image management (download, extract, cleanup)
 ├── machine/          # Machine lifecycle management
+│   ├── manager.go    # Core lifecycle (Create, Launch, Start, Stop, Delete, Apply)
+│   ├── stats.go      # Runtime CPU/memory/disk stats (cgroup readers)
+│   └── shell.go      # Shell, exec, logs, log quoting
 ├── storage/          # Storage backend abstraction (btrfs, lvm, directory)
 ├── snapshot/         # Snapshot management
 ├── network/          # Network detection and configuration
 ├── gpu/              # GPU detection and pass-through
 ├── errors/           # Structured error types and exit codes
 ├── progress/         # Progress event streaming (newline-delimited JSON)
-├── deploy/           # Systemd integration (D-Bus, state, filesystem)
+├── deploy/           # Systemd integration (D-Bus, state, filesystem, paths)
+├── testutil/         # Test fakes (FakeSystemdClient, FakeStorageBackend)
 ├── logger/           # Logging utilities
 └── output/           # JSON formatting
 ```
@@ -82,17 +86,76 @@ internal/
 **StorageBackend** (`internal/storage/backend.go`):
 ```go
 type StorageBackend interface {
+    Type() BackendType
     CreateMachine(name string, sizeGB int) error
     DeleteMachine(name string) error
     MachineExists(name string) (bool, error)
     GetMachinePath(name string) string
-    CreateSnapshot(machine, snapshot string) error
-    DeleteSnapshot(machine, snapshot string) error
-    ListSnapshots(machine string) ([]SnapshotInfo, error)
-    RollbackSnapshot(machine, snapshot string) error
-    GetUsage() (uint64, uint64, error) // used, total bytes
-    Close() error
+    GetUsage() (int64, int64, error) // used, total bytes
 }
+```
+
+**SystemdClient** (`internal/deploy/interfaces.go`):
+```go
+type SystemdClient interface {
+    Close() error
+    ReloadDaemon() error
+    StartUnit(unitName string) error
+    StopUnit(unitName string) error
+    RestartUnit(unitName string) error
+    ResetFailedUnit(unitName string) error
+    ListUnitsByNames(unitNames []string) ([]systemdbus.UnitStatus, error)
+    ListAllUnits() ([]systemdbus.UnitStatus, error)
+    GetUnitProperties(unitName string) (map[string]interface{}, error)
+    ListRunningMachines() ([]RunningMachineInfo, error)
+    GetMachineState(name string) (string, []string, error)
+    GetMachineLeader(name string) (int, error)
+}
+```
+
+**StateStore** (`internal/deploy/interfaces.go`):
+```go
+type StateStore interface {
+    GetMachine(name string) (MachineInfo, bool)
+    GetStateFilePath() string
+    ListMachines() []MachineInfo
+    RegisterMachine(machine MachineInfo) error
+    UnregisterMachine(name string) error
+    Save() error
+}
+```
+
+**PathConfig** (`internal/deploy/paths.go`):
+```go
+type PathConfig struct {
+    NspawnDir      string  // .nspawn files (default: /etc/systemd/nspawn)
+    SystemdDir     string  // slice/drop-in units (default: /etc/systemd/system)
+    MachinesDir    string  // machine rootfs (default: /var/lib/machines)
+    LxspawnDataDir string  // lxspawn metadata (default: /var/lib/lxspawn)
+}
+
+// Configure paths (useful for testing or non-standard layouts like NixOS)
+func SetPaths(cfg PathConfig)
+func GetPaths() PathConfig
+func ResetPaths()  // restore defaults
+```
+
+**Manager** (`internal/machine/manager.go`):
+```go
+type Manager struct { ... }
+
+// Production constructor (creates real dependencies)
+func NewManager() (*Manager, error)
+
+// Test constructor (inject fakes)
+func NewManagerWithDeps(state StateStore, systemd SystemdClient, storage StorageBackend) *Manager
+
+func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error)
+func (m *Manager) Launch(cfg *config.Config, sourcePath string) error
+func (m *Manager) Start(name string) error
+func (m *Manager) Stop(name string) error
+func (m *Manager) Delete(name string) error
+func (m *Manager) Close()
 ```
 
 **SnapshotBackend** (`internal/snapshot/snapshot.go`):
@@ -106,7 +169,7 @@ type SnapshotBackend interface {
 }
 ```
 
-**Manager** (`internal/snapshot/manager.go`):
+**Snapshot Manager** (`internal/snapshot/manager.go`):
 ```go
 type Manager struct { ... }
 
@@ -117,19 +180,6 @@ func (m *Manager) RollbackSnapshot(snapName string) error
 func (m *Manager) DeleteSnapshot(snapName string) error
 func (m *Manager) BackendType() BackendType
 func (m *Manager) Close()
-```
-
-**SystemdClient** (`internal/deploy/interfaces.go`):
-```go
-type SystemdClient interface {
-    StartUnit(name string) error
-    StopUnit(name string) error
-    RestartUnit(name string) error
-    GetUnitProperties(name string) (map[string]interface{}, error)
-    ReloadDaemon() error
-    ResetFailedUnit(name string) error
-    Close() error
-}
 ```
 
 ## Adding a New CLI Command
@@ -647,6 +697,103 @@ Before submitting changes:
 - [ ] Documentation updated (README.md, SPEC.md, ARCHITECTURE.md)
 - [ ] Sudoers rules updated (if new privileged operations added)
 - [ ] No secrets logged or exposed
+
+## Writing Integration Tests
+
+Integration tests use fake implementations from `internal/testutil` to test `Manager` lifecycle methods without requiring real systemd, root privileges, or storage backends.
+
+### Setup Pattern
+
+```go
+func setupTestManager(t *testing.T) (*Manager, *deploy.StateManager, *testutil.FakeSystemdClient, *testutil.FakeStorageBackend) {
+    t.Helper()
+
+    tmpDir := t.TempDir()
+
+    // Configure paths for this test
+    paths := deploy.PathConfig{
+        NspawnDir:      filepath.Join(tmpDir, "nspawn"),
+        SystemdDir:     filepath.Join(tmpDir, "systemd"),
+        MachinesDir:    filepath.Join(tmpDir, "machines"),
+        LxspawnDataDir: filepath.Join(tmpDir, "lxspawn"),
+    }
+    deploy.SetPaths(paths)
+    t.Cleanup(deploy.ResetPaths)
+
+    // Create real state manager with temp path
+    state := &deploy.StateManager{
+        StateFilePath: filepath.Join(tmpDir, "machines.json"),
+        Machines:      make(map[string]deploy.MachineInfo),
+    }
+
+    // Create fakes
+    systemd := testutil.NewFakeSystemdClient()
+    storage := testutil.NewFakeStorageBackend(paths.MachinesDir)
+
+    // Inject into manager
+    mgr := machine.NewManagerWithDeps(state, systemd, storage)
+
+    return mgr, state, systemd, storage
+}
+```
+
+### Asserting on Calls
+
+```go
+func TestStart_CallsSystemd(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    err := mgr.Start("testbox")
+    require.NoError(t, err)
+
+    // Assert ReloadDaemon was called
+    reloadCalls := systemd.GetCalls("ReloadDaemon")
+    require.Len(t, reloadCalls, 1)
+
+    // Assert StartUnit was called with correct unit name
+    startCalls := systemd.GetCalls("StartUnit")
+    require.Len(t, startCalls, 1)
+    assert.Equal(t, "systemd-nspawn@testbox.service", startCalls[0].Args[0])
+}
+```
+
+### Injecting Errors
+
+```go
+func TestStart_SystemdError(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    // Make StartUnit fail
+    systemd.StartUnitFn = func(name string) error {
+        return errors.New("systemd start failed")
+    }
+
+    err := mgr.Start("testbox")
+    assert.Error(t, err)
+    assert.Contains(t, err.Error(), "failed to start machine")
+}
+```
+
+### Controlling Machine State
+
+```go
+func TestGetStatus_Running(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    // Control what GetMachineState returns
+    systemd.MachineState["testbox"] = "running"
+
+    status, err := mgr.GetStatus("testbox")
+    require.NoError(t, err)
+    assert.Equal(t, "running", status.State)
+}
+```
 
 ## Code Review Guidelines
 
