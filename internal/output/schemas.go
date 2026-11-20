@@ -191,3 +191,16 @@ type DistroInfo struct {
 type DistroListData struct {
 	Distros []DistroInfo `json:"distros"`
 }
+
+type AutostartData struct {
+	Machine   string `json:"machine"`
+	Autostart bool   `json:"autostart"`
+	Success   bool   `json:"success"`
+}
+
+type ApplyData struct {
+	Machine         string `json:"machine"`
+	Success         bool   `json:"success"`
+	DryRun          bool   `json:"dry_run"`
+	RestartRequired bool   `json:"restart_required"`
+}

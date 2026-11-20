@@ -11,22 +11,41 @@ import (
 
 func TestBuildEnvExportNoParams(t *testing.T) {
 	result := buildEnvExport(nil)
-	if result != "" {
-		t.Errorf("expected empty string for nil params, got %q", result)
+	expected := "export DEBIAN_FRONTEND=noninteractive"
+	if result != expected {
+		t.Errorf("expected %q for nil params, got %q", expected, result)
 	}
 
 	result = buildEnvExport(map[string]string{})
-	if result != "" {
-		t.Errorf("expected empty string for empty params, got %q", result)
+	if result != expected {
+		t.Errorf("expected %q for empty params, got %q", expected, result)
+	}
+}
+
+func TestBuildEnvExportAlwaysIncludesDebianFrontend(t *testing.T) {
+	result := buildEnvExport(nil)
+	if !strings.Contains(result, "export DEBIAN_FRONTEND=noninteractive") {
+		t.Errorf("expected DEBIAN_FRONTEND in output, got %q", result)
+	}
+
+	result = buildEnvExport(map[string]string{"key": "val"})
+	if !strings.Contains(result, "export DEBIAN_FRONTEND=noninteractive") {
+		t.Errorf("expected DEBIAN_FRONTEND with params, got %q", result)
 	}
 }
 
 func TestBuildEnvExportSingleParam(t *testing.T) {
 	params := map[string]string{"port": "8080"}
 	result := buildEnvExport(params)
-	expected := "export LXSPAWN_PARAM_port='8080'"
-	if result != expected {
-		t.Errorf("expected %q, got %q", expected, result)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+	}
+	if lines[0] != "export DEBIAN_FRONTEND=noninteractive" {
+		t.Errorf("expected first line DEBIAN_FRONTEND, got %q", lines[0])
+	}
+	if lines[1] != "export LXSPAWN_PARAM_port='8080'" {
+		t.Errorf("expected second line param, got %q", lines[1])
 	}
 }
 
@@ -38,26 +57,32 @@ func TestBuildEnvExportMultipleParamsSorted(t *testing.T) {
 	}
 	result := buildEnvExport(params)
 	lines := strings.Split(result, "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected 3 lines, got %d", len(lines))
+	if len(lines) != 4 {
+		t.Fatalf("expected 4 lines, got %d", len(lines))
 	}
-	if !strings.Contains(lines[0], "LXSPAWN_PARAM_alpha") {
-		t.Errorf("expected first line to contain alpha, got %q", lines[0])
+	if lines[0] != "export DEBIAN_FRONTEND=noninteractive" {
+		t.Errorf("expected first line DEBIAN_FRONTEND, got %q", lines[0])
 	}
-	if !strings.Contains(lines[1], "LXSPAWN_PARAM_mid") {
-		t.Errorf("expected second line to contain mid, got %q", lines[1])
+	if !strings.Contains(lines[1], "LXSPAWN_PARAM_alpha") {
+		t.Errorf("expected second line to contain alpha, got %q", lines[1])
 	}
-	if !strings.Contains(lines[2], "LXSPAWN_PARAM_zebra") {
-		t.Errorf("expected third line to contain zebra, got %q", lines[2])
+	if !strings.Contains(lines[2], "LXSPAWN_PARAM_mid") {
+		t.Errorf("expected third line to contain mid, got %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "LXSPAWN_PARAM_zebra") {
+		t.Errorf("expected fourth line to contain zebra, got %q", lines[3])
 	}
 }
 
 func TestBuildEnvExportEscapesSingleQuotes(t *testing.T) {
 	params := map[string]string{"key": "it's a value"}
 	result := buildEnvExport(params)
-	expected := "export LXSPAWN_PARAM_key='it'\"'\"'s a value'"
-	if result != expected {
-		t.Errorf("expected %q, got %q", expected, result)
+	lines := strings.Split(result, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %q", len(lines), result)
+	}
+	if lines[1] != "export LXSPAWN_PARAM_key='it'\"'\"'s a value'" {
+		t.Errorf("expected escaped value, got %q", lines[1])
 	}
 }
 

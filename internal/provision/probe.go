@@ -1,15 +1,17 @@
 package provision
 
 import (
+	"context"
 	"fmt"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
+
+const defaultProbeTimeout = 10 * time.Second
 
 type ProbeRunner struct {
 	machineName string
@@ -48,22 +50,42 @@ func (p *ProbeRunner) RunProbes(probes []config.Probe, ctx *TemplateContext) ([]
 func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext) error {
 	maxAttempts := 30
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		leaderPID, err := p.getLeaderPID()
-		if err != nil {
-			if attempt < maxAttempts-1 {
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			return fmt.Errorf("failed to get leader PID: %w", err)
-		}
-
-		args := []string{"nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", script}
+		args := []string{"systemd-run", "-M", p.machineName, "--pipe", "--wait", "--", "/bin/bash", "-c", script}
 		cmd := deploy.Sudo(args...)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		if err := cmd.Run(); err == nil {
-			return nil
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), defaultProbeTimeout)
+		
+		err := cmd.Start()
+		if err != nil {
+			cancel()
+			if attempt < maxAttempts-1 {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			return fmt.Errorf("probe failed to start after %d attempts: %w", maxAttempts, err)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+
+		select {
+		case <-ctxTimeout.Done():
+			cancel()
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			if attempt < maxAttempts-1 {
+				logger.Warn(fmt.Sprintf("Probe attempt %d timed out after %v, retrying...", attempt+1, defaultProbeTimeout))
+				time.Sleep(2 * time.Second)
+				continue
+			}
+		case err := <-done:
+			cancel()
+			if err == nil {
+				return nil
+			}
 		}
 
 		if attempt < maxAttempts-1 {
@@ -77,19 +99,4 @@ func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext)
 	}
 
 	return fmt.Errorf("probe timed out after %d attempts", maxAttempts)
-}
-
-func (p *ProbeRunner) getLeaderPID() (int, error) {
-	systemd, err := deploy.NewSystemdManager()
-	if err != nil {
-		return 0, fmt.Errorf("failed to connect to systemd: %w", err)
-	}
-	defer systemd.Close()
-
-	leader, err := systemd.GetMachineLeader(p.machineName)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get leader PID: %w", err)
-	}
-
-	return leader, nil
 }

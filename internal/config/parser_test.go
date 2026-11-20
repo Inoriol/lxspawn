@@ -791,6 +791,62 @@ func TestValidateProvisionUserMissingScript(t *testing.T) {
 	}
 }
 
+func TestValidateProvisionUserWithValidUser(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Provision: []Provision{
+			{Mode: ProvisionUser, User: "myuser", Script: "#!/bin/bash\necho hello"},
+		},
+	}
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidateProvisionUserWithInvalidUser(t *testing.T) {
+	tests := []struct {
+		name     string
+		username string
+	}{
+		{"starts with hyphen", "-user"},
+		{"contains space", "my user"},
+		{"contains slash", "my/user"},
+		{"contains semicolon", "user;rm"},
+		{"too long", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{
+				Name:   "testbox",
+				Distro: "debian:bookworm",
+				Provision: []Provision{
+					{Mode: ProvisionUser, User: tc.username, Script: "#!/bin/bash\necho hello"},
+				},
+			}
+			err := Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "invalid user") {
+				t.Errorf("expected invalid user error for %q, got: %v", tc.username, err)
+			}
+		})
+	}
+}
+
+func TestValidateProvisionUserEmptyUserAllowed(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Provision: []Provision{
+			{Mode: ProvisionUser, User: "", Script: "#!/bin/bash\necho hello"},
+		},
+	}
+	err := Validate(cfg)
+	if err != nil {
+		t.Errorf("expected no error for empty user (defaults to root), got: %v", err)
+	}
+}
+
 func TestValidateAllNetworkModes(t *testing.T) {
 	modes := []struct {
 		mode NetworkMode

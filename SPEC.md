@@ -87,8 +87,8 @@ provision:
   - mode: boot
     script: |
       #!/bin/bash
-      systemctl mask systemd-udevd
-      systemctl disable systemd-modules-load.service
+      sysctl -w net.core.somaxconn=1024
+      echo "net.core.somaxconn=1024" >> /etc/sysctl.d/99-lxspawn.conf
   - mode: data
     path: /etc/myapp/config.yaml
     content: |
@@ -117,6 +117,7 @@ provision:
       url: setup.sh
       digest: "sha256:def456..."
   - mode: user
+    user: myuser
     script: |
       #!/bin/bash
       mkdir -p ~/.config/myapp
@@ -386,7 +387,7 @@ provision:
       systemctl enable docker || true
 ```
 
-**Note:** The `--batch --no-tty` flags are required for GPG when running in nsenter context (no TTY available).
+**Note:** The `--batch --no-tty` flags are required for GPG when running in systemd-run context (no TTY available).
 
 ---
 
@@ -532,6 +533,7 @@ Each entry defines a provisioning step. Steps are executed in order.
 | `overwrite` | bool | no | If `false`, skip writing when the file already exists (default `true`). |
 | `expression` | string | `yq` only | yq expression to apply to the file. See [yq expression limitations](#yq-expression-limitations) below. |
 | `format` | string | no | File format for yq: `auto`, `json`, `yaml`, `toml`, etc. |
+| `user` | string | `user` mode only | Container username to run the script as. Must be a user that exists inside the container (create it in a prior `system` step if needed). Defaults to `root` if not specified. |
 
 #### `yq` expression limitations
 
@@ -568,32 +570,11 @@ The built-in yq provisioner supports a **subset** of yq expression syntax. It is
 
 | Mode | Phase | Where it runs | Purpose |
 |------|-------|---------------|---------|
-| `boot` | Pre-boot | Host writes to rootfs | Early setup before systemd starts. Script is written to `<rootfs>/etc/lxspawn/boot/` and executed by a oneshot systemd service on first boot. |
+| `boot` | Pre-boot | Host writes to rootfs | Early setup during boot. Script is written to `<rootfs>/etc/lxspawn/boot/` and executed by a oneshot systemd service (`lxspawn-boot.service`) on every boot, before `multi-user.target`. |
 | `data` | Pre-boot | Host writes to rootfs | Write config files directly into the rootfs. No shell needed. |
 | `yq` | Pre-boot | Host edits rootfs | Edit existing config files (JSON/YAML/TOML) using yq expressions. |
-| `system` | Post-boot | `nsenter` as root | Package installation, service management. Uses `nsenter` to enter the container's namespaces directly, avoiding PTY allocation issues. |
-| `user` | Post-boot | `nsenter` as user | User-level setup, dotfiles. Uses `nsenter` with `su` to run as the specified user. |
-
-**DNS Configuration with systemd-resolved:**
-
-Some distributions (e.g., Fedora) use systemd-resolved, which manages `/etc/resolv.conf`. Masking the service in `boot` mode doesn't prevent it from overwriting DNS configuration during boot. To configure DNS in such containers, overwrite `/etc/resolv.conf` in a `system` provision script (post-boot), after systemd-resolved has started:
-
-```yaml
-provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      systemctl mask systemd-resolved.service
-  - mode: system
-    script: |
-      #!/bin/bash
-      # Overwrite resolv.conf AFTER systemd-resolved has started
-      cat > /etc/resolv.conf << 'EOF'
-      nameserver 8.8.8.8
-      nameserver 1.1.1.1
-      nameserver 8.8.4.4
-      EOF
-```
+| `system` | Post-boot | `systemd-run -M` as root | Package installation, service management. Uses `systemd-run -M` to execute commands via machined, providing machine name validation and avoiding PTY allocation issues. |
+| `user` | Post-boot | `systemd-run -M` as user | User-level setup, dotfiles. Uses `systemd-run -M` with `su` to run as the user specified in the `user:` field. The user must exist inside the container (create it in a prior `system` step if needed). |
 
 **Template variables** (available in all `script`, `content`, `hint`, and `expression` fields):
 
@@ -611,6 +592,11 @@ provision:
 **Missing key handling:** Template rendering errors on missing keys (e.g., `{{.Param.nonexistent}}`). This prevents dangerous situations where a typo like `rm -rf /opt/{{.Param.dirr}}` would render as `rm -rf /opt/` instead of failing safely.
 
 **Environment variable export:** Parameters are also exported as `LXSPAWN_PARAM_Key` environment variables inside provision scripts. Parameter keys must be valid shell variable names (start with letter or underscore, contain only letters, digits, underscores). Invalid keys are silently skipped.
+
+**Automatic environment variables:** All system and user provision scripts have the following environment variables automatically set:
+- `DEBIAN_FRONTEND=noninteractive` - Prevents apt prompts during package installation
+- `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket` - Required for systemctl commands
+- `XDG_RUNTIME_DIR=/run/user/0` - Required for D-Bus connections
 
 ---
 
@@ -634,8 +620,58 @@ Readiness probes run after post-boot provisioning to verify services are availab
 |-------|------|----------|-------------|
 | `mode` | string | yes | Must be `readiness` (only supported mode). |
 | `description` | string | yes | Human-readable description of what the probe waits for. |
-| `script` | string | yes | Script executed inside the container via `nsenter`. Must exit 0 when the service is ready. |
+| `script` | string | yes | Script executed inside the container via `systemd-run -M`. Must exit 0 when the service is ready. |
 | `hint` | string | no | Message displayed if the probe fails. Supports template variables. |
+
+---
+
+## Lifecycle and Semantics
+
+### Provisioning Execution
+
+Provisioning is split into two phases:
+
+**Pre-boot phase** (host writes directly to rootfs, container is not running):
+1. `boot` mode scripts are written to `<rootfs>/etc/lxspawn/boot/`
+2. `data` mode files are written to the rootfs
+3. `yq` mode expressions are applied to config files in the rootfs
+
+**Post-boot phase** (container is running, commands execute via `systemd-run -M`):
+4. `system` mode scripts execute as root inside the container
+5. `user` mode scripts execute as the specified user inside the container
+6. Readiness probes verify services are available
+
+### CLI Commands and Provisioning
+
+| Command | Pre-boot | Post-boot | Probes |
+|---------|----------|-----------|--------|
+| `lxspawn create` | Yes | No | No |
+| `lxspawn launch` | Yes | Yes | Yes |
+| `lxspawn start` | No | No | No |
+| `lxspawn provision` | Yes | Yes | Yes |
+
+- `create` runs pre-boot provisioning only. The machine must be started separately.
+- `launch` runs the full provisioning cycle (pre-boot, start, post-boot, probes).
+- `start` only starts an already-created machine. No provisioning runs.
+- `provision` re-runs the full cycle. Useful after editing the YAML config.
+
+### Idempotency
+
+All provision scripts **must be idempotent** (safe to run multiple times). The engine tracks script hashes to skip unchanged `system` and `user` scripts on re-run. However, `boot`, `data`, and `yq` scripts run on every pre-boot phase.
+
+### Service Management
+
+Services installed by provisioning **must be self-starting via systemd units**. Use `systemctl enable` to ensure services start on boot. Do not start services as background processes from provision scripts (e.g., `dockerd &`), as these will not survive container restarts.
+
+### Differences from Lima
+
+lxspawn's provisioning model is inspired by [Lima](https://github.com/lima-vm/lima) but adapted for systemd-nspawn containers. Key differences:
+
+- **No VM guest agent**: Commands execute via `systemd-run -M` through machined, not SSH.
+- **No `dependency` or `ansible` modes**: Only `boot`, `data`, `yq`, `system`, and `user` modes are supported.
+- **`user` mode requires explicit user**: Lima creates a matching guest user automatically. In lxspawn, the user must exist inside the container (specify with the `user:` field).
+- **Template variables**: `{{.User}}`, `{{.UID}}`, and `{{.Home}}` refer to the **host** user, not a container user.
+- **Boot scripts run on every boot**: Lima's `boot` mode runs via cloud-init on first boot. lxspawn's `boot` mode runs on every container start via a oneshot systemd service.
 
 ---
 

@@ -182,74 +182,155 @@ func installSudoersRules() error {
 		return err
 	}
 
+	// Check sudo version - regex arguments require sudo 1.9.10+
+	sudoVersion, err := getSudoVersion()
+	if err != nil {
+		return fmt.Errorf("failed to check sudo version: %w", err)
+	}
+	if !sudoVersionSupportsRegex(sudoVersion) {
+		return fmt.Errorf("sudo version %s does not support regex arguments (requires 1.9.10+). Please upgrade sudo.", sudoVersion)
+	}
+
 	var rules []string
 
 	rules = append(rules, "# Core operations (always needed)")
 	if bin := findBinary("rm"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -rf /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-rf /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
 	if bin := findBinary("chown"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s root\\:lxspawn /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -R 0\\:0 /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s [0-9]*\\:[0-9]* /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^root\\:lxspawn /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-R 0\\:0 /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
 	if bin := findBinary("chmod"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s [0-7]* /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-7]{3,4} /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
 	if bin := findBinary("mv"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s /var/lib/machines/* /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
 	if bin := findBinary("mkdir"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -p /var/lib/machines/*", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
-	if bin := findBinary("nsenter"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -t [0-9]* -m -u -i -n -p -- /bin/bash -c *", bin))
+	if bin := findBinary("systemd-run"); bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$", bin))
 	}
 	if bin := findBinary("journalctl"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -u systemd-nspawn@*.service -n [0-9]* -o short-iso", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-u systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service -n [0-9]+ -o short-iso$", bin))
+	}
+	if bin := findBinary("systemctl"); bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^enable systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^disable systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service$", bin))
 	}
 
 	if bin := findBinary("btrfs"); bin != "" {
 		rules = append(rules, "")
 		rules = append(rules, "# btrfs operations")
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume create /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume delete /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume delete /var/lib/machines/*.snapshots/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume show /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume list -o /var/lib/machines/*.snapshots", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*.snapshots/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot /var/lib/machines/* /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s subvolume snapshot /var/lib/machines/*.snapshots/* /var/lib/machines/*", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s filesystem usage -b /var/lib/machines", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume create /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^filesystem usage -b /var/lib/machines$", bin))
 	}
 
-	if bin := findBinary("lvs"); bin != "" {
+	if lvsBin := findBinary("lvs"); lvsBin != "" {
 		rules = append(rules, "")
 		rules = append(rules, "# LVM storage operations (snapshots not yet supported)")
-		if bin := findBinary("lvs"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --noheadings *", bin))
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s */lxspawn-*", bin))
-		}
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--noheadings -o lv_attr .*$", lvsBin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", lvsBin))
 		if bin := findBinary("lvcreate"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s --name lxspawn-* *", bin))
+			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--name lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* --virtualsize [0-9]+[gG] -T .*/lxspawn-pool$", bin))
 		}
 		if bin := findBinary("lvremove"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -f */lxspawn-*", bin))
+			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-f .*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 		}
 		if bin := findBinary("mkfs.ext4"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s -q /dev/*/lxspawn-*", bin))
+			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-q /dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 		}
 		if bin := findBinary("mount"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s /dev/*/lxspawn-* /var/lib/machines/*", bin))
+			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 		}
 		if bin := findBinary("umount"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s /var/lib/machines/*", bin))
+			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 		}
 	}
 
 	content := strings.Join(rules, "\n") + "\n"
+	
+	// Validate sudoers syntax before installing
+	tmpFile, err := os.CreateTemp("", "lxspawn-sudoers-*.tmp")
+	if err != nil {
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+	
+	if _, err := tmpFile.WriteString(content); err != nil {
+		tmpFile.Close()
+		return fmt.Errorf("failed to write temp sudoers file: %w", err)
+	}
+	tmpFile.Close()
+	
+	// Validate with visudo
+	cmd := exec.Command("visudo", "-cf", tmpPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("sudoers syntax validation failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	
 	return deploy.WriteFileAtomic(sudoersPath, []byte(content), 0440)
+}
+
+func getSudoVersion() (string, error) {
+	cmd := exec.Command("sudo", "-V")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	// Parse first line: "Sudo version 1.9.17p2"
+	lines := strings.Split(string(out), "\n")
+	if len(lines) == 0 {
+		return "", fmt.Errorf("no output from sudo -V")
+	}
+	parts := strings.Fields(lines[0])
+	if len(parts) < 3 {
+		return "", fmt.Errorf("unexpected sudo version format: %s", lines[0])
+	}
+	return parts[2], nil
+}
+
+func sudoVersionSupportsRegex(version string) bool {
+	// Sudo 1.9.10+ supports regex arguments
+	// Parse version string like "1.9.17p2"
+	parts := strings.Split(version, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	major := 0
+	minor := 0
+	patch := 0
+	fmt.Sscanf(parts[0], "%d", &major)
+	fmt.Sscanf(parts[1], "%d", &minor)
+	// Extract numeric part from patch (e.g., "17p2" -> 17)
+	patchStr := strings.TrimRight(parts[2], "pP0123456789")
+	if patchStr == "" {
+		patchStr = parts[2]
+	}
+	fmt.Sscanf(patchStr, "%d", &patch)
+	
+	if major > 1 {
+		return true
+	}
+	if major == 1 && minor > 9 {
+		return true
+	}
+	if major == 1 && minor == 9 && patch >= 10 {
+		return true
+	}
+	return false
 }
 
 func reloadPolkit() error {

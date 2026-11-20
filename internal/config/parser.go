@@ -40,6 +40,40 @@ func ParseStrict(filename string) (*Config, error) {
 	return parse(filename, true)
 }
 
+func ParseString(data string) (*Config, error) {
+	return parseString(data, false)
+}
+
+func parseString(data string, strict bool) (*Config, error) {
+	var cfg Config
+	if strict {
+		decoder := yaml.NewDecoder(strings.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+	}
+
+	if cfg.Network.Mode == "" {
+		cfg.Network.Mode = NetworkHost
+	}
+
+	if cfg.Advanced.Hostname == "" {
+		cfg.Advanced.Hostname = cfg.Name
+	}
+
+	if cfg.Security.NoNewPrivileges == nil {
+		t := true
+		cfg.Security.NoNewPrivileges = &t
+	}
+
+	return &cfg, nil
+}
+
 func parse(filename string, strict bool) (*Config, error) {
 	absPath, err := filepath.Abs(filename)
 	if err != nil {
@@ -425,9 +459,18 @@ func validateProbes(cfg *Config) error {
 func validateProvision(cfg *Config) error {
 	for i, p := range cfg.Provision {
 		switch p.Mode {
-		case ProvisionBoot, ProvisionSystem, ProvisionUser:
+		case ProvisionBoot, ProvisionSystem:
 			if p.Script == "" && p.File == nil {
 				return fmt.Errorf("provision[%d]: %s mode requires script or file", i, p.Mode)
+			}
+		case ProvisionUser:
+			if p.Script == "" && p.File == nil {
+				return fmt.Errorf("provision[%d]: %s mode requires script or file", i, p.Mode)
+			}
+			if p.User != "" {
+				if err := validateUsername(p.User); err != nil {
+					return fmt.Errorf("provision[%d]: invalid user %q: %w", i, p.User, err)
+				}
 			}
 		case ProvisionData:
 			if p.Path == "" {
@@ -446,6 +489,20 @@ func validateProvision(cfg *Config) error {
 		default:
 			return fmt.Errorf("provision[%d]: invalid mode %q", i, p.Mode)
 		}
+	}
+	return nil
+}
+
+func validateUsername(username string) error {
+	if username == "" {
+		return fmt.Errorf("username cannot be empty")
+	}
+	if len(username) > 32 {
+		return fmt.Errorf("username too long (max 32 characters)")
+	}
+	re := regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+	if !re.MatchString(username) {
+		return fmt.Errorf("username must start with alphanumeric and contain only alphanumeric, underscore, or hyphen")
 	}
 	return nil
 }

@@ -1,16 +1,15 @@
 # Nextcloud File Server Template
 
 ## Overview
-Nextcloud self-hosted file sync and share server. Uses bridge networking for LAN access with MariaDB backend.
+Nextcloud self-hosted file sync and share server. Uses adaptive networking for LAN access with MariaDB backend.
 
 ## Requirements
-- Bridge interface `br0` must exist on the host
 - Data directory at `/var/lib/nextcloud` (adjust in YAML if different)
 - User must be in `lxspawn` group
 
 ## Usage
 ```bash
-# Edit volumes if needed
+# Edit parameters (set passwords and trusted_domain)
 vim examples/templates/nextcloud.yaml
 
 # Launch Nextcloud
@@ -20,29 +19,18 @@ lxspawn launch examples/templates/nextcloud.yaml
 # http://<container-ip>/
 ```
 
-## Testing Checklist
-- [ ] Files accessible from LAN clients
-- [ ] Web interface accessible
-- [ ] File sync works (desktop/mobile clients)
-- [ ] User authentication works
-- [ ] Large file handling (>4GB)
-- [ ] Logs visible via `journalctl -M nextcloud`
-
 ## Configuration
-- **Network:** bridge (for LAN access)
+- **Network:** adaptive (bridge if available, else macvlan)
 - **Memory:** 2G (adjust based on user count)
 - **Volumes:** 
-  - `/var/lib/nextcloud` → `/var/www/html/data` (user data)
+  - `/var/lib/nextcloud` → `/var/www/html/nextcloud/data` (user data)
 - **Database:** MariaDB (included)
 
-## Default Credentials
-- **Admin user:** admin
-- **Admin password:** admin
-- **Database:** nextcloud
-- **Database user:** nextcloud
-- **Database password:** nextcloud
-
-**Change these immediately after first login!**
+## Parameters
+Edit the `param:` section in the YAML:
+- `db_pass`: Database password (required, change from CHANGE_ME_DB)
+- `admin_pass`: Admin password (required, change from CHANGE_ME_ADMIN)
+- `trusted_domain`: Set to container IP or hostname for LAN access (default: localhost)
 
 ## Customization
 To use external database:

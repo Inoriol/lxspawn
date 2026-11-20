@@ -6,6 +6,183 @@ Remaining tasks for lxspawn, organized by priority.
 
 ## Current Status
 
+**Phase 4.20 (V2) - Spec Review Items - COMPLETE ✅**
+
+**Goal:** Address spec review items (S1, S2, S4, S5, S6, S7) from SUGGESTIONS.md.
+
+**Status:** All 6 items completed.
+
+**Completed:**
+- ✅ **S1: User mode fix** - Added explicit `user:` field to provision schema. User mode now uses `prov.User` instead of host username. Defaults to "root" with warning if not specified. User must exist in container (create in prior system step).
+- ✅ **S2: Lifecycle section** - Added "Lifecycle and Semantics" section to SPEC.md documenting which commands run which modes, execution order, idempotency requirements, and differences from Lima.
+- ✅ **S4: Boot mode definition** - Fixed contradictory description in SPEC.md. Boot mode runs "during boot via oneshot systemd service" (not "before systemd starts"). Updated example to show sysctl tuning instead of service masking (already done by cleanup.go).
+- ✅ **S5: DNS workaround removed** - Removed "DNS Configuration with systemd-resolved" section from SPEC.md. The workaround documented a bug that doesn't exist (boot mode works correctly).
+- ✅ **S6: Spec/code audit** - Verified all claims: HTTPS-only enforced (fetcher.go, file.go), yq errors work correctly, data fields (owner/permissions/overwrite) enforced. No code changes needed.
+- ✅ **S7: Probe timeout** - Added 10-second per-attempt timeout to probe runner using context.WithTimeout. Prevents hanging probe scripts from blocking forever.
+
+**Files modified:**
+- `internal/config/schema.go` - Added `User` field to Provision struct
+- `internal/config/parser.go` - Added `validateUsername()` function, validation for user field
+- `internal/config/parser_test.go` - Added tests for user field validation (4 new tests)
+- `internal/provision/exec.go` - User mode uses `prov.User` instead of `ctx.User`, defaults to "root" with warning
+- `internal/provision/probe.go` - Added per-attempt timeout (10s) using context.WithTimeout
+- `SPEC.md` - Added `user` field to provision table, fixed boot mode description, removed DNS workaround section, added Lifecycle and Semantics section, updated sample manifest
+
+**Tests added:**
+- `TestValidateProvisionUserWithValidUser` - Valid username accepted
+- `TestValidateProvisionUserWithInvalidUser` - Invalid usernames rejected (starts with hyphen, contains space/slash/semicolon, too long)
+- `TestValidateProvisionUserEmptyUserAllowed` - Empty user allowed (defaults to root)
+
+**All tests passing:** 320+ tests across 22 test files.
+
+---
+
+**Phase 4.19 (V2) - Template Leftovers - COMPLETE ✅**
+
+**Goal:** Address remaining template issues (T2, T5-T7, T13-T22) from SUGGESTIONS.md template review.
+
+**Status:** All 16 items completed.
+
+**Completed:**
+- ✅ **T2: Nextcloud trusted_domains** - Added `trusted_domain` param, set via `occ config:system:set` after install for LAN access.
+- ✅ **T5: AdGuard probe fix** - Pre-seeded `AdGuardHome.yaml` config to skip setup wizard. DNS works immediately after launch. Added `admin_pass` param.
+- ✅ **T6: Pi-hole interface detection** - Moved `setupVars.conf` to system mode, detect actual interface at provision time (`ip -o link show | grep -E 'eth|mv-'`).
+- ✅ **T7: Pi-hole v5/v6 comment** - Added comment noting v5 uses setupVars.conf, v6 migration is future work.
+- ✅ **T13: Samba probe** - Verified probe uses bash built-in `/dev/tcp`, works without smbclient. No change needed.
+- ✅ **T14: Samba CAP_DAC_OVERRIDE** - Removed redundant capability (already in nspawn default set).
+- ✅ **T15: Jellyfin/Plex GPU check** - Added `vainfo` check after driver install. Logs whether GPU acceleration is available.
+- ✅ **T16: Jellyfin arch fix** - Replaced hard-coded `arch=amd64` with `arch=$(dpkg --print-architecture)` for ARM support.
+- ✅ **T17: Jellyfin/Plex paths** - Changed host paths from `/var/lib/jellyfin|plex` to `/var/lib/lxspawn-data/jellyfin|plex` to avoid collision with host installs.
+- ✅ **T18: Jellyfin/Plex ownership** - Added `chown` in pre_start hook for correct UID (121 for Jellyfin, 123 for Plex).
+- ✅ **T19: Jellyfin/Plex cleanup** - Removed `software-properties-common`, added comments about rocm not in bookworm.
+- ✅ **T20: Base template comments** - Added `# Host networking: no isolation, container shares host ports` comment.
+- ✅ **T21: Fedora DNS params** - Made DNS servers configurable via params (`dns1`, `dns2`, `dns3`). Removed non-working boot mode block.
+- ✅ **T22: Base template cleanup** - Ubuntu: merged apt-get into single command. Fedora: added upgrade guard (`/etc/lxspawn-upgraded`).
+
+**Files modified:**
+- `examples/templates/nextcloud.yaml` - Added trusted_domain param, occ config:system:set
+- `examples/templates/adguard.yaml` - Added admin_pass param, pre-seeded AdGuardHome.yaml
+- `examples/templates/pihole.yaml` - Moved setupVars.conf to system mode, detect interface
+- `examples/templates/jellyfin.yaml` - arch=$(dpkg), lxspawn-data paths, vainfo check, chown
+- `examples/templates/plex.yaml` - lxspawn-data paths, vainfo check, chown
+- `examples/templates/samba.yaml` - Removed CAP_DAC_OVERRIDE
+- `examples/templates/debian-base.yaml` - Added host network comment
+- `examples/templates/ubuntu-base.yaml` - Merged apt-get, added host network comment
+- `examples/templates/fedora-base.yaml` - DNS params, removed boot mode, upgrade guard
+- `examples/templates/nextcloud.md` - Updated docs for trusted_domain
+- `examples/templates/adguard.md` - Updated docs for pre-seeded config
+- `examples/templates/jellyfin.md` - Updated paths, removed br0 requirement
+- `examples/templates/plex.md` - Updated paths, removed br0 requirement
+- `examples/templates/fedora-base.md` - Updated for DNS params
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ debian-base: Launch, provision, delete works
+- ✅ fedora-base: Launch with DNS params, upgrade guard works
+
+---
+
+**Phase 4.18 (V2) - Template Security & CLI Gaps - COMPLETE ✅**
+
+**Goal:** Address template security issues (X2-X6, X3, X4, T1, T8, T11) and CLI gaps (C1, C8, C11) from SUGGESTIONS.md.
+
+**Status:** All items completed.
+
+**Phase A - Template Fixes:**
+- ✅ **X6: DEBIAN_FRONTEND=noninteractive** - Added to `buildEnvExport()` in `internal/provision/exec.go`. All system/user provision scripts now have non-interactive apt.
+- ✅ **X2: Boot script deduplication** - Moved `systemctl mask systemd-udevd` and `systemd-modules-load.service` to `internal/image/cleanup.go` (writes `/dev/null` symlinks). Removed boot blocks from all 10 templates.
+- ✅ **T1: Nextcloud data volume fix** - Volume mount path corrected to `/var/www/html/nextcloud/data`, added `--data-dir` flag, SQL uses `IF NOT EXISTS`, `occ status` check prevents re-install.
+- ✅ **T8: Docker survives restart** - Replaced `dockerd &` with `systemctl enable docker.service`, removed `chmod 666` on socket, added `docker` group creation.
+- ✅ **T11: Samba security** - Changed defaults to `guest ok = no`, `read only = yes`, `map to guest = Never`. Added `valid users` and `force user` params.
+
+**Phase B - Template Security:**
+- ✅ **X3: Pin downloads** - AdGuard pinned to `v0.107.55`, Pi-hole to `v5.18.3`, Nextcloud to `29.0.9`.
+- ✅ **X4: Secret handling** - Added placeholder passwords with guard clauses to Nextcloud, Pi-hole, Samba templates. Added `set +x` around password-bearing commands.
+
+**Phase C - CLI Gaps:**
+- ✅ **C8: Lifecycle operations** - Added `stop --force`, `restart`, `autostart` commands.
+- ✅ **C11: Version and health** - Added `version --json` and `doctor --json` commands.
+- ✅ **C1: Apply command** - Added `apply` command with `--dry-run` support, reads from file or stdin.
+
+**Files modified:**
+- `internal/provision/exec.go` - DEBIAN_FRONTEND always exported
+- `internal/provision/exec_test.go` - Updated tests for new behavior
+- `internal/image/cleanup.go` - Added `maskContainerServices()` function
+- `internal/image/cleanup_test.go` - Added tests for service masking
+- `internal/machine/manager.go` - Added `ForceStop()`, `Restart()` methods
+- `internal/config/parser.go` - Added `ParseString()` function
+- `internal/output/schemas.go` - Added `AutostartData`, `ApplyData` types
+- `cmd/lxspawn/stop.go` - Added `--force` flag
+- `cmd/lxspawn/restart.go` - New restart command
+- `cmd/lxspawn/autostart.go` - New autostart command
+- `cmd/lxspawn/version.go` - New version command
+- `cmd/lxspawn/doctor.go` - New doctor command
+- `cmd/lxspawn/apply.go` - New apply command
+- `cmd/lxspawn/setup.go` - Added systemctl enable/disable sudoers rules
+- `examples/templates/debian-base.yaml` - Removed boot block
+- `examples/templates/ubuntu-base.yaml` - Removed boot block
+- `examples/templates/fedora-base.yaml` - Removed udevd/modules masking (kept resolved)
+- `examples/templates/docker-host.yaml` - Removed boot block, fixed Docker systemd, added host side-effects comment
+- `examples/templates/nextcloud.yaml` - Removed boot block, fixed volume path, added --data-dir, IF NOT EXISTS, password guards
+- `examples/templates/samba.yaml` - Removed boot block, secure defaults, parameterized password, fixed probe
+- `examples/templates/adguard.yaml` - Removed boot block, pinned version
+- `examples/templates/pihole.yaml` - Removed boot block, pinned version, password guard
+- `examples/templates/jellyfin.yaml` - Removed boot block
+- `examples/templates/plex.yaml` - Removed boot block
+
+**Tests added:**
+- `TestBuildEnvExportAlwaysIncludesDebianFrontend` - Verifies DEBIAN_FRONTEND always present
+- `TestCleanupRootfsMasksServices` - Verifies service masking symlinks created
+- `TestMaskContainerServicesIdempotent` - Verifies masking is idempotent
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ X6: Verified `DEBIAN_FRONTEND=noninteractive` set in provision environment
+- ✅ X2: Verified `systemd-udevd` and `systemd-modules-load` show as `masked`
+- ✅ C8: Verified `restart` command works
+- ✅ C11: Verified `version` and `doctor` commands work
+- ✅ C1: Verified `apply` command with `--dry-run` and file input
+
+---
+
+**Phase 4.17 (V2) - Privilege Hardening - COMPLETE ✅**
+
+**Goal:** Address critical security issues from SUGGESTIONS.md privilege hardening review.
+
+**Status:** All 6 privilege hardening items completed.
+
+**Completed:**
+- ✅ **Item 1: Replace nsenter with systemd-run** - All container command execution (exec, provisioning, probes) now uses `systemd-run -M` instead of `nsenter`. Eliminates arbitrary PID access vulnerability. Machine names validated via sudoers regex and machined.
+- ✅ **Item 2: Sudoers regex argument validation** - All sudoers rules now use POSIX extended regular expressions with `^...$` anchoring. Prevents multi-argument injection and path traversal attacks. Requires sudo 1.9.10+.
+- ✅ **Item 3: Sudo version check** - Setup validates sudo version and refuses to install rules on versions older than 1.9.10.
+- ✅ **Item 4: Sudoers syntax validation** - Sudoers file validated with `visudo -cf` before installation. Prevents syntax errors from breaking sudo system-wide.
+- ✅ **Item 5: Honest trust model documentation** - README and ARCHITECTURE now clearly document that `lxspawn` group membership is root-equivalent (like `docker`, `libvirt`, `lxc` groups).
+- ✅ **Item 6: Group-writable directories documented** - Security model section explains why group-writable systemd directories are necessary for usability, matching industry practice.
+
+**Additional fixes:**
+- ✅ **Provisioning timing** - Added 5-second delay before post-boot provisioning to wait for container systemd initialization.
+
+**Files modified:**
+- `internal/machine/manager.go` - Exec() uses systemd-run instead of nsenter
+- `internal/provision/exec.go` - buildSystemdRunCommand() replaces buildNsenterCommand()
+- `internal/provision/probe.go` - runProbe() uses systemd-run
+- `internal/provision/engine.go` - Added 5-second delay before post-boot provisioning
+- `cmd/lxspawn/setup.go` - Sudoers regex rules, sudo version check, visudo validation
+- `README.md` - Updated security model documentation
+- `ARCHITECTURE.md` - Updated provisioning execution model
+- `SPEC.md` - Updated provisioning mode descriptions
+
+**Tests added:**
+- `TestGetSudoVersion` - Sudo version parsing
+- `TestSudoVersionSupportsRegex` - Version comparison logic
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ Full lifecycle (create, start, exec, stop, snapshot, delete)
+- ✅ All provisioning modes (boot, data, system)
+- ✅ Readiness probes
+- ✅ Machine names with hyphens (D-Bus escaping)
+- ✅ Sudoers bypass attempts blocked (multi-argument injection, path traversal)
+
+---
+
 **Phase 4.15 (V2) - P2 Bug Fixes - COMPLETE ✅**
 
 **Goal:** Fix all P2 (broken features and wrong behaviour) issues from SUGGESTIONS.md code review.

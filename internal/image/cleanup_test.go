@@ -139,3 +139,43 @@ func TestCleanupRootfsSecurettyContent(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanupRootfsMasksServices(t *testing.T) {
+	rootfs := t.TempDir()
+
+	if err := CleanupRootfs(rootfs); err != nil {
+		t.Fatalf("CleanupRootfs failed: %v", err)
+	}
+
+	services := []string{
+		"systemd-udevd.service",
+		"systemd-udevd-control.socket",
+		"systemd-udevd-kernel.socket",
+		"systemd-modules-load.service",
+	}
+
+	systemdDir := filepath.Join(rootfs, "etc", "systemd", "system")
+	for _, svc := range services {
+		link := filepath.Join(systemdDir, svc)
+		target, err := os.Readlink(link)
+		if err != nil {
+			t.Errorf("expected symlink %s, got error: %v", svc, err)
+			continue
+		}
+		if target != "/dev/null" {
+			t.Errorf("expected %s -> /dev/null, got -> %s", svc, target)
+		}
+	}
+}
+
+func TestMaskContainerServicesIdempotent(t *testing.T) {
+	rootfs := t.TempDir()
+
+	if err := maskContainerServices(rootfs); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+
+	if err := maskContainerServices(rootfs); err != nil {
+		t.Fatalf("second call should not fail: %v", err)
+	}
+}
