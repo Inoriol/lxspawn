@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-20
+
 ### Added
 
 - **Provision `user` field (S1)** - New `user:` field in provision steps for `user` mode. Specifies which container user to run the script as. The user must exist inside the container (create in a prior `system` step if needed). Defaults to `root` with a warning if not specified.
@@ -273,6 +275,7 @@ Initial public release of lxspawn - a daemonless, lightweight "Light VM" orchest
 - **machinectl shell PTY errors** - Intermittent issues with interactive shell (exec uses nsenter as workaround)
 - **Macvlan host visibility** - Host cannot ping macvlan containers (kernel limitation, solved with host_access feature)
 
-[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.0
