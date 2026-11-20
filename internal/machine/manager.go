@@ -12,6 +12,7 @@ import (
 	"github.com/Inoriol/lxspawn/internal/compiler"
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/deploy"
+	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
 	"github.com/Inoriol/lxspawn/internal/image"
 	"github.com/Inoriol/lxspawn/internal/kernel"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -61,12 +62,12 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	logger.Action(fmt.Sprintf("Creating machine '%s'", cfg.Name))
 
 	if _, exists := m.state.GetMachine(cfg.Name); exists {
-		return nil, fmt.Errorf("machine '%s' already exists", cfg.Name)
+		return nil, lxerrors.NewMachineExistsError(cfg.Name)
 	}
 
 	rootfsPath := deploy.MachineRootfsPath(cfg.Name)
 	if deploy.FileExists(rootfsPath) && isPopulatedRootfs(rootfsPath) {
-		return nil, fmt.Errorf("rootfs at %s already exists but is not managed by lxspawn. Remove it manually or use a different machine name", rootfsPath)
+		return nil, lxerrors.NewStorageError(fmt.Sprintf("rootfs at %s already exists but is not managed by lxspawn. Remove it manually or use a different machine name", rootfsPath), nil)
 	}
 
 	if kernel.IsBtrfs(deploy.MachinesDir) {
@@ -74,34 +75,34 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		if err != nil {
 			logger.Warn(fmt.Sprintf("could not check kernel version: %v", err))
 		} else if !ok {
-			return nil, fmt.Errorf("btrfs requires kernel 5.12+ for idmapped mounts support (required for correct UID handling in containers)")
+			return nil, lxerrors.NewValidationError("kernel", "btrfs requires kernel 5.12+ for idmapped mounts support (required for correct UID handling in containers)")
 		}
 	}
 
 	compiled, err := compiler.Compile(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to compile config: %w", err)
+		return nil, lxerrors.NewConfigInvalidError(fmt.Sprintf("failed to compile config: %v", err))
 	}
 
 	{
 		sizeGB, err := config.ParseSizeToGB(cfg.Storage.Size)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse storage size: %w", err)
+			return nil, lxerrors.NewValidationError("storage.size", fmt.Sprintf("failed to parse storage size: %v", err))
 		}
 
 		if err := m.storage.CreateMachine(cfg.Name, sizeGB); err != nil {
-			return nil, fmt.Errorf("failed to create machine storage: %w", err)
+			return nil, lxerrors.NewStorageError("failed to create machine storage", err)
 		}
 
 		fetcher, err := image.NewFetcher(cfg.Name, cfg.Distro, rootfsPath)
 		if err != nil {
 			m.storage.DeleteMachine(cfg.Name)
-			return nil, fmt.Errorf("failed to create image fetcher: %w", err)
+			return nil, lxerrors.NewNetworkError("failed to create image fetcher", err)
 		}
 
 		if err := fetcher.Fetch(); err != nil {
 			m.storage.DeleteMachine(cfg.Name)
-			return nil, fmt.Errorf("failed to fetch image: %w", err)
+			return nil, lxerrors.NewNetworkError("failed to fetch image", err)
 		}
 
 		if err := image.CleanupRootfs(rootfsPath); err != nil {
@@ -181,10 +182,16 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		return nil, fmt.Errorf("failed to create machine data directory: %w", err)
 	}
 
+	canonicalConfigPath := deploy.CanonicalConfigPath(cfg.Name)
+	if err := copyFile(sourcePath, canonicalConfigPath); err != nil {
+		logger.Warn(fmt.Sprintf("failed to copy config to canonical path: %v", err))
+	}
+
 	machineInfo := deploy.MachineInfo{
 		Name:       cfg.Name,
 		Distro:     cfg.Distro,
 		SourcePath: sourcePath,
+		ConfigPath: canonicalConfigPath,
 		Files:      filesWritten,
 		Network:    string(cfg.Network.Mode),
 		CPUs:       cfg.Resources.CPUs,
@@ -216,7 +223,7 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 			deploy.RemoveAll(lxspawnDir)
 			m.storage.DeleteMachine(cfg.Name)
 			m.state.UnregisterMachine(cfg.Name)
-			return nil, fmt.Errorf("pre-boot provisioning failed: %w", err)
+			return nil, lxerrors.NewProvisionError("pre-boot provisioning failed", err)
 		}
 	}
 
@@ -486,6 +493,46 @@ func (m *Manager) Logs(name string) error {
 	return cmd.Run()
 }
 
+type LogOptions struct {
+	Lines    int
+	Since    string
+	Priority string
+	Follow   bool
+}
+
+func (m *Manager) LogsWithOptions(name string, opts LogOptions) error {
+	if _, exists := m.state.GetMachine(name); !exists {
+		return fmt.Errorf("machine '%s' not found", name)
+	}
+
+	args := []string{"-M", name}
+
+	if opts.Follow {
+		args = append(args, "-f")
+	} else {
+		args = append(args, "--no-pager")
+		if opts.Lines > 0 {
+			args = append(args, "-n", fmt.Sprintf("%d", opts.Lines))
+		}
+	}
+
+	if opts.Since != "" {
+		args = append(args, "--since", opts.Since)
+	}
+
+	if opts.Priority != "" {
+		args = append(args, "-p", opts.Priority)
+	}
+
+	args = append(args, "-o", "short-iso")
+
+	cmd := exec.Command("journalctl", args...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 type LogEntry struct {
 	Timestamp string
 	Priority  int
@@ -493,12 +540,29 @@ type LogEntry struct {
 }
 
 func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
+	return m.GetLogsWithOptions(name, LogOptions{Lines: lines})
+}
+
+func (m *Manager) GetLogsWithOptions(name string, opts LogOptions) ([]LogEntry, error) {
 	if _, exists := m.state.GetMachine(name); !exists {
 		return nil, fmt.Errorf("machine '%s' not found", name)
 	}
 
-	// Use -M to read from container journal (same as text mode Logs)
-	cmd := exec.Command("journalctl", "-M", name, "-n", fmt.Sprintf("%d", lines), "-o", "short-iso", "--no-pager")
+	args := []string{"-M", name, "--no-pager", "-o", "short-iso"}
+
+	if opts.Lines > 0 {
+		args = append(args, "-n", fmt.Sprintf("%d", opts.Lines))
+	}
+
+	if opts.Since != "" {
+		args = append(args, "--since", opts.Since)
+	}
+
+	if opts.Priority != "" {
+		args = append(args, "-p", opts.Priority)
+	}
+
+	cmd := exec.Command("journalctl", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get logs: %w", err)
@@ -557,8 +621,13 @@ func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
 		Files:      info.Files,
 	}
 
-	if info.SourcePath != "" {
-		if cfg, err := config.Parse(info.SourcePath); err == nil {
+	configPath := info.ConfigPath
+	if configPath == "" || !deploy.FileExists(configPath) {
+		configPath = info.SourcePath
+	}
+
+	if configPath != "" {
+		if cfg, err := config.Parse(configPath); err == nil {
 			status.Ephemeral = cfg.Advanced.Ephemeral
 			status.ReadOnly = cfg.Advanced.ReadOnly
 		}
@@ -723,14 +792,15 @@ func fixRootfsOwnership(rootfsPath string) error {
 }
 
 type MachineStats struct {
-	Name              string
-	State             string
-	CPUUsagePercent   float64
-	MemoryUsedBytes   int64
-	MemoryTotalBytes  int64
+	Name               string
+	State              string
+	CPUUsagePercent    float64
+	CPUUsageUsec       int64
+	MemoryUsedBytes    int64
+	MemoryTotalBytes   int64
 	MemoryUsagePercent float64
-	DiskUsedBytes     int64
-	DiskTotalBytes    int64
+	DiskUsedBytes      int64
+	DiskTotalBytes     int64
 }
 
 func (m *Manager) GetStats(name string) (*MachineStats, error) {
@@ -775,6 +845,49 @@ func (m *Manager) GetStats(name string) (*MachineStats, error) {
 	}
 
 	return stats, nil
+}
+
+func (m *Manager) GetAllStats() ([]MachineStats, error) {
+	machines := m.state.ListMachines()
+	statsList := make([]MachineStats, 0, len(machines))
+
+	for _, machine := range machines {
+		state, _, err := m.systemd.GetMachineState(machine.Name)
+		if err != nil {
+			state = "stopped"
+		}
+
+		stats := MachineStats{
+			Name:  machine.Name,
+			State: state,
+		}
+
+		if state == "running" {
+			cgroupPath, err := m.getMachineCgroupPath(machine.Name)
+			if err == nil {
+				if cpuUsageUsec, err := readCPUUsageUsec(cgroupPath); err == nil {
+					stats.CPUUsageUsec = cpuUsageUsec
+				}
+
+				if memUsed, memTotal, err := readMemoryUsage(cgroupPath); err == nil {
+					stats.MemoryUsedBytes = memUsed
+					stats.MemoryTotalBytes = memTotal
+					if memTotal > 0 {
+						stats.MemoryUsagePercent = float64(memUsed) / float64(memTotal) * 100
+					}
+				}
+
+				if diskUsed, diskTotal, err := readDiskUsage(deploy.MachineRootfsPath(machine.Name)); err == nil {
+					stats.DiskUsedBytes = diskUsed
+					stats.DiskTotalBytes = diskTotal
+				}
+			}
+		}
+
+		statsList = append(statsList, stats)
+	}
+
+	return statsList, nil
 }
 
 func (m *Manager) getMachineCgroupPath(name string) (string, error) {
@@ -860,6 +973,25 @@ func readCPUUsage(cgroupPath string) (float64, error) {
 	}
 
 	return cpuPercent, nil
+}
+
+func readCPUUsageUsec(cgroupPath string) (int64, error) {
+	cpuStatPath := filepath.Join(cgroupPath, "cpu.stat")
+
+	data, err := os.ReadFile(cpuStatPath)
+	if err != nil {
+		return 0, err
+	}
+
+	var usageUsec int64
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "usage_usec") {
+			fmt.Sscanf(line, "usage_usec %d", &usageUsec)
+			break
+		}
+	}
+
+	return usageUsec, nil
 }
 
 func readMemoryUsage(cgroupPath string) (int64, int64, error) {
@@ -962,6 +1094,7 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 		Name:       cfg.Name,
 		Distro:     cfg.Distro,
 		SourcePath: sourcePath,
+		ConfigPath: deploy.CanonicalConfigPath(cfg.Name),
 		Files:      filesWritten,
 		Network:    string(cfg.Network.Mode),
 		CPUs:       cfg.Resources.CPUs,
@@ -972,6 +1105,11 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 
 	if err := m.state.RegisterMachine(machineInfo); err != nil {
 		return fmt.Errorf("failed to update machine state: %w", err)
+	}
+
+	canonicalConfigPath := deploy.CanonicalConfigPath(cfg.Name)
+	if err := copyFile(sourcePath, canonicalConfigPath); err != nil {
+		logger.Warn(fmt.Sprintf("failed to update canonical config: %v", err))
 	}
 
 	if err := m.systemd.ReloadDaemon(); err != nil {
@@ -994,4 +1132,12 @@ func cleanupCreatedFiles(filesWritten []string, compiled *compiler.CompiledFiles
 		deploy.RemoveAll(compiled.SlicePath)
 	}
 	deploy.RemoveAll(compiled.NspawnPath)
+}
+
+func copyFile(src, dst string) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return deploy.WriteFileAtomic(dst, data, 0644)
 }

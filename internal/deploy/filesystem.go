@@ -52,6 +52,10 @@ func HooksDir(name string) string {
 	return filepath.Join(LxspawnMachineDir(name), ".hooks")
 }
 
+func CanonicalConfigPath(name string) string {
+	return filepath.Join(LxspawnMachineDir(name), "config.yaml")
+}
+
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {

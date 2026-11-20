@@ -75,7 +75,7 @@ func (m *Manager) save() error {
 	return deploy.WriteFileAtomic(m.stateFilePath, data, 0600)
 }
 
-func (m *Manager) CreateSnapshot(snapName string) error {
+func (m *Manager) CreateSnapshot(snapName string, description string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -97,6 +97,7 @@ func (m *Manager) CreateSnapshot(snapName string) error {
 	} else {
 		for _, s := range snapshots {
 			if s.Name == snapName {
+				s.Description = description
 				m.state.Snapshots[snapName] = s
 				break
 			}

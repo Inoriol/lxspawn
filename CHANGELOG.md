@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Snapshot description (C12)** - `lxspawn snapshot` now accepts `--description` flag to store a description with the snapshot. Description is included in JSON output from `list-snapshots`.
+- **`edit-resources` new flags** - Added `--memory-high` (soft memory limit) and `--io-weight` (IO scheduling priority) flags to `edit-resources` command.
+- **Complete `config --json` output (C3)** - `config --json` now returns full configuration including `hooks`, `provision`, `param`, `probes`, `journal`, `resources.memory_high`, and `resources.io_weight` fields. Previously only returned basic fields.
+- **Embedded templates (C6)** - Templates are now embedded in the binary using `go:embed`. Templates moved from `examples/templates/` to `templates/` directory at project root. `list-templates` shows embedded templates without requiring filesystem paths.
+- **Canonical config copy (C4)** - On `create`/`launch`, YAML is copied to `/var/lib/lxspawn/<name>/config.yaml`. Added `ConfigPath` field to `MachineInfo`. `config` and `status` commands read from canonical path first, fallback to `SourcePath`. Config survives source file deletion/moves.
+- **Enhanced logs command (C13)** - Unified JSON/text modes to both use container journal (`-M`). Added flags: `--since` (filter by date), `--priority` (filter by log level), `--follow`/`-f` (streaming mode). `--lines` now works in both modes.
+- **Batched stats (C14)** - Added `stats --all` to get stats for all machines in one call. Returns `cpu_usage_usec` cumulative counter with timestamp, allowing UI to compute CPU rates without the 100ms sleep. No more N processes per polling cycle.
+- **Create flow enhancements (C5)** - `create -` / `launch -` reads YAML from stdin. `create --template NAME --name N` uses embedded template. `--param key=value` (repeatable) overrides template params. Shared config-loading logic in `config_loader.go`.
+- **Structured error codes (C9)** - New `internal/errors` package with typed errors: `MACHINE_NOT_FOUND`, `MACHINE_EXISTS`, `MACHINE_RUNNING`, `PERMISSION_DENIED`, `VALIDATION_FAILED`, `STORAGE_ERROR`, `PROVISION_FAILED`, `NETWORK_ERROR`, `CONFIG_INVALID`, `SNAPSHOT_ERROR`, `SYSTEMD_ERROR`, `OPERATION_CANCELLED`, `INTERNAL_ERROR`. Field-level validation errors. Distinct exit codes for each error type (e.g., 65 for validation errors, 2 for machine not found).
+- **Progress stream (C10)** - Added `--progress` flag to `create` and `launch` commands. Newline-delimited JSON events via `internal/progress` package. Event types: `downloading`, `extracting`, `provisioning`, `starting`, `done`, `error`.
+
+### Changed
+
+- **Template deduplication** - Templates moved from `examples/templates/` to `templates/` at project root. Single source of truth for templates. `go:embed` in `templates/embed.go` embeds all `.yaml` files. Removed duplicate copies and `examples/templates` fallback from `list-templates`.
+
+### Fixed
+
+- **Cockpit plugin `editVolume` readonly bug** - Fixed plugin to use `--readonly=true` format instead of `--readonly true` which caused cobra boolean flag parsing to fail.
+- **Cockpit plugin `editResources` memory_high bug** - Plugin was sending `--memory-high` flag that didn't exist in CLI. Added the flag to the CLI.
+
 ## [0.1.2] - 2026-11-20
 
 ### Added

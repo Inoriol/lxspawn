@@ -27,13 +27,25 @@ var configCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", args[0])
 		}
 
-		if info.SourcePath == "" {
-			return fmt.Errorf("machine '%s' has no source YAML path", args[0])
+		configPath := info.ConfigPath
+		if configPath == "" {
+			configPath = info.SourcePath
 		}
 
-		cfg, err := config.Parse(info.SourcePath)
+		if configPath == "" {
+			return fmt.Errorf("machine '%s' has no config path", args[0])
+		}
+
+		cfg, err := config.Parse(configPath)
 		if err != nil {
-			return fmt.Errorf("failed to parse config: %w", err)
+			if info.SourcePath != "" && info.SourcePath != configPath {
+				cfg, err = config.Parse(info.SourcePath)
+				if err != nil {
+					return fmt.Errorf("failed to parse config: %w", err)
+				}
+			} else {
+				return fmt.Errorf("failed to parse config: %w", err)
+			}
 		}
 
 		if output.IsJSONMode() {
@@ -42,12 +54,14 @@ var configCmd = &cobra.Command{
 				Distro: cfg.Distro,
 			}
 
-			if cfg.Resources.CPUs > 0 || cfg.Resources.Memory != "" {
+			if cfg.Resources.CPUs > 0 || cfg.Resources.Memory != "" || cfg.Resources.MemoryHigh != "" || cfg.Resources.Swap != "" || cfg.Resources.Tasks != "" || cfg.Resources.IOWeight > 0 {
 				configData.Resources = &output.ResourceJSON{
-					CPUs:   cfg.Resources.CPUs,
-					Memory: cfg.Resources.Memory,
-					Swap:   cfg.Resources.Swap,
-					Tasks:  cfg.Resources.Tasks,
+					CPUs:       cfg.Resources.CPUs,
+					Memory:     cfg.Resources.Memory,
+					MemoryHigh: cfg.Resources.MemoryHigh,
+					Swap:       cfg.Resources.Swap,
+					Tasks:      cfg.Resources.Tasks,
+					IOWeight:   cfg.Resources.IOWeight,
 				}
 			}
 
@@ -113,6 +127,54 @@ var configCmd = &cobra.Command{
 					ReadOnly:    cfg.Advanced.ReadOnly,
 					Hostname:    cfg.Advanced.Hostname,
 					Environment: cfg.Advanced.Environment,
+				}
+			}
+
+			if cfg.Hooks.PreStart != "" || cfg.Hooks.PostStart != "" || cfg.Hooks.PostStop != "" {
+				configData.Hooks = &output.HooksJSON{
+					PreStart:  cfg.Hooks.PreStart,
+					PostStart: cfg.Hooks.PostStart,
+					PostStop:  cfg.Hooks.PostStop,
+				}
+			}
+
+			if len(cfg.Provision) > 0 {
+				configData.Provision = make([]output.ProvisionJSON, len(cfg.Provision))
+				for i, p := range cfg.Provision {
+					configData.Provision[i] = output.ProvisionJSON{
+						Mode:        string(p.Mode),
+						Script:      p.Script,
+						Path:        p.Path,
+						Content:     p.Content,
+						Owner:       p.Owner,
+						Permissions: p.Permissions,
+						Overwrite:   p.Overwrite,
+						Expression:  p.Expression,
+						Format:      p.Format,
+						User:        p.User,
+					}
+				}
+			}
+
+			if len(cfg.Param) > 0 {
+				configData.Param = cfg.Param
+			}
+
+			if len(cfg.Probes) > 0 {
+				configData.Probes = make([]output.ProbeJSON, len(cfg.Probes))
+				for i, p := range cfg.Probes {
+					configData.Probes[i] = output.ProbeJSON{
+						Mode:        p.Mode,
+						Description: p.Description,
+						Script:      p.Script,
+						Hint:        p.Hint,
+					}
+				}
+			}
+
+			if cfg.Journal.Link != "" {
+				configData.Journal = &output.JournalJSON{
+					Link: cfg.Journal.Link,
 				}
 			}
 

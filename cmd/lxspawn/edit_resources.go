@@ -58,8 +58,10 @@ var editResourcesCmd = &cobra.Command{
 
 		cpus, _ := cmd.Flags().GetFloat64("cpus")
 		memory, _ := cmd.Flags().GetString("memory")
+		memoryHigh, _ := cmd.Flags().GetString("memory-high")
 		swap, _ := cmd.Flags().GetString("swap")
 		tasks, _ := cmd.Flags().GetString("tasks")
+		ioWeight, _ := cmd.Flags().GetInt("io-weight")
 
 		modified := false
 
@@ -71,12 +73,20 @@ var editResourcesCmd = &cobra.Command{
 			setYAMLField(root, "resources", "memory", memory)
 			modified = true
 		}
+		if cmd.Flags().Changed("memory-high") {
+			setYAMLField(root, "resources", "memory_high", memoryHigh)
+			modified = true
+		}
 		if cmd.Flags().Changed("swap") {
 			setYAMLField(root, "resources", "swap", swap)
 			modified = true
 		}
 		if cmd.Flags().Changed("tasks") {
 			setYAMLField(root, "resources", "tasks", tasks)
+			modified = true
+		}
+		if cmd.Flags().Changed("io-weight") {
+			setYAMLField(root, "resources", "io_weight", int64(ioWeight))
 			modified = true
 		}
 
@@ -128,8 +138,10 @@ var editResourcesCmd = &cobra.Command{
 func init() {
 	editResourcesCmd.Flags().Float64("cpus", 0, "CPU cores")
 	editResourcesCmd.Flags().String("memory", "", "Memory limit (e.g., 2G)")
+	editResourcesCmd.Flags().String("memory-high", "", "Soft memory limit (e.g., 1.5G)")
 	editResourcesCmd.Flags().String("swap", "", "Swap limit (e.g., 512M)")
 	editResourcesCmd.Flags().String("tasks", "", "Max tasks (e.g., 512 or infinity)")
+	editResourcesCmd.Flags().Int("io-weight", 0, "IO weight (10-1000, default 100)")
 }
 
 func setYAMLField(root *yaml.Node, section, key string, value interface{}) {
@@ -161,6 +173,8 @@ func setYAMLField(root *yaml.Node, section, key string, value interface{}) {
 				resourcesNode.Content[i+1].Value = v
 			case float64:
 				resourcesNode.Content[i+1].Value = fmt.Sprintf("%g", v)
+			case int64:
+				resourcesNode.Content[i+1].Value = fmt.Sprintf("%d", v)
 			}
 			found = true
 			break
@@ -183,6 +197,11 @@ func setYAMLField(root *yaml.Node, section, key string, value interface{}) {
 			valueNode = &yaml.Node{
 				Kind:  yaml.ScalarNode,
 				Value: fmt.Sprintf("%g", v),
+			}
+		case int64:
+			valueNode = &yaml.Node{
+				Kind:  yaml.ScalarNode,
+				Value: fmt.Sprintf("%d", v),
 			}
 		}
 		resourcesNode.Content = append(resourcesNode.Content, keyNode, valueNode)

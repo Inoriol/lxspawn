@@ -126,7 +126,7 @@ export async function editVolume(
         args.push("--host", volume.host);
     }
     if (volume.readonly !== undefined) {
-        args.push("--readonly", volume.readonly.toString());
+        args.push(`--readonly=${volume.readonly}`);
     }
     await spawnLxspawn(args);
 }

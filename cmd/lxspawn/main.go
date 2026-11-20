@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/output"
 )
@@ -84,7 +85,12 @@ func main() {
 
 	if err := rootCmd.Execute(); err != nil {
 		if output.IsJSONMode() {
-			output.PrintError("COMMAND_FAILED", err.Error())
+			if lxerrors.IsLxspawnError(err) {
+				code := lxerrors.GetErrorCode(err)
+				output.PrintError(string(code), err.Error())
+			} else {
+				output.PrintError("COMMAND_FAILED", err.Error())
+			}
 		} else {
 			fmt.Fprintln(os.Stderr, err)
 		}
@@ -93,6 +99,6 @@ func main() {
 				os.Exit(status.ExitStatus())
 			}
 		}
-		os.Exit(1)
+		os.Exit(lxerrors.ExitCodeForError(err))
 	}
 }

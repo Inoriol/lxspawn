@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Inoriol/lxspawn/internal/output"
+	"github.com/Inoriol/lxspawn/templates"
 )
 
 var listTemplatesCmd = &cobra.Command{
@@ -15,14 +16,27 @@ var listTemplatesCmd = &cobra.Command{
 	Short: "List available machine templates",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		seen := make(map[string]bool)
+		var templateList []map[string]string
+
+		embeddedNames := templates.ListEmbeddedTemplateNames()
+		for _, name := range embeddedNames {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+			templateList = append(templateList, map[string]string{
+				"name":        name,
+				"description": getTemplateDescription(name),
+				"path":        "embedded",
+			})
+		}
+
 		templateDirs := []string{
 			"/usr/share/lxspawn/templates",
 			"/usr/local/share/lxspawn/templates",
 			filepath.Join(os.Getenv("HOME"), ".local/share/lxspawn/templates"),
-			"examples/templates",
 		}
-
-		var templates []map[string]string
 
 		for _, dir := range templateDirs {
 			if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -42,9 +56,14 @@ var listTemplatesCmd = &cobra.Command{
 				name := file.Name()
 				name = name[:len(name)-5]
 
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+
 				description := getTemplateDescription(name)
 
-				templates = append(templates, map[string]string{
+				templateList = append(templateList, map[string]string{
 					"name":        name,
 					"description": description,
 					"path":        filepath.Join(dir, file.Name()),
@@ -54,7 +73,7 @@ var listTemplatesCmd = &cobra.Command{
 
 		if output.IsJSONMode() {
 			return output.PrintJSON(map[string]interface{}{
-				"templates": templates,
+				"templates": templateList,
 			})
 		}
 
@@ -62,7 +81,7 @@ var listTemplatesCmd = &cobra.Command{
 		t.SetOutputMirror(cmd.OutOrStdout())
 		t.AppendHeader(table.Row{"Template", "Description", "Path"})
 
-		for _, tmpl := range templates {
+		for _, tmpl := range templateList {
 			t.AppendRow(table.Row{tmpl["name"], tmpl["description"], tmpl["path"]})
 		}
 

@@ -9,37 +9,37 @@ This document describes the internal architecture of lxspawn, design decisions, 
 │           Cockpit Plugin (React/PatternFly)                 │
 │           mirrors cockpit-machines UI/UX                    │
 └──────────────────────┬──────────────────────────────────────┘
-                       │ cockpit.spawn() --json
-                       ▼
+                        │ cockpit.spawn() --json
+                        ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              lxspawn (Go CLI)                               │
 │   YAML parser → Compiler → .nspawn + slice + drop-in + hooks│
 │   D-Bus API (machine1) for status, machinectl for lifecycle │
 │   JSON output on every command                              │
 └──────────────────────┬──────────────────────────────────────┘
-                       │
-         ┌─────────────┼─────────────┬─────────────┐
-         ▼             ▼             ▼             ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-  │ .nspawn     │ │ Slice unit  │ │ Drop-in     │ │ Hooks       │
-  │ [Exec]      │ │ [Slice]     │ │ [Service]   │ │ pre/post    │
-  │ [Files]     │ │ MemoryMax   │ │ Slice=      │ │ scripts     │
-  │ [Network]   │ │ CPUQuota    │ │             │ │             │
-  └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-         │               │               │               │
-         ▼               ▼               ▼               ▼
-  ┌─────────────────────────────────────────────────────────────┐
-  │     systemd-nspawn@<name>.service                           │
-  │     /var/lib/machines/<name>/                               │
-  └──────────────────────┬───────────────────────────────────────┘
-                         │
-          ┌──────────────┼──────────────┐
-          ▼              ▼              ▼
-   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-   │ machinectl  │ │ D-Bus API   │ │ journalctl  │
-   │ start/stop  │ │ machine1    │ │ -M <name>   │
-   │ shell       │ │ ListMachines│ │ -f          │
-   └─────────────┘ └─────────────┘ └─────────────┘
+                        │
+          ┌─────────────┼─────────────┬─────────────┐
+          ▼             ▼             ▼             ▼
+   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+   │ .nspawn     │ │ Slice unit  │ │ Drop-in     │ │ Hooks       │
+   │ [Exec]      │ │ [Slice]     │ │ [Service]   │ │ pre/post    │
+   │ [Files]     │ │ MemoryMax   │ │ Slice=      │ │ scripts     │
+   │ [Network]   │ │ CPUQuota    │ │             │ │             │
+   └──────┬──────┘ └──────┬──────┘ └──────┬──────┘ └──────┬──────┘
+          │               │               │               │
+          ▼               ▼               ▼               ▼
+   ┌─────────────────────────────────────────────────────────────┐
+   │     systemd-nspawn@<name>.service                           │
+   │     /var/lib/machines/<name>/                               │
+   └──────────────────────┬───────────────────────────────────────┘
+                          │
+           ┌──────────────┼──────────────┐
+           ▼              ▼              ▼
+    ┌─────────────┐ ┌─────────────┐ ┌─────────────┐
+    │ machinectl  │ │ D-Bus API   │ │ journalctl  │
+    │ start/stop  │ │ machine1    │ │ -M <name>   │
+    │ shell       │ │ ListMachines│ │ -f          │
+    └─────────────┘ └─────────────┘ └─────────────┘
 ```
 
 ## Package Structure
@@ -51,6 +51,7 @@ lxspawn/
 │   ├── setup.go              # First-run system configuration
 │   ├── create.go             # Create machine (don't start)
 │   ├── launch.go             # Create + start
+│   ├── config_loader.go      # Shared config loading (file, stdin, template)
 │   ├── start.go              # Start existing machine
 │   ├── stop.go               # Stop machine (with --force flag)
 │   ├── restart.go            # Restart machine (stop then start)
@@ -80,6 +81,11 @@ lxspawn/
 │   ├── version.go            # Show version and system info
 │   ├── doctor.go             # Check system configuration
 │   └── apply.go              # Declarative config apply
+│
+├── templates/                # Embedded machine templates
+│   ├── embed.go              # go:embed for templates/*.yaml
+│   ├── *.yaml                # Machine template configs
+│   └── *.md                  # Template documentation
 │
 ├── internal/
 │   ├── config/               # YAML parsing and validation
@@ -139,6 +145,12 @@ lxspawn/
 │   ├── gpu/                  # GPU detection and pass-through
 │   │   ├── detect.go         # GPU detection, vendor identification, device selection
 │   │   └── detect_test.go    # Tests for GPU detection
+│   │
+│   ├── errors/               # Structured error types
+│   │   └── errors.go         # Error codes, types, exit code mapping
+│   │
+│   ├── progress/             # Progress event streaming
+│   │   └── progress.go       # Newline-delimited JSON progress reporter
 │   │
 │   ├── deploy/               # Systemd integration (adapted from comquad)
 │   │   ├── dbus.go           # systemd D-Bus connection (always system bus)
@@ -267,8 +279,8 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │   3. yq     → Edit existing config files in rootfs          │
 │                   (structured editing of JSON/YAML/TOML)    │
 └──────────────────────────┬──────────────────────────────────┘
-                           │ machinectl start <name>
-                           ▼
+                            │ machinectl start <name>
+                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    POST-BOOT PHASE                          │
 │   Container IS running. Exec via systemd-run -M.            │
@@ -286,8 +298,8 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │   PTY allocation issues and providing machine name          │
 │   validation (more secure than PID-based nsenter).          │
 └──────────────────────────┬──────────────────────────────────┘
-                           │
-                           ▼
+                            │
+                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    READINESS PHASE                          │
 │   Check if container is actually ready.                     │
@@ -347,8 +359,6 @@ All system and user provision scripts run with the following environment variabl
 - `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket` - Required for systemctl commands
 - `XDG_RUNTIME_DIR=/run/user/0` - Required for D-Bus connections
 - `LXSPAWN_PARAM_<key>=<value>` - All `param:` values exported as environment variables
-
-The `DEBIAN_FRONTEND=noninteractive` setting ensures that package installations never prompt for user input, even when config files need to be replaced or services need to be restarted.
 
 ## Generated Files
 
@@ -689,48 +699,9 @@ Snapshots provide point-in-time copies of machine rootfs for backup, testing, an
 - Delete: recursively deletes child subvolumes (deepest first) before deleting parent
 - List: parses `btrfs subvolume list -o` output
 
-**LVM implementation (disabled):**
-- Machine rootfs automatically created as a dedicated logical volume when host uses LVM thin pool
-- LV naming: `<vg-name>/lxspawn-<machine-name>` (e.g., `debian-vg/lxspawn-myserver`)
-- LV size: 4GB (hardcoded in `internal/machine/manager.go`)
-- Formatted with ext4 and mounted at `/var/lib/machines/<name>/`
-- Snapshots created with `lvcreate --snapshot --size 512M` (copy-on-write)
-- Snapshot naming: `<lv-name>-snap-<snap-name>` (e.g., `lxspawn-myserver-snap-snap1`)
-- Rollback: uses `lvconvert --merge` to merge snapshot back to origin (requires next activation)
-- Delete: uses `lvremove -f` to remove snapshot LV
-- List: parses `lvs --select vg_name=<vg>` output
-- Machine deletion: unmounts LV, removes LV with `lvremove -f`
-
-**LVM limitations (when re-enabled):**
-- Cannot create new snapshots while a merge is pending (LVM restriction)
-- Merge completes on next activation (mount) of the origin LV
-- Snapshot size is fixed at 512MB (may need adjustment for heavy write workloads)
-- Machine LV size is fixed at 4GB (may need adjustment for large rootfs)
-
-**Directory implementation (removed):**
-- Previously used rsync for file-based snapshots
-- Removed due to unreliability (non-atomic, slow, not true snapshots)
-- Snapshots of running machines were inconsistent
-- Rollback: uses `rsync -a --delete --checksum --exclude=.snapshots` to restore from snapshot
-- Delete: uses `sudo rm -rf` to remove snapshot directory
-- List: reads `<rootfs>/.snapshots/` directory entries
-- Uses `--checksum` flag to ensure files are compared by content, not just size/mtime
-
-**Directory limitations:**
-- Slower than btrfs or LVM snapshots (file-level copy instead of block-level)
-- Requires more disk space (full copy instead of copy-on-write)
-- No atomic snapshot creation (rsync is not atomic)
-- Suitable for testing and small machines, not recommended for production with large rootfs
-
 **State tracking:**
 - Snapshot metadata stored in `/var/lib/lxspawn/<name>/snapshots.json`
 - Tracks snapshot name, backend, creation time, and location
-
-**Sudoers requirements:**
-- btrfs: `btrfs`, `chown`, `mv` commands
-- LVM: `lvs`, `lvcreate`, `lvconvert`, `lvremove`, `mkfs.ext4`, `mount`, `umount`, `mountpoint`, `chown`, `chmod`
-- Directory: `rsync`, `rm`, `findmnt` commands
-- Added to `/etc/sudoers.d/lxspawn` by `lxspawn setup`
 
 ### 17. Docker-in-Container Support
 
@@ -786,44 +757,7 @@ gpg --batch --no-tty --dearmor -o /path/to/keyring.gpg /path/to/key.asc
 
 The `--batch --no-tty` flags prevent GPG from trying to access `/dev/tty` which doesn't exist in systemd-run context.
 
-### 18. Adaptive Network Mode
-
-The `adaptive` network mode automatically selects the best network mode based on host configuration.
-
-**Implementation:**
-- `internal/compiler/compiler.go:resolveNetworkMode()` - Resolves adaptive mode at compile time
-- `internal/network/detect.go` - Provides interface detection and IP retrieval
-- `internal/network/bridge.go` - Checks bridge existence
-- `internal/network/config.go` - Stores detected interface in `~/.local/share/lxspawn/config.json`
-- `internal/compiler/slice.go:generateHostAccessScript()` - Creates host-side macvlan in post_start hook
-
-**Selection logic:**
-1. If `bridge` is specified AND exists on host → use bridge mode
-2. Otherwise → use macvlan mode with `host_access` enabled
-
-**Host access for macvlan:**
-
-When falling back to macvlan, lxspawn creates a host-side macvlan interface (`mv-<machinename>`) so the host can reach the container. This solves the kernel limitation where the host cannot ping macvlan containers. The interface name is per-machine to prevent conflicts when multiple adaptive machines exist.
-
-**IP address generation:**
-
-When `host_access.ip` is not specified, lxspawn automatically generates an IP address in the same subnet as the host interface:
-1. Detects the host's primary interface IP and subnet (e.g., `192.168.0.200/24`)
-2. Generates a deterministic IP using FNV hash of the machine name
-3. Assigns the generated IP to the host-side macvlan interface (e.g., `192.168.0.151/24`)
-
-This ensures the host-side interface is in the same subnet as the container, enabling bidirectional communication.
-
-**Setup:**
-
-Before using `adaptive` mode with `interface: auto`, run:
-```bash
-sudo lxspawn setup network
-```
-
-This detects the primary network interface and saves it for automatic use.
-
-### 19. User Namespaces and Idmapped Mounts
+### 18. User Namespaces and Idmapped Mounts
 
 User namespaces and idmapped mounts solve the EOVERFLOW error that occurs when installing packages on btrfs filesystems.
 
@@ -854,11 +788,7 @@ The previous approach used an ExecStart override in the drop-in to add `-U` or `
 - On systemd < 249: `PrivateUsers=identity` is not supported, so no `PrivateUsers` setting is written. Containers use the default mapped UIDs, which may cause EOVERFLOW on btrfs.
 - On kernel < 5.12: Idmapped mounts are not supported. A warning is logged, but machine creation continues. Package installation may fail with EOVERFLOW on btrfs.
 
-**Sudoers requirements:**
-
-The `chown` command is still required in sudoers for fixing ownership of btrfs subvolumes after creation (during image extraction), but the recursive `fixRootfsOwnership` function (which chowned the entire rootfs) has been removed since idmapped mounts handle UID translation at runtime.
-
-### 20. Hybrid Storage Backend System
+### 19. Hybrid Storage Backend System
 
 lxspawn uses a hybrid storage backend system that automatically selects the best storage method based on the host filesystem, following Proxmox's approach for LVM.
 
@@ -930,164 +860,7 @@ sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool
 - **Proxmox-like:** Follows industry best practices for virtualization storage
 - **Clean separation:** Storage backend is independent of machine lifecycle
 
-**Trade-offs:**
-
-- More complex than single-backend approach (but hidden from users via auto-detection)
-- Directory backend snapshots are less efficient (but it's a fallback)
-- Requires LVM thin pool setup for best LVM experience (one-time)
-
-### 21. Directory Backend Root-Owned File Handling
-
-The directory backend uses `sudo rm -rf` instead of `os.RemoveAll` for machine and snapshot deletion.
-
-**The Problem:**
-
-When containers run with `PrivateUsers=identity` (the default for btrfs and host networking), files created inside the container are owned by root on the host. When the container is stopped and the user attempts to delete the machine, `os.RemoveAll` fails with "permission denied" because the user doesn't have permission to delete root-owned files.
-
-**The Solution:**
-
-Use `sudo rm -rf` for all deletion operations in the directory backend:
-- `DeleteMachine` - Removes the machine directory
-- `DeleteSnapshot` - Removes snapshot directories
-- `RollbackSnapshot` - Removes the backup directory after rollback
-
-**Implementation:**
-
-- `internal/storage/directory.go:DeleteMachine` - Uses `sudo rm -rf <path>` instead of `os.RemoveAll`
-- `internal/storage/directory.go:DeleteSnapshot` - Same approach for snapshot deletion
-- `internal/storage/directory.go:RollbackSnapshot` - Uses `sudo rm -rf` for backup cleanup
-
-**Sudoers requirements:**
-
-The `rm` command is already allowed in sudoers for `/var/lib/machines/*`:
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/bin/rm -rf /var/lib/machines/*
-```
-
-### 22. Rootfs Population Check
-
-The machine creation flow checks whether the rootfs directory is populated before skipping image download.
-
-**The Problem:**
-
-When the storage backend creates an empty directory for the machine, `deploy.FileExists(rootfsPath)` returns `true` (the directory exists), causing the image fetch step to be skipped. This results in an empty rootfs that systemd-nspawn refuses to start ("os-release file is missing").
-
-**The Solution:**
-
-Add an `isPopulatedRootfs` check that verifies the presence of `/etc/os-release` in the rootfs directory:
-
-```go
-if !deploy.FileExists(rootfsPath) || !isPopulatedRootfs(rootfsPath) {
-    // Download and extract image
-}
-```
-
-**Implementation:**
-
-- `internal/machine/manager.go:isPopulatedRootfs` - Checks for `/etc/os-release` in the rootfs
-- This ensures that even if the directory exists but is empty, the image will be downloaded
-
-**Why `/etc/os-release`:**
-
-- Present in all modern Linux distributions
-- Required by systemd-nspawn to validate the rootfs
-- Reliable indicator that the image was successfully extracted
-
-### 23. Rootfs Ownership Fix
-
-The machine creation flow fixes rootfs ownership after pre-boot provisioning to ensure files have correct uid/gid.
-
-**The Problem:**
-
-When the storage backend creates a btrfs subvolume or LVM volume, it sets ownership to `root:lxspawn` with group-writable permissions. This allows the current user (in the `lxspawn` group) to extract the rootfs tarball and run pre-boot provisioning. However, files extracted from the tarball inherit the current user's UID (e.g., 1000) instead of root (0). This breaks operations inside the container that expect files to be owned by root, such as `sudo` commands.
-
-**The Solution:**
-
-After pre-boot provisioning completes, run `sudo chown -R 0:0` on the rootfs to fix ownership:
-
-```go
-func fixRootfsOwnership(rootfsPath string) error {
-    cmd := exec.Command("sudo", "chown", "-R", "0:0", rootfsPath)
-    if output, err := cmd.CombinedOutput(); err != nil {
-        return fmt.Errorf("chown failed: %w (%s)", err, string(output))
-    }
-    return nil
-}
-```
-
-**Implementation:**
-
-- `internal/machine/manager.go:fixRootfsOwnership` - Recursively chowns rootfs to root:root
-- Called in `Create()` after pre-boot provisioning completes
-- Uses `sudo` because the user can't modify root-owned files
-
-**Why After Pre-Boot Provisioning:**
-
-- Pre-boot provisioning needs to write files to the rootfs (boot scripts, config files)
-- The directory is group-writable, so the current user can write during provisioning
-- After provisioning, all files (including those created by provisioning) need root ownership
-- Running chown after provisioning ensures both extracted files and provisioned files have correct ownership
-
-**Sudoers Requirements:**
-
-The `chown` command is already allowed in sudoers for `/var/lib/machines/*`:
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/bin/chown * /var/lib/machines/*
-```
-
-### 24. systemd-resolved DNS Handling
-
-Fedora containers with systemd-resolved require special handling to configure DNS.
-
-**The Problem:**
-
-Fedora images include systemd-resolved, which manages `/etc/resolv.conf`. Even if you mask the service in boot scripts, systemd-resolved starts before boot scripts run and overwrites `/etc/resolv.conf` with its own configuration (pointing to 127.0.0.53). This breaks DNS resolution in containers.
-
-**The Solution:**
-
-Overwrite `/etc/resolv.conf` in the system provision script (post-boot), after systemd-resolved has started:
-
-```yaml
-provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      systemctl mask systemd-resolved.service
-      rm -f /etc/resolv.conf
-      
-  - mode: system
-    script: |
-      #!/bin/bash
-      # Overwrite resolv.conf AFTER systemd-resolved has started
-      cat > /etc/resolv.conf << 'EOF'
-      nameserver 8.8.8.8
-      nameserver 1.1.1.1
-      nameserver 8.8.4.4
-      EOF
-```
-
-**Why This Works:**
-
-- Boot scripts run before systemd starts, so masking doesn't prevent systemd-resolved from starting
-- systemd-resolved starts during boot and overwrites `/etc/resolv.conf`
-- System provision runs after the container is fully booted, so systemd-resolved has already started
-- Overwriting `/etc/resolv.conf` in system provision happens after systemd-resolved has written its config
-
-**Alternative Approaches:**
-
-1. **Configure systemd-resolved directly** (doesn't work in containers):
-   - `resolvectl dns` requires D-Bus, which isn't available in systemd-run context
-   - `/etc/systemd/resolved.conf.d/` config is ignored if systemd-resolved isn't properly initialized
-
-2. **Mask systemd-resolved in boot scripts** (doesn't work):
-   - Boot scripts run before systemd, so masking doesn't prevent the service from starting
-   - systemd-resolved starts during boot and overwrites the config
-
-3. **Use data mode to write resolv.conf** (doesn't work):
-   - Data mode runs during pre-boot, before systemd-resolved starts
-   - systemd-resolved overwrites the file during boot
-
-### 25. Runtime Stats Implementation
+### 20. Runtime Stats Implementation
 
 The `lxspawn stats` command reads runtime CPU, memory, and disk statistics from cgroup v2 files.
 
@@ -1132,7 +905,55 @@ Disk stats are read using `syscall.Statfs()` which returns filesystem usage in b
 
 All cgroup files are world-readable, so the stats command works without sudo or special permissions.
 
-### 26. Sudo Implementation
+## Security Model
+
+### Privilege Model
+
+**Important:** Membership in the `lxspawn` group is equivalent to root access. This is by design and matches the security model of `docker`, `libvirt`, and `lxc` groups.
+
+After `lxspawn setup`, users in the `lxspawn` group can:
+- Create/start/stop/delete machines without sudo
+- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
+- Reload the systemd daemon (required for `lxspawn start`)
+- Execute privileged operations via specific sudoers rules with regex argument restrictions
+
+**Why root-equivalent?**
+
+The setup process creates group-writable directories (`/etc/systemd/nspawn`, `/etc/systemd/system/systemd-nspawn@.service.d`, `/var/lib/lxspawn/<name>/.hooks`) to allow machine management without sudo. A group member can write malicious systemd unit files or hook scripts that execute as root. This is the same trade-off made by Docker, libvirt, and LXC for usability.
+
+**Mitigations:**
+- Sudoers rules use regex (sudo 1.9.10+) to restrict arguments to valid machine names
+- Polkit rules restrict unit management to lxspawn machine patterns
+- Hook scripts are validated and SELinux-labeled
+- Only trusted users should be added to the `lxspawn` group
+
+### Security Features
+
+**Container Isolation:**
+- `NoNewPrivileges=yes` (default) - Prevents privilege escalation
+- `SystemCallFilter` - Seccomp filtering (enabled by default)
+- Capability dropping - Dangerous capabilities dropped by default
+- Path validation - Volumes cannot expose sensitive system paths
+- Symlink protection - Tar extraction validates symlink targets
+
+**File Security:**
+- State files (`machines.json`, `snapshots.json`) stored with `0600` permissions (owner-only read/write)
+- Atomic file writes prevent corruption
+- SELinux context automatically applied to hook scripts
+
+**Network Security:**
+- HTTPS-only downloads - Image downloads and file references require HTTPS
+- Download size limits - Prevents disk exhaustion attacks (2GB max for images)
+- Digest verification - File references support SHA256 digest validation
+- Port validation - Port forwarding restricted to valid ranges (1-65535)
+
+**Sudoers Hardening:**
+- Regex argument matching (sudo 1.9.10+) - Machine names validated by pattern
+- Path restrictions - All operations scoped to `/var/lib/machines/*`
+- Command-specific rules - Each operation has explicit sudoers rule
+- visudo validation - Sudoers file syntax-checked before installation
+
+### Sudo Implementation
 
 lxspawn uses direct `sudo` calls with specific sudoers rules instead of a privileged helper binary. This approach provides better security through explicit rule definitions.
 
@@ -1144,7 +965,7 @@ The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/
 - **btrfs operations**: `btrfs subvolume create/delete/show/list/snapshot`, `btrfs filesystem usage`
 - **LVM storage operations**: `lvs`, `lvcreate`, `lvremove`, `mkfs.ext4`, `mount`, `umount` (snapshots disabled)
 
-Note: ZFS and LVM snapshot rules are not generated since these backends are disabled pending testing infrastructure (see Phase 6).
+Note: ZFS and LVM snapshot rules are not generated since these backends are disabled pending testing infrastructure.
 
 Each rule is scoped to specific paths and arguments. For example:
 ```
@@ -1170,231 +991,6 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
 ```
-
-### 27. Logs Implementation
-
-The `lxspawn logs --json` command reads container logs using `journalctl`.
-
-**Approach:**
-
-Instead of using `journalctl -M <name>` (which requires special machine access permissions), we use:
-```bash
-sudo journalctl -u systemd-nspawn@<name>.service -n <lines> -o short-iso
-```
-
-This reads logs from the systemd service unit, which is more reliable and doesn't require machine-specific journal access.
-
-**Sudoers Rule:**
-
-The setup command adds a sudoers rule for journalctl:
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/bin/journalctl
-```
-
-This allows users in the lxspawn group to read logs without a password prompt.
-
-**Output Format:**
-
-The `-o short-iso` format provides ISO 8601 timestamps with timezone information, which is parsed into structured JSON output.
-
-### 28. Stop and Delete Robustness
-
-The `Stop` and `Delete` methods handle multiple failure modes gracefully.
-
-**Stop Implementation:**
-
-The `Stop` method (`internal/machine/manager.go:Stop()`) uses a fallback chain:
-
-1. Try `systemd.StopUnit()` via D-Bus
-2. If that fails, try `machinectl terminate`
-3. If that fails, try `sudo systemctl stop`
-
-This ensures machines can be stopped even when:
-- systemd D-Bus interface is unavailable
-- machinectl has PTY or permission issues
-- The machine is in a failed state
-
-**Delete Implementation:**
-
-The `Delete` method (`internal/machine/manager.go:Delete()`) suppresses warnings for expected states:
-
-- If the machine is already stopped, `StopUnit` warnings are logged at debug level
-- If the machine is not registered, `machinectl terminate` warnings are logged at debug level
-- If the unit is not in failed state, `ResetFailedUnit` warnings are logged at debug level
-
-This prevents confusing warnings when deleting machines that were already stopped or crashed.
-
-**Why this matters:**
-
-- Users expect `lxspawn delete` to work regardless of machine state
-- Warnings about "machine already stopped" are confusing and noisy
-- Debug-level logging preserves information for troubleshooting without cluttering normal output
-
-### 29. Download Cache
-
-Image downloads are cached in `/var/lib/lxspawn/cache/` instead of `/tmp` to avoid issues with tmpfs on Fedora and other distributions.
-
-**Why not `/tmp`:**
-
-On Fedora and some other distributions, `/tmp` is mounted as tmpfs (RAM-backed filesystem). This causes several problems:
-
-1. **Disk space exhaustion** - Large rootfs images (500MB-2GB) consume RAM instead of disk space
-2. **Volatility** - Downloads are lost on reboot, requiring re-download
-3. **Size limits** - tmpfs is limited by available RAM, which may be less than disk space
-
-**Cache directory:**
-
-The cache directory is created during `lxspawn setup` with appropriate permissions:
-
-```bash
-/var/lib/lxspawn/cache/  # 0700, root:root
-```
-
-Temporary download files are created in this directory and cleaned up after extraction.
-
-**Decompression safety:**
-
-To prevent disk exhaustion attacks, lxspawn enforces a 10GB limit on decompressed image size. This is checked during tar extraction by tracking the cumulative size of all extracted files.
-
-**Filesystem detection:**
-
-Filesystem type detection uses `syscall.Statfs()` instead of shelling out to GNU-specific commands like `stat -f -c %T` or `df --output`. This is:
-
-1. **More efficient** - No process spawning overhead
-2. **More reliable** - No text parsing of command output
-3. **Cleaner code** - Direct syscall instead of command execution
-4. **Portable** - Works on any Unix-like system with syscall support
-
-The same approach is used for disk usage reporting in `lxspawn stats`.
-
-## Security Model
-
-### Privilege Escalation Prevention
-
-1. **NoNewPrivileges=yes** (default)
-   - Prevents processes from gaining additional privileges
-   - Cannot be disabled by container processes
-
-2. **Capability Dropping**
-   - Drops dangerous capabilities by default (CAP_SYS_RAWIO, CAP_MKNOD)
-   - Users can add capabilities explicitly
-
-3. **Seccomp Filtering** (planned)
-   - Restrict syscalls available to container
-   - Docker-in-container requires explicit opt-out
-
-4. **User Namespaces** (planned)
-   - Map container UIDs to unprivileged host UIDs
-   - Prevents container root from being host root
-
-### Sudoers Rules (Privileged Operations)
-
-The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions with path and argument restrictions using pattern matching.
-
-**Core Operations:**
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/rm -rf /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown root\:lxspawn /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown -R 0\:0 /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chown [0-9]*\:[0-9]* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/chmod [0-7]* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mv /var/lib/machines/* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mkdir -p /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/systemd-run ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/journalctl -u systemd-nspawn@*.service -n [0-9]* -o short-iso
-```
-
-**Key Security Improvements:**
-- Argument pattern matching (e.g., `[0-9]*` for numeric-only values)
-- Specific chown patterns instead of wildcards
-- Numeric-only chmod patterns
-- Restricted journalctl output format
-
-**btrfs Operations (when btrfs is detected):**
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume create /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume show /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume list -o /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*/.snapshots/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot /var/lib/machines/* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume snapshot /var/lib/machines/*/.snapshots/* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs filesystem usage -b /var/lib/machines
-```
-
-**LVM Operations (when LVM is detected):**
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvs *
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvcreate --name lxspawn-* *
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvcreate --snapshot --name lxspawn-* *
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvconvert --merge */lxspawn-*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/lvremove -f */lxspawn-*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mkfs.ext4 -q /dev/*/lxspawn-*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/mount /dev/*/lxspawn-* /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/umount /var/lib/machines/*
-```
-
-**ZFS Operations (when ZFS is detected):**
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs snapshot lxspawn/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs rollback -r lxspawn/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/zfs destroy lxspawn/*
-```
-
-**Security Benefits:**
-
-1. **Explicit rules**: Each operation has a specific sudoers rule with path and argument restrictions
-2. **No helper binary**: Reduces attack surface by eliminating an additional binary
-3. **Standard approach**: Uses well-understood sudo mechanisms instead of custom validation logic
-4. **Easy to audit**: Sudoers rules are human-readable and can be reviewed independently
-
-**Path Handling:**
-
-Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different path depths. For example, to delete both machine rootfs and snapshots:
-```
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/btrfs subvolume delete /var/lib/machines/*/.snapshots/*
-```
-
-This design ensures that even if an attacker gains membership in the `lxspawn` group, they can only perform operations on lxspawn-managed resources under `/var/lib/machines/`.
-
-### Filesystem Isolation
-
-1. **Read-only mounts** for sensitive paths
-   - `/etc/ssl/certs` (read-only by default)
-   - User can override with `readonly: false`
-
-2. **Inaccessible paths**
-   - `/etc/shadow`, `/etc/gshadow` hidden by default
-   - User can add more with `security.inaccessible`
-
-3. **Temporary filesystems**
-   - `/tmp` can be tmpfs (not shared with host)
-   - Prevents container from filling host `/tmp`
-
-### Network Isolation
-
-1. **Host mode** (default)
-   - Shared network namespace
-   - No isolation, but works rootless
-   - Suitable for trusted containers
-
-2. **Private mode**
-   - Isolated network namespace
-   - No LAN access
-   - Requires root
-
-3. **Bridge mode**
-   - Attached to host bridge
-   - LAN accessible
-   - Requires root + pre-created bridge
-
-4. **Zone mode**
-   - Automatic bridge management
-   - Zone-scoped access
-   - Requires root
 
 ## Performance Characteristics
 
@@ -1428,14 +1024,14 @@ This design ensures that even if an attacker gains membership in the `lxspawn` g
 
 **320 tests across 22 test files, all passing (1 skipped, requires root):**
 
-- `internal/config/parser_test.go` - Config parsing and validation (64 tests) - NEW: storage size parsing and validation
+- `internal/config/parser_test.go` - Config parsing and validation (64 tests)
 - `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
 - `internal/deploy/state_test.go` - State management: register, unregister, persistence, list sorting (18 tests)
 - `internal/deploy/filesystem_test.go` - Path helpers, WriteFileAtomic, RemoveAll (21 tests)
 - `internal/provision/template_test.go` - Template rendering with all variables, params, edge cases (20 tests)
 - `internal/provision/yq_test.go` - YQ provisioner: expression parsing, format detection, value types (20 tests)
 - `internal/provision/boot_test.go` - Boot provisioner: script writing, service install, numbering (8 tests)
-- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions, path validation (18 tests) - NEW: validatePath tests
+- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions, path validation (18 tests)
 - `internal/provision/file_test.go` - File handler: digest validation, local file resolution (12 tests)
 - `internal/provision/exec_test.go` - Exec provisioner: env export, provisioner modes, param handling (13 tests)
 - `internal/image/fetcher_test.go` - Image fetcher: URL building, tar extraction, path traversal (8 tests)
@@ -1443,14 +1039,14 @@ This design ensures that even if an attacker gains membership in the `lxspawn` g
 - `internal/image/validate_test.go` - Init system detection at multiple paths (7 tests)
 - `internal/image/network_test.go` - Network config injection for all modes (10 tests)
 - `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
-- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests) - NEW: readCPUUsage, readMemoryUsage, readDiskUsage tests
+- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests)
 - `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
 - `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
 - `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
 - `internal/snapshot/manager_test.go` - Snapshot state serialization, JSON fields (5 tests)
 - `internal/kernel/version_test.go` - Kernel version detection, btrfs detection (5 tests)
 - `internal/kernel/systemd_test.go` - Systemd version detection, PrivateUsers=identity support (2 tests)
-- `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests) - NEW
+- `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests)
 
 ### Integration Tests
 
@@ -1469,413 +1065,6 @@ This design ensures that even if an attacker gains membership in the `lxspawn` g
 - Test with different images (Debian, Ubuntu, Fedora, Arch)
 - Test edge cases (large rootfs, many machines, concurrent operations)
 - GPU pass-through tested on Intel iGPU (Gemini Lake UHD Graphics 600)
-
-## Input Validation and Security Hardening
-
-### 20. Path Traversal Protection
-
-The `validatePath()` function in `internal/provision/data.go` prevents path traversal attacks in data and yq provisioners:
-
-**Implementation:**
-- Validates that paths are absolute
-- Cleans the path to resolve `..` components
-- Verifies the resolved path stays under the rootfs directory
-- Returns an error if the path escapes the rootfs
-
-**Why this matters:**
-- Prevents malicious YAML configs from writing files outside the container rootfs
-- Protects against attacks like `path: /etc/../../../etc/passwd`
-- Applied to both `data` and `yq` provision modes
-
-### 21. Command Injection Protection
-
-Interface names in hook scripts are validated with regex `^[a-zA-Z0-9_-]+$`:
-
-**Implementation:**
-- `internal/compiler/slice.go` validates interface names before using them in shell commands
-- Invalid interface names produce safe error messages instead of executing shell commands
-- Prevents attacks like `interface: eth0; rm -rf /`
-
-**Why this matters:**
-- Hook scripts run as root on the host
-- Unsanitized input could execute arbitrary commands
-- Network interface names have a well-defined character set
-
-### 22. Name Validation
-
-Machine and snapshot names are validated with strict regex patterns:
-
-**Machine names:** `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`
-- Must start and end with alphanumeric character
-- Can contain hyphens and underscores in the middle
-- Length: 1-64 characters
-- Prevents dangerous characters: `;`, `|`, `&`, `$`, backticks
-
-**Snapshot names:** `^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,62}[a-zA-Z0-9]$`
-- Same as machine names, but also allows dots
-- Dots useful for versioned snapshots (e.g., "snap.v1")
-
-**Why this matters:**
-- Names are used in file paths, systemd unit names, and D-Bus object paths
-- Special characters could break systemd or cause security issues
-- Consistent naming makes debugging easier
-
-### 23. Volume Path Validation
-
-Volume host paths are validated against a sensitive path blacklist:
-
-**Blacklisted paths:**
-- `/etc/shadow`, `/etc/gshadow`, `/etc/master.passwd`
-- `/proc`, `/sys`, `/dev`, `/run`, `/var/run`
-
-**Implementation:**
-- `internal/config/parser.go:validateVolumes()` checks if host path matches or is under a blacklisted path
-- Returns an error if a sensitive path is detected
-
-**Why this matters:**
-- Prevents accidental exposure of sensitive system files to containers
-- Protects against misconfiguration that could compromise host security
-- Containers should use bind mounts for specific data directories, not system directories
-
-### 24. Port Range Validation
-
-Port forwarding rules are validated for correct port ranges:
-
-**Implementation:**
-- `internal/config/parser.go:validatePort()` parses and validates port numbers
-- Both host and container ports must be in range 1-65535
-- Invalid ports like `tcp:99999:80` are rejected
-
-**Why this matters:**
-- Prevents invalid configurations that would fail at runtime
-- Catches typos early (e.g., `tcp:8080:88888`)
-- Provides clear error messages
-
-### 25. GPU Device Path Validation
-
-GPU device paths must start with `/dev/`:
-
-**Implementation:**
-- `internal/config/parser.go:validateGPU()` checks device path prefix
-- Rejects paths like `/etc/passwd` or `/root/.ssh`
-
-**Why this matters:**
-- GPU devices are bind-mounted into the container
-- Arbitrary host files could be exposed if validation is missing
-- Device paths have a well-defined location (`/dev/`)
-
-### 26. Edit Command Rollback Protection
-
-The `lxspawn edit` command creates a backup before making changes:
-
-**Implementation:**
-- Rootfs is renamed to `<name>.backup-<timestamp>` before deletion
-- If launch fails, the backup is automatically restored
-- Backup is cleaned up on successful launch
-
-**Why this matters:**
-- Edit is a destructive operation (delete + launch)
-- If launch fails, the machine would be permanently lost
-- Rollback protection ensures recovery from failures
-
-### 27. Resource Management
-
-Snapshot managers are properly closed to prevent resource leaks:
-
-**Implementation:**
-- All snapshot commands use `defer mgr.Close()` after creating a manager
-- `snapshot.Manager.Close()` method added for API consistency
-- Matches the pattern used by `machine.Manager`
-
-**Why this matters:**
-- Prevents file descriptor leaks
-- Ensures consistent resource management across the codebase
-- Future-proofs for when managers hold actual resources
-
-### 28. Machine Cleanup and Failed Service Handling
-
-When machines are deleted or stopped, especially after crashes, proper cleanup is essential to prevent lingering network interfaces and systemd-machined registrations.
-
-**The Problem:**
-When a container crashes (e.g., SIGABRT, timeout), the systemd service enters a "failed" state. Without proper cleanup:
-- The service remains in "failed" state indefinitely
-- systemd-machined keeps the machine registered in memory (visible in `machinectl list`)
-- Network interfaces (macvlan, host-side macvlan) may not be cleaned up
-- The `post_stop` hook may not execute during crashes
-
-**The Solution:**
-
-The `Delete` and `Stop` methods now perform comprehensive cleanup:
-
-1. **Stop the service** - Attempt graceful stop via D-Bus
-2. **Reset failed state** - Call `ResetFailedUnit` to clear "failed" state
-3. **Terminate via machinectl** - Call `machinectl terminate` to clean up systemd-machined registrations
-4. **Remove files** - Delete .nspawn, slice, drop-in, hooks, and rootfs
-5. **Reload systemd** - Ensure systemd picks up the changes
-6. **Unregister from state** - Remove from machines.json
-
-**Implementation:**
-
-- `internal/deploy/dbus.go:ResetFailedUnit()` - Wraps D-Bus `ResetFailedUnit` call
-- `internal/machine/manager.go:Delete()` - Comprehensive cleanup with error handling
-- `internal/machine/manager.go:Stop()` - Falls back to `ResetFailedUnit` + `machinectl terminate` if stop fails
-
-**Error handling:**
-- All cleanup steps log warnings on failure but continue with remaining steps
-- This ensures maximum cleanup even if some steps fail
-- Errors are logged with context for debugging
-
-**Why this matters:**
-- Prevents lingering network interfaces on the host
-- Prevents stale entries in `machinectl list`
-- Ensures clean state for future machine creation
-- Handles crash scenarios gracefully
-
-### 29. Sudoers Rules for Privileged Operations
-
-All privileged operations (storage management, provisioning, snapshots, logs) use direct sudo calls with specific sudoers rules instead of a helper binary.
-
-**The Problem:**
-
-The original design granted passwordless sudo access to individual commands with broad argument patterns:
-- `sudo rm -rf /var/lib/machines/*` - Could delete any machine
-- `sudo systemd-run -M <name> ...` - Could execute commands in any container (mitigated by regex validation of machine names)
-- `sudo btrfs subvolume *` - Could perform any btrfs operation
-- `sudo journalctl -u *` - Could read any systemd journal
-
-This created security risks because sudoers wildcards (`*`) don't validate arguments, only match patterns.
-
-**The Solution:**
-
-Generate specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required operation, with explicit path and argument restrictions:
-
-1. **Path-scoped rules** - Each rule targets specific directories:
-   - `/var/lib/machines/*` - Machine rootfs
-   - `/var/lib/machines/*/.snapshots/*` - Snapshot directories
-   - `/dev/*/lxspawn-*` - LVM volumes
-
-2. **Argument-specific rules** - Each rule specifies exact command patterns:
-   - `btrfs subvolume create` vs `btrfs subvolume delete`
-   - `lvcreate --name lxspawn-*` (only lxspawn volumes)
-   - `journalctl -u systemd-nspawn@*.service` (only lxspawn services)
-
-3. **Multiple depth rules** - Sudoers wildcards don't match `/`, so we need separate rules for different path depths:
-   - `/var/lib/machines/*` - Top-level machine directories
-   - `/var/lib/machines/*/.snapshots/*` - Snapshot subdirectories
-
-**Implementation:**
-
-- `cmd/lxspawn/setup.go:installSudoersRules()` - Generates sudoers rules based on available binaries
-- `internal/deploy/filesystem.go:Sudo()` - Simple wrapper around `exec.Command("sudo", args...)`
-- All privileged operations use `deploy.Sudo()` with specific arguments
-
-**Trade-offs:**
-
-- **Pros:** Simpler architecture, no helper binary to maintain, standard sudo approach, easy to audit
-- **Cons:** More sudoers rules to manage, requires careful path handling, less centralized validation
-
-**Why this approach:**
-
-Direct sudo calls with specific rules provide security through explicit definitions rather than centralized validation. Each rule is human-readable and can be audited independently. The approach uses well-understood sudo mechanisms instead of custom validation logic. Even if an attacker gains membership in the `lxspawn` group, they can only perform operations on lxspawn-managed resources under `/var/lib/machines/`.
-
-## Future Enhancements
-
-### Template Creation & Testing (Phase 4)
-
-Turnkey templates for common use cases:
-- Docker-in-container (reference: jailmaker)
-- DNS servers (Pi-hole, AdGuard with macvlan/bridge)
-- Media servers (Plex, Jellyfin with GPU pass-through)
-- File servers (Nextcloud, Samba with permission handling)
-- Base systems (Debian, Ubuntu, Fedora, etc.)
-
-### Cockpit Integration (Phase 5)
-
-**Status:** IN PROGRESS
-
-Framework-agnostic plugin:
-- Thin wrapper over `lxspawn --json` commands
-- Leverage Cockpit's built-in terminal and journal
-- Mirror cockpit-machines UX patterns
-
-#### Plugin Architecture
-
-The Cockpit plugin is located in `cockpit/` and uses React 18+ with TypeScript and PatternFly 5.
-
-**Directory Structure:**
-```
-cockpit/
-├── src/
-│   ├── index.tsx                      # Entry point
-│   ├── app.tsx                        # Main app with routing
-│   ├── manifest.json                  # Cockpit plugin manifest
-│   ├── api/
-│   │   ├── lxspawn.ts                 # API wrapper (all lxspawn commands)
-│   │   └── types.ts                   # TypeScript type definitions
-│   ├── components/
-│   │   ├── MachineList.tsx            # Dashboard with filtering & stats
-│   │   ├── MachineDetailsPage.tsx     # Machine details (overview, usage, volumes, network)
-│   │   ├── CreateMachineWizard.tsx    # Template-based creation wizard
-│   │   ├── cards/
-│   │   │   └── AggregateStatusCards.tsx  # Status cards (total/running/stopped)
-│   │   └── common/
-│   │       └── StateIcon.tsx          # State indicator component
-│   └── utils/
-│       └── format.ts                  # Formatting helpers (bytes, CPU, time)
-├── dist/                              # Built files (deployed to test machine)
-├── package.json                       # Dependencies (React, PatternFly, TypeScript)
-├── tsconfig.json                      # TypeScript configuration
-├── build.js                           # Build script (esbuild)
-└── Makefile                           # Build automation
-```
-
-**Key Components:**
-
-1. **MachineList** - Dashboard showing all machines with:
-   - Real-time CPU/memory usage (polling every 5s)
-   - State indicators (running/stopped/creating)
-   - Filter by name and state
-   - Action menu (start/stop/delete)
-
-2. **MachineDetailsPage** - Detailed view with:
-   - Overview card (state, distro, CPU, memory, network)
-   - Usage card (CPU/memory progress bars)
-   - Volumes card (bind mounts)
-   - Network card (network configuration)
-
-3. **CreateMachineWizard** - Template-based creation:
-   - Step 1: Select template (radio buttons)
-   - Step 2: Configure (machine name)
-   - Step 3: Review (YAML preview)
-   - Uses tested templates from `~/.local/share/lxspawn/templates/`
-
-**API Integration:**
-
-All data flows through `cockpit.spawn(["lxspawn", "command", "--json"])`:
-```typescript
-// Example: List machines
-const machines = await listMachines();
-// Returns: Machine[] (extracted from {version, data})
-
-// Example: Get stats
-const stats = await getMachineStats(name);
-// Returns: {cpu_usage_percent, memory_used_bytes, ...}
-```
-
-**JSON Format:**
-
-lxspawn returns JSON in this format:
-```json
-{
-  "version": "1.0",
-  "data": {
-    "machines": [...]
-  }
-}
-```
-
-The API wrapper extracts the `data` field and returns it directly to components.
-
-**Development Commands:**
-```bash
-# Build plugin
-cd cockpit && npm run build
-
-# Deploy to test machine
-sshpass -p 'PASSWORD' scp -r cockpit/dist/* USER@HOST:~/.local/share/cockpit/lxspawn/
-
-# Watch mode (auto-rebuild on changes)
-cd cockpit && npm run watch
-```
-
-## Security Improvements (2026-10-22)
-
-A comprehensive code inspection identified and fixed 24 issues across critical bugs, security vulnerabilities, dead code, and logic errors.
-
-### Critical Security Fixes
-
-**1. Symlink Path Traversal Protection**
-- **Issue:** Tar extraction validated symlink targets but created symlinks with original unvalidated paths
-- **Fix:** Symlinks now created with validated absolute paths to prevent directory traversal
-- **Location:** `internal/image/fetcher.go:extractTarXz()`
-
-**2. HTTPS-Only Downloads**
-- **Issue:** HTTP downloads allowed, enabling MITM attacks on image downloads and file references
-- **Fix:** All downloads now require HTTPS; HTTP URLs rejected with error
-- **Location:** `internal/image/fetcher.go:download()`
-
-**3. Download Size Limits**
-- **Issue:** No size limit on downloads could exhaust disk space
-- **Fix:** Added 2GB maximum size limit with `io.LimitReader`
-- **Location:** `internal/image/fetcher.go:download()`
-
-**4. State File Permissions**
-- **Issue:** State files (`machines.json`, `snapshots.json`) were world-readable (0644)
-- **Fix:** Changed to owner-only read/write (0600) for sensitive metadata
-- **Location:** `internal/deploy/state.go`, `internal/snapshot/manager.go`
-
-**5. Sudoers Rule Hardening**
-- **Issue:** Overly broad sudoers rules allowed arbitrary arguments
-- **Fix:** Added pattern matching for numeric-only arguments, specific chown/chmod patterns
-- **Location:** `cmd/lxspawn/setup.go:installSudoersRules()`
-
-### Critical Bug Fixes
-
-**1. Edit Command Backup Restore**
-- **Issue:** `lxspawn edit` always reported failure even when backup restore succeeded
-- **Fix:** Added explicit `return nil` after successful backup restore
-- **Location:** `cmd/lxspawn/edit.go`
-
-**2. Triple Template Rendering**
-- **Issue:** Provision scripts rendered templates multiple times, causing parse errors
-- **Fix:** Removed duplicate template rendering in `ExecProvisioner.Provision()`
-- **Location:** `internal/provision/exec.go`
-
-**3. Size Parsing Bug**
-- **Issue:** `ParseSizeToGB` incorrectly calculated megabytes (500M → 1GB instead of 0.5GB)
-- **Fix:** Rewrote size parsing logic with correct unit conversion
-- **Location:** `internal/config/parser.go:ParseSizeToGB()`
-
-### Dead Code Removal
-
-Removed 7 instances of dead code:
-- `reloadMachine()` function (never called)
-- `removeRootfs()`, `isBtrfsSubvolume()`, `removeBtrfsSubvolumeTree()` (replaced by storage backends)
-- Entire `internal/machine/lvm.go` file (replaced by storage backends)
-- `fixRootfsOwnership()` in image package (duplicate of machine package function)
-- `RenderTemplateFile()` (never called)
-- `FormatError()`, `FormatErrorCode()`, `PrintSuccess()` (never called)
-
-### Logic Improvements
-
-**1. CPU Usage Normalization**
-- **Issue:** CPU usage showed percentage of one core, not total system
-- **Fix:** Read `cpu.max` quota and normalize by allocated CPUs
-- **Location:** `internal/machine/manager.go:readCPUUsage()`
-
-**2. State Persistence**
-- **Issue:** `SetMachine()` didn't persist changes to disk
-- **Fix:** Added file locking and disk write to `SetMachine()`
-- **Location:** `internal/deploy/state.go:SetMachine()`
-
-**3. D-Bus Connection Leak**
-- **Issue:** `SystemdManager.Close()` didn't close `sysConn`
-- **Fix:** Added `sysConn.Close()` to prevent connection leak
-- **Location:** `internal/deploy/dbus.go:Close()`
-
-**4. Config Mutation**
-- **Issue:** `compileHooks()` mutated input config, causing issues on reuse
-- **Fix:** Use local copies of hook scripts instead of mutating config
-- **Location:** `internal/compiler/slice.go:compileHooks()`
-
-### Testing
-
-All fixes verified with:
-- `go build ./...` - Successful compilation
-- `go test ./...` - All tests pass
-- Manual testing of critical paths
-
----
 
 ## Troubleshooting
 
