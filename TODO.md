@@ -6,6 +6,37 @@ Remaining tasks for lxspawn, organized by priority.
 
 ## Current Status
 
+**Phase 4.20 (V2) - Spec Review Items - COMPLETE ✅**
+
+**Goal:** Address spec review items (S1, S2, S4, S5, S6, S7) from SUGGESTIONS.md.
+
+**Status:** All 6 items completed.
+
+**Completed:**
+- ✅ **S1: User mode fix** - Added explicit `user:` field to provision schema. User mode now uses `prov.User` instead of host username. Defaults to "root" with warning if not specified. User must exist in container (create in prior system step).
+- ✅ **S2: Lifecycle section** - Added "Lifecycle and Semantics" section to SPEC.md documenting which commands run which modes, execution order, idempotency requirements, and differences from Lima.
+- ✅ **S4: Boot mode definition** - Fixed contradictory description in SPEC.md. Boot mode runs "during boot via oneshot systemd service" (not "before systemd starts"). Updated example to show sysctl tuning instead of service masking (already done by cleanup.go).
+- ✅ **S5: DNS workaround removed** - Removed "DNS Configuration with systemd-resolved" section from SPEC.md. The workaround documented a bug that doesn't exist (boot mode works correctly).
+- ✅ **S6: Spec/code audit** - Verified all claims: HTTPS-only enforced (fetcher.go, file.go), yq errors work correctly, data fields (owner/permissions/overwrite) enforced. No code changes needed.
+- ✅ **S7: Probe timeout** - Added 10-second per-attempt timeout to probe runner using context.WithTimeout. Prevents hanging probe scripts from blocking forever.
+
+**Files modified:**
+- `internal/config/schema.go` - Added `User` field to Provision struct
+- `internal/config/parser.go` - Added `validateUsername()` function, validation for user field
+- `internal/config/parser_test.go` - Added tests for user field validation (4 new tests)
+- `internal/provision/exec.go` - User mode uses `prov.User` instead of `ctx.User`, defaults to "root" with warning
+- `internal/provision/probe.go` - Added per-attempt timeout (10s) using context.WithTimeout
+- `SPEC.md` - Added `user` field to provision table, fixed boot mode description, removed DNS workaround section, added Lifecycle and Semantics section, updated sample manifest
+
+**Tests added:**
+- `TestValidateProvisionUserWithValidUser` - Valid username accepted
+- `TestValidateProvisionUserWithInvalidUser` - Invalid usernames rejected (starts with hyphen, contains space/slash/semicolon, too long)
+- `TestValidateProvisionUserEmptyUserAllowed` - Empty user allowed (defaults to root)
+
+**All tests passing:** 320+ tests across 22 test files.
+
+---
+
 **Phase 4.19 (V2) - Template Leftovers - COMPLETE ✅**
 
 **Goal:** Address remaining template issues (T2, T5-T7, T13-T22) from SUGGESTIONS.md template review.

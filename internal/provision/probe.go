@@ -1,6 +1,7 @@
 package provision
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 )
+
+const defaultProbeTimeout = 10 * time.Second
 
 type ProbeRunner struct {
 	machineName string
@@ -52,8 +55,37 @@ func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		if err := cmd.Run(); err == nil {
-			return nil
+		ctxTimeout, cancel := context.WithTimeout(context.Background(), defaultProbeTimeout)
+		
+		err := cmd.Start()
+		if err != nil {
+			cancel()
+			if attempt < maxAttempts-1 {
+				time.Sleep(2 * time.Second)
+				continue
+			}
+			return fmt.Errorf("probe failed to start after %d attempts: %w", maxAttempts, err)
+		}
+
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+
+		select {
+		case <-ctxTimeout.Done():
+			cancel()
+			if cmd.Process != nil {
+				cmd.Process.Kill()
+			}
+			if attempt < maxAttempts-1 {
+				logger.Warn(fmt.Sprintf("Probe attempt %d timed out after %v, retrying...", attempt+1, defaultProbeTimeout))
+				time.Sleep(2 * time.Second)
+				continue
+			}
+		case err := <-done:
+			cancel()
+			if err == nil {
+				return nil
+			}
 		}
 
 		if attempt < maxAttempts-1 {

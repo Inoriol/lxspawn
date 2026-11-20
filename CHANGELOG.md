@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Provision `user` field (S1)** - New `user:` field in provision steps for `user` mode. Specifies which container user to run the script as. The user must exist inside the container (create in a prior `system` step if needed). Defaults to `root` with a warning if not specified.
+- **Lifecycle and Semantics section in SPEC.md (S2)** - New section documenting which commands run which modes, execution order, idempotency requirements, and differences from Lima.
+- **Probe per-attempt timeout (S7)** - Each probe attempt now has a 10-second timeout using `context.WithTimeout`. Prevents hanging probe scripts from blocking forever.
 - **New CLI commands for lifecycle management (C8):**
   - `lxspawn restart <name>` - Stop then start a machine
   - `lxspawn stop --force <name>` - Force stop using poweroff, terminate, then SIGKILL
@@ -25,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **User mode now uses explicit `user:` field (S1)** - `user` provision mode now uses the `user:` field from the provision step instead of the host username. The user must exist in the container. Previously used host username which didn't exist in container.
+- **Boot mode description clarified (S4)** - SPEC.md and README.md now correctly describe boot mode as running "during boot via oneshot systemd service" instead of "before systemd starts". Boot scripts run on every container boot.
+- **Boot mode example updated (S4)** - SPEC.md example now shows sysctl tuning instead of service masking (services are already masked by image cleanup).
 - **`DEBIAN_FRONTEND=noninteractive` always exported (X6)** - All system/user provision scripts now have `DEBIAN_FRONTEND=noninteractive` set, preventing apt prompts during package installation.
 - **Template version pinning (X3):**
   - AdGuard Home pinned to `v0.107.55` (was `master` branch)
@@ -54,6 +60,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **User mode broken (S1)** - `user` provision mode now uses the `user:` field instead of host username. Previously tried to `su - <host_username>` inside container where that user didn't exist.
+- **DNS workaround section removed (S5)** - Removed "DNS Configuration with systemd-resolved" section from SPEC.md. The workaround documented a bug that doesn't exist (boot mode works correctly via oneshot service).
+- **Probe timeout missing (S7)** - Individual probe attempts now have 10-second timeout. Previously a hanging probe script (e.g., `curl` to unreachable host) could block forever.
 - **BuildEnvExport now always returns non-empty string** - Previously returned empty string when no params, now always includes `DEBIAN_FRONTEND=noninteractive`. Updated tests accordingly.
 - **Template validation** - All templates now pass `lxspawn validate` after boot block removal and version pinning.
 - **T2 (Nextcloud):** LAN access now works via `trusted_domain` param (was rejected with "Access through untrusted domain")

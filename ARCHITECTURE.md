@@ -260,7 +260,8 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │   Container is NOT running. Write directly to rootfs.       │
 │                                                             │
 │   1. boot   → Write files/scripts into rootfs               │
-│                   (mask services, write drop-ins, etc.)     │
+│                   (written to /etc/lxspawn/boot/, executed  │
+│                    by oneshot systemd service on every boot)│
 │   2. data   → Write config files into rootfs                │
 │                   (clean file creation, no shell needed)    │
 │   3. yq     → Edit existing config files in rootfs          │
@@ -277,7 +278,8 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │                   (run as root inside container)            │
 │   5. user   → sudo systemd-run -M <name> --pipe --wait \    │
 │              -- /bin/bash -c "su <user> -c '<script>'"      │
-│                   (run as unprivileged user inside)         │
+│                   (run as specified user inside container,  │
+│                    user must exist in container)            │
 │                                                             │
 │   Note: Post-boot commands use systemd-run to execute       │
 │   commands inside the container via machined, avoiding      │
@@ -292,6 +294,7 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │                                                             │
 │   6. probes → Exec readiness scripts via systemd-run -M     │
 │                   (wait for services to be available)       │
+│                   (10s timeout per attempt, 30 attempts)    │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -332,8 +335,9 @@ type TemplateContext struct {
 
 - All scripts MUST be idempotent (may run multiple times on container restart)
 - `data` mode: `overwrite: false` skips if file exists
-- `boot` mode: scripts re-run on each boot by design
-- Script hashes are tracked to detect changes
+- `boot` mode: scripts re-run on every container boot by design
+- `system`/`user` modes: script hashes are tracked to skip unchanged scripts on re-run
+- `user` mode: requires the specified user to exist in the container (create in a prior `system` step if needed)
 
 ### Provisioning Environment
 

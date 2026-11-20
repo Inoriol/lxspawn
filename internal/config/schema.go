@@ -102,6 +102,7 @@ type Provision struct {
 	Overwrite   *bool         `yaml:"overwrite,omitempty"`
 	Expression  string        `yaml:"expression,omitempty"`
 	Format      string        `yaml:"format,omitempty"`
+	User        string        `yaml:"user,omitempty"`
 }
 
 type FileRef struct {

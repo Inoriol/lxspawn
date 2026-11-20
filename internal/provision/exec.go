@@ -57,14 +57,18 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 			if err != nil {
 				return fmt.Errorf("failed to build systemd-run command: %w", err)
 			}
-		case config.ProvisionUser:
-			user := ctx.User
-			escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
-			fullScript := fmt.Sprintf("%s\nsu - %s -c '%s'", envExport, user, escapedScript)
-			retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
-			if err != nil {
-				return fmt.Errorf("failed to build systemd-run command: %w", err)
-			}
+	case config.ProvisionUser:
+		user := prov.User
+		if user == "" {
+			logger.Warn("user mode has no 'user' field set, defaulting to 'root'. Set the 'user' field to specify a container user.")
+			user = "root"
+		}
+		escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
+		fullScript := fmt.Sprintf("%s\nsu - %s -c '%s'", envExport, user, escapedScript)
+		retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
+		if err != nil {
+			return fmt.Errorf("failed to build systemd-run command: %w", err)
+		}
 		default:
 			return fmt.Errorf("unsupported provision mode for exec: %s", prov.Mode)
 		}

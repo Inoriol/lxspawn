@@ -269,7 +269,7 @@ provision:                       # Provisioning (optional)
   - mode: boot                   # boot | data | yq | system | user
     script: |
       #!/bin/bash
-      systemctl mask systemd-udevd
+      sysctl -w net.core.somaxconn=1024
   - mode: data
     path: /etc/myapp/config.yaml
     content: |
@@ -298,11 +298,11 @@ lxspawn supports Lima-inspired provisioning with five modes:
 
 | Mode | Phase | Where it runs | Purpose |
 |------|-------|---------------|---------|
-| `boot` | Pre-boot | Host → rootfs | Early setup before systemd starts (mask services, write drop-ins) |
+| `boot` | Pre-boot | Host → rootfs | Early setup during boot (via oneshot systemd service on every boot) |
 | `data` | Pre-boot | Host → rootfs | Write config files cleanly (no shell script needed) |
 | `yq` | Pre-boot | Host → rootfs | Edit existing config files with expressions |
 | `system` | Post-boot | `systemd-run -M` (root) | Package installation, service management |
-| `user` | Post-boot | `systemd-run -M` (user) | User-level setup, dotfiles |
+| `user` | Post-boot | `systemd-run -M` (user) | User-level setup, dotfiles. Specify container user with `user:` field |
 
 **Template variables** (available in all modes):
 
