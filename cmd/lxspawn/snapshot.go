@@ -10,6 +10,8 @@ import (
 	"github.com/Inoriol/lxspawn/internal/snapshot"
 )
 
+var snapshotDescription string
+
 var snapshotCmd = &cobra.Command{
 	Use:   "snapshot <machine> <snapshot-name>",
 	Short: "Create a snapshot of a machine",
@@ -43,7 +45,7 @@ var snapshotCmd = &cobra.Command{
 		}
 		defer mgr.Close()
 
-		if err := mgr.CreateSnapshot(snapName); err != nil {
+		if err := mgr.CreateSnapshot(snapName, snapshotDescription); err != nil {
 			return err
 		}
 
@@ -60,4 +62,8 @@ var snapshotCmd = &cobra.Command{
 		fmt.Printf("Snapshot '%s' created for machine '%s' (backend: %s)\n", snapName, machineName, mgr.BackendType())
 		return nil
 	},
+}
+
+func init() {
+	snapshotCmd.Flags().StringVar(&snapshotDescription, "description", "", "Description for the snapshot")
 }

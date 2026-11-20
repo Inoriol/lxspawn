@@ -32,12 +32,6 @@ Configure group permissions and polkit rules (one-time, requires sudo):
 sudo lxspawn setup
 ```
 
-This creates:
-- `lxspawn` group for passwordless management
-- Directory permissions for `/var/lib/lxspawn`, `/etc/systemd/nspawn`, etc.
-- Polkit rules for systemd unit management (scoped to lxspawn machines only)
-- Sudoers rules for privileged operations (path validation, machine name validation, PID ownership checks)
-
 Add your user to the group:
 
 ```bash
@@ -111,8 +105,6 @@ lxspawn delete <name>            # Delete machine and all data
 lxspawn provision <name>         # Re-run provisioning (full cycle)
 lxspawn edit <name>              # Edit config and re-apply
 lxspawn apply <name> <yaml>      # Apply config from file (preserves rootfs)
-lxspawn apply <name> - < yaml    # Apply config from stdin
-lxspawn apply <name> --dry-run   # Validate config without applying
 lxspawn autostart <name> on      # Enable machine autostart at boot
 lxspawn autostart <name> off     # Disable machine autostart at boot
 ```
@@ -128,70 +120,50 @@ lxspawn logs <name>              # Follow logs (journalctl -M)
 ### Snapshots
 
 ```bash
-lxspawn snapshot <name> <snap>         # Create snapshot
+lxspawn snapshot <name> <snap> [--description <desc>]  # Create snapshot
 lxspawn list-snapshots <name>          # List snapshots
 lxspawn rollback <name> <snap>         # Rollback to snapshot
 lxspawn delete-snapshot <name> <snap>  # Delete snapshot
 ```
 
-Note: Snapshots require btrfs filesystem. 
-- **btrfs**: Machine rootfs is automatically created as a btrfs subvolume when the host filesystem is btrfs. Snapshots use btrfs copy-on-write (instant, space-efficient).
-- **Other filesystems**: Snapshots are not supported. Use btrfs for snapshot functionality.
-- **LVM/ZFS**: Support planned for future release (currently disabled pending testing).
+**Note:** Snapshots require btrfs filesystem. Other filesystems do not support snapshots.
 
 ### Status
 
 ```bash
 lxspawn list                     # List all machines
-lxspawn list --json              # JSON output (for scripting/Cockpit)
 lxspawn status <name>            # Detailed machine info
-lxspawn status <name> --json     # JSON output
 lxspawn show <name>              # Display generated config files
 lxspawn stats <name>             # Runtime CPU/memory/disk stats
-lxspawn stats <name> --json      # JSON output
 lxspawn config <name>            # Show detailed configuration
-lxspawn config <name> --json     # JSON output
 lxspawn provision-status <name>  # Show provisioning status
-lxspawn provision-status <name> --json  # JSON output
 ```
 
 ### Information
 
 ```bash
 lxspawn list-distros             # List available distributions
-lxspawn list-distros --json      # JSON output
 lxspawn list-templates           # List available machine templates
-lxspawn list-templates --json    # JSON output
 lxspawn validate <yaml>          # Validate YAML configuration
-lxspawn validate <yaml> --json   # JSON output
 lxspawn version                  # Show version and system info
-lxspawn version --json           # JSON output
 lxspawn doctor                   # Check system configuration and dependencies
-lxspawn doctor --json            # JSON output
 ```
 
 ### Configuration Editing
 
 ```bash
-lxspawn edit-resources <name> --cpus 4 --memory 4G        # Edit CPU/memory limits
+lxspawn edit-resources <name> --cpus 4 --memory 4G --memory-high 3G --io-weight 200  # Edit resource limits
 lxspawn edit-network <name> --mode bridge --bridge br0    # Edit network config
 lxspawn add-volume <name> --host /mnt/data --mount /data  # Add bind mount
 lxspawn edit-volume <name> --mount /data --host /new/path # Edit bind mount
 lxspawn remove-volume <name> --mount /data                # Remove bind mount
 ```
 
-All edit commands support `--json` for JSON output.
-
-### Global Flags
-
-All commands support:
-- `--json` - Output in JSON format
-- `-v, --verbose` - Show detailed information
-- `-q, --quiet` - Suppress non-error output
+All commands support `--json` for JSON output, `-v/--verbose` for detailed information, and `-q/--quiet` to suppress non-error output.
 
 ## Configuration Reference
 
-See [SPEC.md](SPEC.md) for the complete template specification with a full example manifest and detailed field descriptions.
+See [SPEC.md](SPEC.md) for the complete template specification.
 
 ### Basic Structure
 
@@ -200,24 +172,23 @@ name: myserver                   # Machine name (required)
 distro: debian:bookworm          # Distro:release (required)
 
 resources:                       # Resource limits (optional)
-  cpus: 2                        # CPU cores (→ CPUQuota=200%)
-  memory: 2G                     # Hard memory limit (→ MemoryMax=2G)
-  memory_high: 1.5G              # Soft limit, throttle (→ MemoryHigh=1.5G)
-  swap: 512M                     # Swap limit (→ MemorySwapMax=512M)
-  tasks: 512                     # Max processes (→ TasksMax=512)
-  io_weight: 100                 # IO priority (→ IOWeight=100)
+  cpus: 2                        # CPU cores
+  memory: 2G                     # Hard memory limit
+  memory_high: 1.5G              # Soft limit, throttle
+  swap: 512M                     # Swap limit
+  tasks: 512                     # Max processes
+  io_weight: 100                 # IO priority
 
 storage:                         # Storage configuration (optional)
-  size: 10G                      # Volume size for LVM thin (default: 10G)
+  size: 10G                      # Volume size for LVM thin
 
 network:                         # Network configuration (optional)
-  mode: host                     # host | private | bridge | zone | macvlan | ipvlan
+  mode: host                     # host | private | bridge | zone | macvlan | ipvlan | adaptive
   bridge: br0                    # Host bridge (if mode: bridge)
   zone: dev                      # Zone name (if mode: zone)
   interface: eth0                # Host interface (if mode: macvlan or ipvlan)
   ports:                         # Port forwarding (requires private network)
     - "tcp:8080:80"              # host:container
-    - "udp:5353:53"
 
 volumes:                         # Bind mounts (optional)
   - host: /mnt/data              # Host path (absolute)
@@ -229,16 +200,13 @@ volumes:                         # Bind mounts (optional)
 
 security:                        # Security settings (optional)
   no_new_privileges: true        # Prevent privilege escalation
-  seccomp: false                 # Disable seccomp filtering (clears SystemCallFilter)
+  seccomp: false                 # Disable seccomp filtering
   capabilities:                  # Add capabilities
     - CAP_NET_ADMIN
-    - CAP_NET_BIND_SERVICE
   drop_capabilities:             # Drop capabilities
     - CAP_SYS_RAWIO
-    - CAP_MKNOD
   inaccessible:                  # Hide paths
     - /etc/shadow
-    - /etc/gshadow
 
 gpu:                             # GPU pass-through (optional)
   enabled: true                  # Enable GPU access
@@ -250,7 +218,6 @@ advanced:                        # Advanced options (optional)
   hostname: myserver             # Container hostname
   environment:                   # Environment variables
     FOO: bar
-    BAZ: qux
 
 journal:                         # Journal integration (optional)
   link: try-guest                # LinkJournal mode
@@ -260,7 +227,6 @@ hooks:                           # Host-side lifecycle hooks (optional)
     #!/bin/bash
     modprobe br_netfilter
   post_start: |                  # Runs after container starts
-    #!/bin/bash
     ip link set dev ve-myserver master br0
   post_stop: |                   # Runs after container stops
     echo "Container stopped"
@@ -292,6 +258,24 @@ probes:                          # Readiness probes (optional)
       until curl -sf http://localhost/health; do sleep 2; done
 ```
 
+### Networking Modes
+
+| Mode | Isolation | LAN Access | Root Required | Use Case |
+|------|-----------|------------|---------------|----------|
+| `host` | None | Yes (same IP) | No | Simple setups, shared network |
+| `private` | Full | No | Yes | Isolated containers |
+| `bridge` | Partial | Yes | Yes | LAN-accessible with isolation |
+| `zone` | Partial | Zone only | Yes | Multiple isolated networks |
+| `macvlan` | Partial | Yes | Yes | Container as separate LAN device |
+| `ipvlan` | Partial | Yes | Yes | Container shares host MAC |
+| `adaptive` | Varies | Varies | Varies | Automatic selection based on host config |
+
+**Notes:**
+- `host` mode works rootless (default)
+- `bridge` requires pre-created bridge on host
+- `macvlan` requires `interface:` field (e.g., `interface: eth0`)
+- `adaptive` automatically selects bridge (if available) or macvlan with host access
+
 ### Provisioning
 
 lxspawn supports Lima-inspired provisioning with five modes:
@@ -316,117 +300,6 @@ lxspawn supports Lima-inspired provisioning with five modes:
 | `{{.Home}}` | Host home directory | `/home/inoriol` |
 | `{{.Dir}}` | Directory containing YAML | `/home/inoriol/projects` |
 | `{{.Param.Key}}` | Custom param value | (user-defined) |
-
-**Provisioning flow:**
-
-1. `lxspawn create` runs pre-boot provisioning (boot, data, yq)
-2. `lxspawn launch` starts the machine
-3. Post-boot provisioning (system, user) runs after container starts
-4. Readiness probes verify services are ready
-
-### Networking Modes
-
-| Mode | Isolation | LAN Access | Root Required | Use Case |
-|------|-----------|------------|---------------|----------|
-| `host` | None | Yes (same IP) | No | Simple setups, shared network |
-| `private` | Full | No | Yes | Isolated containers |
-| `bridge` | Partial | Yes | Yes | LAN-accessible with isolation |
-| `zone` | Partial | Zone only | Yes | Multiple isolated networks |
-| `macvlan` | Partial | Yes | Yes | Container as separate LAN device |
-| `ipvlan` | Partial | Yes | Yes | Container shares host MAC |
-| `adaptive` | Varies | Varies | Varies | Automatic selection based on host config |
-
-**Notes:**
-- `host` mode works rootless (default)
-- `bridge` requires pre-created bridge on host
-- `macvlan` requires `interface:` field (e.g., `interface: eth0`)
-- `ipvlan` requires `interface:` field (e.g., `interface: eth0`)
-- `adaptive` automatically selects bridge (if available) or macvlan with host access
-- Port forwarding requires private network mode
-
-#### Adaptive Network Mode
-
-The `adaptive` mode automatically selects the best networking option based on your host configuration:
-
-```yaml
-network:
-  mode: adaptive
-  bridge: br0        # Optional: preferred bridge if it exists
-  interface: auto    # Optional: "auto" uses interface from `lxspawn setup network`
-```
-
-**Selection logic:**
-1. If `bridge` is specified AND exists on host → uses **bridge** mode
-2. Otherwise → uses **macvlan** mode with host-side interface for visibility
-
-When falling back to macvlan, lxspawn automatically creates a host-side macvlan interface (`mv-lxspawn` by default) so the host can reach the container. This solves the kernel limitation where the host cannot ping macvlan containers.
-
-**Setup:**
-Before using `adaptive` mode with `interface: auto`, run:
-```bash
-sudo lxspawn setup network
-```
-
-This detects your primary network interface and saves it for automatic use.
-
-#### Macvlan Host Access
-
-When using macvlan mode (explicitly or via adaptive fallback), the host cannot reach the container due to a kernel limitation. lxspawn solves this by creating a host-side macvlan interface:
-
-```yaml
-network:
-  mode: macvlan
-  interface: enp2s0
-  host_access:
-    enabled: true           # Create host-side interface
-    interface: mv-mgmt      # Name for host-side interface
-    ip: 192.168.0.201/24    # Static IP (or omit for DHCP)
-```
-
-The host-side interface is created in the `post_start` hook and removed in `post_stop`. You can now ping and access the container from the host.
-
-### Security Defaults
-
-lxspawn applies secure defaults:
-- `NoNewPrivileges=yes` - Prevents privilege escalation
-- `LinkJournal=try-guest` - Host can see container logs
-- `DropCapability=CAP_SYS_RAWIO CAP_MKNOD` - Drops dangerous capabilities
-
-Override in YAML with `security:` section.
-
-### GPU Pass-Through
-
-lxspawn supports GPU pass-through for hardware acceleration in containers (media transcoding, compute workloads, 3D rendering).
-
-**Supported vendors:**
-- **Intel** (iGPU and discrete Arc) - VA-API, OpenCL
-- **AMD** (iGPU and discrete) - VA-API, ROCm
-- **NVIDIA** (discrete only) - CUDA, NVENC/NVDEC
-- **ARM Mali** - 3D rendering (limited)
-- **Qualcomm Adreno** - 3D rendering (limited)
-
-**Auto-detection priority:**
-1. Discrete GPUs (PCIe, dedicated VRAM)
-2. Integrated GPUs (iGPU)
-3. First detected GPU
-
-**Example:**
-
-```yaml
-gpu:
-  enabled: true
-  type: auto  # auto-detect and prefer discrete GPU
-```
-
-**Container requirements:**
-- GPU device nodes are bind-mounted automatically
-- Cgroup `DeviceAllow` rules are added automatically
-- Required capabilities (e.g., `CAP_SYS_ADMIN` for NVIDIA) are added automatically
-- Userspace drivers must be installed in the container via provisioning
-
-**NVIDIA-specific:** Driver version in container MUST match host exactly.
-
-See [SPEC.md](SPEC.md) for full GPU configuration options.
 
 ## Examples
 
@@ -556,175 +429,6 @@ probes:
       Pi-hole may not have started. Check: journalctl -M {{.Name}} -u pihole-FTL
 ```
 
-## How It Works
-
-lxspawn generates systemd-native configuration files:
-
-1. **YAML → .nspawn** - Container configuration (exec, files, network)
-2. **YAML → slice** - Resource limits (CPU, memory, IO)
-3. **YAML → drop-in** - Service overrides (slice assignment, hooks)
-4. **Image fetch** - Downloads rootfs from `images.linuxcontainers.org`
-5. **Pre-boot provisioning** - Writes boot scripts, config files, edits (boot, data, yq modes)
-6. **systemd-nspawn@.service** - Manages lifecycle via systemd
-7. **Post-boot provisioning** - Executes scripts inside container (system, user modes)
-8. **Readiness probes** - Verifies services are ready
-
-All state is filesystem-based:
-- `/etc/systemd/nspawn/<name>.nspawn` - Container config
-- `/etc/systemd/system/machine-<name>.slice` - Resource limits
-- `/var/lib/machines/<name>/` - Container rootfs
-- `/var/lib/lxspawn/<name>/` - Machine metadata and provision state
-- `/var/lib/lxspawn/machines.json` - Machine registry (system-wide)
-- `/var/lib/lxspawn/<name>/snapshots.json` - Snapshot metadata
-## Security Model
-
-lxspawn implements multiple layers of security:
-
-### Privilege Model
-
-**Important:** Membership in the `lxspawn` group is equivalent to root access. This is by design and matches the security model of `docker`, `libvirt`, and `lxc` groups.
-
-After `lxspawn setup`, users in the `lxspawn` group can:
-- Create/start/stop/delete machines without sudo
-- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
-- Reload the systemd daemon (required for `lxspawn start`)
-- Execute privileged operations via specific sudoers rules with regex argument restrictions
-
-**Why root-equivalent?**
-
-The setup process creates group-writable directories (`/etc/systemd/nspawn`, `/etc/systemd/system/systemd-nspawn@.service.d`, `/var/lib/lxspawn/<name>/.hooks`) to allow machine management without sudo. A group member can write malicious systemd unit files or hook scripts that execute as root. This is the same trade-off made by Docker, libvirt, and LXC for usability.
-
-**Mitigations:**
-- Sudoers rules use regex (sudo 1.9.10+) to restrict arguments to valid machine names
-- Polkit rules restrict unit management to lxspawn machine patterns
-- Hook scripts are validated and SELinux-labeled
-- Only trusted users should be added to the `lxspawn` group
-
-### Security Features
-
-**Container Isolation:**
-- `NoNewPrivileges=yes` (default) - Prevents privilege escalation
-- `SystemCallFilter` - Seccomp filtering (enabled by default)
-- Capability dropping - Dangerous capabilities dropped by default
-- Path validation - Volumes cannot expose sensitive system paths
-- Symlink protection - Tar extraction validates symlink targets
-
-**File Security:**
-- State files (`machines.json`, `snapshots.json`) stored with `0600` permissions (owner-only read/write)
-- Atomic file writes prevent corruption
-- SELinux context automatically applied to hook scripts
-
-**Network Security:**
-- HTTPS-only downloads - Image downloads and file references require HTTPS
-- Download size limits - Prevents disk exhaustion attacks (2GB max for images)
-- Digest verification - File references support SHA256 digest validation
-- Port validation - Port forwarding restricted to valid ranges (1-65535)
-
-**Sudoers Hardening:**
-- Regex argument matching (sudo 1.9.10+) - Machine names validated by pattern
-- Path restrictions - All operations scoped to `/var/lib/machines/*`
-- Command-specific rules - Each operation has explicit sudoers rule
-- visudo validation - Sudoers file syntax-checked before installation
-
-See [SPEC.md](SPEC.md) for complete security configuration options.
-
-## Privilege Model
-
-**Important:** Membership in the `lxspawn` group grants root-equivalent privileges. Only trusted users should be added to this group.
-
-After `lxspawn setup`, users in the `lxspawn` group can:
-- Create/start/stop/delete machines without sudo
-- Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
-- Reload the systemd daemon (required for `lxspawn start`)
-- Execute privileged operations via specific sudoers rules with regex argument restrictions
-
-### Why Root-Equivalent?
-
-The setup process creates group-writable directories to enable passwordless machine management:
-- `/etc/systemd/nspawn` (container configs)
-- `/etc/systemd/system/systemd-nspawn@.service.d` (drop-in overrides)
-- `/var/lib/lxspawn/<name>/.hooks` (lifecycle hook scripts)
-
-A group member can write malicious unit files or hook scripts that execute as root. This is the same security model as Docker (`docker` group), libvirt (`libvirt` group), and LXC (`lxc` group), which prioritize usability over strict isolation.
-
-**If you need strict privilege separation**, do not add untrusted users to the `lxspawn` group. Use a dedicated admin account for machine management.
-
-### Sudoers Rules
-
-The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions with regex argument restrictions (requires sudo 1.9.10+).
-
-**Requirements:**
-- Sudo 1.9.10 or later (for regex argument support)
-- Setup validates sudo version and refuses to install rules on older versions
-
-**Core operations:**
-- `rm ^-rf /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Delete machine storage (machine name validated)
-- `chown ^root\:lxspawn /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change ownership to root:lxspawn
-- `chown ^-R 0\:0 /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Recursively change ownership to root:root
-- `chown ^[0-9]+\:[0-9]+ /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change ownership to numeric UID:GID
-- `chmod ^[0-7]{3,4} /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change permissions (numeric only)
-- `mv ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Move/rename machine directories
-- `mkdir ^-p /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create machine and snapshot directories
-- `systemd-run ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$` - Execute commands in containers (machine name validated, no arbitrary PID access)
-- `journalctl ^-u systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service -n [0-9]+ -o short-iso$` - Read container logs
-
-**btrfs operations (when btrfs is detected):**
-- `btrfs ^subvolume create /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create machine subvolume
-- `btrfs ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Delete machine subvolume
-- `btrfs ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$` - Delete snapshot subvolume
-- `btrfs ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Show subvolume info
-- `btrfs ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots$` - List snapshot subvolumes
-- `btrfs ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create read-only snapshot
-- `btrfs ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$` - Create snapshot in sibling directory
-- `btrfs ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create writable snapshot
-- `btrfs ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Restore from snapshot
-- `btrfs ^filesystem usage -b /var/lib/machines$` - Check filesystem usage
-
-**LVM storage operations (when LVM is detected):**
-- `lvs ^--noheadings -o lv_attr .*$` - List logical volumes (with noheadings flag)
-- `lvs ^.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - List lxspawn logical volumes
-- `lvcreate ^--name lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* --virtualsize [0-9]+[gG] -T .*/lxspawn-pool$` - Create thin volumes
-- `lvremove ^-f .*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Remove logical volumes
-- `mkfs.ext4 ^-q /dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Format volumes
-- `mount ^/dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Mount volumes
-- `umount ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Unmount volumes
-
-Note: LVM snapshot operations (`lvcreate --snapshot`, `lvconvert --merge`) and ZFS operations are not included in sudoers rules since these backends are disabled pending testing infrastructure.
-
-**Security features:**
-- All rules use POSIX extended regular expressions (sudo 1.9.10+) with `^...$` anchoring
-- Machine names validated by regex pattern `[a-zA-Z0-9][a-zA-Z0-9_-]*` (same as Go validation)
-- No trailing wildcards - exact flag sets required
-- Sudoers file validated with `visudo -cf` before installation
-- Prevents multi-argument injection (e.g., `rm -rf /var/lib/machines/x /etc/foo` is rejected)
-- Prevents path traversal (e.g., `/var/lib/machines/../../etc` is rejected)
-
-Commands that require group membership:
-- `create`, `launch`, `start`, `stop`, `delete`
-
-Commands that work without group:
-- `shell`, `exec`, `list`, `status`, `logs`
-
-## Comparison
-
-| Feature | lxspawn | Podman | KVM/QEMU |
-|---------|---------|--------|----------|
-| Boot time | ~2s | ~1s | ~30s |
-| Memory overhead | ~50MB | ~30MB | ~512MB |
-| Full init system | Yes | No | Yes |
-| Systemd integration | Native | Via quadlet | Manual |
-| Resource limits | Via slices | Via cgroups | Via libvirt |
-| Networking | systemd-nspawn | CNI/Netavark | TAP/bridge |
-| Use case | System containers | App containers | Full VMs |
-
-## Requirements
-
-- **Host OS:** Linux with systemd 245+
-- **Tools:** `systemd-nspawn`, `machinectl`, `xz` (for image extraction)
-- **Permissions:** Root for setup, `lxspawn` group for management
-- **SELinux:** If enforcing, hook scripts are automatically labeled with `bin_t` context
-- **Images:** systemd-based distributions (Debian, Ubuntu, Fedora, etc.). Note: Arch Linux is not supported on btrfs hosts due to filesystem compatibility issues.
-
 ## Storage Backends
 
 lxspawn automatically detects and uses the best storage backend based on your filesystem:
@@ -742,124 +446,54 @@ lxspawn automatically detects and uses the best storage backend based on your fi
   sudo lvcreate -L 50G -n lxspawn-pool <vg-name>
   sudo lvconvert --type thin-pool <vg-name>/lxspawn-pool
   ```
-- **Benefits:** Space-efficient, supports over-provisioning, fast snapshots
 
 ### Directory (Universal Fallback)
 - **Detection:** Used when no advanced backend is available
 - **Features:** Simple directory-based storage
 - **Works on:** Any filesystem (ext4, xfs, etc.)
-- **Limitations:** No snapshot support, less efficient than btrfs or LVM
-- **Note:** Uses sudo for deletion to handle root-owned files from container namespace
+- **Limitations:** No snapshot support
 
-### Automatic Selection
-lxspawn selects the backend automatically:
-1. If btrfs → Btrfs backend
-2. If LVM with thin pool → LVM thin backend
-3. If LVM without thin pool → Directory backend (with warning)
-4. Otherwise → Directory backend
+## Security Model
 
-The selected backend is logged at startup: `Using storage backend: <type>`
+**Important:** Membership in the `lxspawn` group is equivalent to root access. This is by design and matches the security model of `docker`, `libvirt`, and `lxc` groups.
 
-## Known Issues
+lxspawn applies secure defaults:
+- `NoNewPrivileges=yes` - Prevents privilege escalation
+- `LinkJournal=try-guest` - Host can see container logs
+- `DropCapability=CAP_SYS_RAWIO CAP_MKNOD` - Drops dangerous capabilities
+- HTTPS-only downloads - Image downloads and file references require HTTPS
+- Path validation - Volumes cannot expose sensitive system paths
 
-### machinectl Shell PTY Errors
+Override in YAML with `security:` section.
 
-Intermittent "Failed to get shell PTY: Protocol error" or "There is no system bus in container" when using `lxspawn shell` or post-boot provisioning.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed security model and privilege information.
 
-**Fixed:** Post-boot provisioning, readiness probes, and `lxspawn exec` now use `systemd-run -M` for non-interactive execution, which avoids PTY allocation issues entirely and provides better security (machine name validation instead of arbitrary PID access). Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
+## Requirements
 
-### Macvlan Host Visibility
+- **Host OS:** Linux with systemd 245+
+- **Tools:** `systemd-nspawn`, `machinectl`, `xz` (for image extraction)
+- **Permissions:** Root for setup, `lxspawn` group for management
+- **SELinux:** If enforcing, hook scripts are automatically labeled with `bin_t` context
+- **Images:** systemd-based distributions (Debian, Ubuntu, Fedora, etc.). Note: Arch Linux is not supported on btrfs hosts due to filesystem compatibility issues.
 
-Host cannot ping macvlan containers (expected limitation of macvlan). Container can communicate with other network devices on the LAN.
+## Comparison
 
-### Container Network Interface Naming
+| Feature | lxspawn | Podman | KVM/QEMU |
+|---------|---------|--------|----------|
+| Boot time | ~2s | ~1s | ~30s |
+| Memory overhead | ~50MB | ~30MB | ~512MB |
+| Full init system | Yes | No | Yes |
+| Systemd integration | Native | Via quadlet | Manual |
+| Resource limits | Via slices | Via cgroups | Via libvirt |
+| Networking | systemd-nspawn | CNI/Netavark | TAP/bridge |
+| Use case | System containers | App containers | Full VMs |
 
-- macvlan creates `mv-<interface>` in container
-- ipvlan creates `iv-<interface>` in container
-- Network config must match these names
+## Documentation
 
-## Roadmap
-
-**Phase 1 (V1) - Complete:**
-- [x] Basic machine lifecycle (create, start, stop, delete)
-- [x] Resource limits via systemd slices
-- [x] All networking modes (host, private, bridge, zone, macvlan, ipvlan)
-- [x] Bind mounts and volumes
-- [x] JSON output for all commands
-- [x] Polkit rules for passwordless management
-
-**Phase 2 (V1.5) - Complete:**
-- [x] Provisioning engine (boot, data, yq, system, user modes)
-- [x] Template variables (`{{.Name}}`, `{{.Param.*}}`)
-- [x] Readiness probes
-- [x] Host-side lifecycle hooks (pre_start, post_start, post_stop)
-- [x] `lxspawn provision` command for re-running provisioning (full cycle)
-- [x] `lxspawn show` command to display generated config
-- [x] `lxspawn edit` command to edit and re-apply config
-- [x] Machine state queried via D-Bus (machine1 interface)
-- [x] Lock file workaround (`SYSTEMD_NSPAWN_LOCK=0`)
-
-**Phase 3 (V2) - Snapshots - Complete (btrfs only):**
-- [x] Snapshot support (btrfs only; LVM/ZFS disabled pending testing)
-- [x] Automatic btrfs subvolume creation
-- [x] Snapshot create/list/rollback/delete commands
-- [x] JSON output for snapshot commands
-
-**Phase 4 (V2) - Templates - Complete:**
-- [x] Docker-in-container template (fully working)
-- [x] Base system templates (Debian, Ubuntu, Fedora)
-- [x] Adaptive network mode with host-side macvlan
-- [x] Docker-in-container support (Delegate, --private-users=no, CAP_BPF)
-- [x] DNS server templates (pihole, adguard) - tested and working
-- [x] Jellyfin template - GPU pass-through tested and working (Intel iGPU)
-- [x] Plex template - GPU pass-through tested and working (Intel iGPU)
-- [x] File server templates (samba, nextcloud) - tested and working
-- [x] Arch Linux removed (btrfs/pacman incompatibility)
-- [x] Jellyfin repository GPG key URL fixed
-
-**Phase 4.5 (V2) - Code Quality & Security - Complete:**
-- [x] Path traversal protection in data and yq provisioners
-- [x] Command injection protection in hook scripts
-- [x] Rollback protection for edit command
-- [x] Strict machine and snapshot name validation
-- [x] Volume path validation with sensitive path blacklist
-- [x] Port range validation (1-65535)
-- [x] GPU device path validation
-- [x] Download timeout (30 minutes)
-- [x] Secure cache directory permissions (0700)
-- [x] Resource leak fixes (defer mgr.Close())
-
-**Phase 4.18 (V2) - Template Security & CLI Gaps - Complete:**
-- [x] Boot script deduplication (service masking moved to image cleanup)
-- [x] DEBIAN_FRONTEND=noninteractive for all provision scripts
-- [x] Template version pinning (AdGuard, Pi-hole, Nextcloud)
-- [x] Template secret handling (placeholder passwords, guard clauses)
-- [x] Nextcloud data volume fix (--data-dir, IF NOT EXISTS)
-- [x] Docker survives restart (systemctl enable instead of background process)
-- [x] Samba security (auth required, read-only default)
-- [x] `lxspawn restart` command
-- [x] `lxspawn stop --force` command
-- [x] `lxspawn autostart` command
-- [x] `lxspawn version` command
-- [x] `lxspawn doctor` command
-- [x] `lxspawn apply` command (declarative config apply)
-
-**Phase 5 (V2+) - Cockpit Web UI - IN PROGRESS:**
-- [ ] Cockpit web UI plugin (dashboard, details page, create wizard)
-- [ ] Template-based machine creation
-- [ ] Real-time stats monitoring
-- [ ] Machine lifecycle management (start/stop/delete)
-- [ ] Configuration editing (CPU, memory, network, volumes)
-
-**Phase 6 (V2+) - ZFS/LVM Snapshots - DEFERRED:**
-- [ ] Set up fast SSD-based test environment for LVM testing
-- [ ] Test LVM thin pool snapshots (create, list, rollback, delete)
-- [ ] Re-enable LVM backend
-- [ ] Set up test environment with ZFS filesystem
-- [ ] Test ZFS snapshots (create, list, rollback, delete)
-- [ ] Re-enable ZFS backend
-
-**Note:** Directory mode snapshots removed (unreliable, slow). Snapshots now require btrfs filesystem. LVM/ZFS support deferred to after Phase 5 (Cockpit Web UI).
+- [SPEC.md](SPEC.md) - Complete YAML template specification
+- [ARCHITECTURE.md](ARCHITECTURE.md) - Internal architecture and design decisions
+- [DEVELOPMENT.md](DEVELOPMENT.md) - Developer guide and contribution guidelines
+- [TODO.md](TODO.md) - Roadmap and known issues
 
 ## License
 

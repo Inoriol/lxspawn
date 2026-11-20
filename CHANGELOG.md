@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Snapshot description (C12)** - `lxspawn snapshot` now accepts `--description` flag to store a description with the snapshot. Description is included in JSON output from `list-snapshots`.
+- **`edit-resources` new flags** - Added `--memory-high` (soft memory limit) and `--io-weight` (IO scheduling priority) flags to `edit-resources` command.
+- **Complete `config --json` output (C3)** - `config --json` now returns full configuration including `hooks`, `provision`, `param`, `probes`, `journal`, `resources.memory_high`, and `resources.io_weight` fields. Previously only returned basic fields.
+
+### Fixed
+
+- **Cockpit plugin `editVolume` readonly bug** - Fixed plugin to use `--readonly=true` format instead of `--readonly true` which caused cobra boolean flag parsing to fail.
+- **Cockpit plugin `editResources` memory_high bug** - Plugin was sending `--memory-high` flag that didn't exist in CLI. Added the flag to the CLI.
+
 ## [0.1.2] - 2026-11-20
 
 ### Added

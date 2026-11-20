@@ -32,13 +32,14 @@ var listSnapshotsCmd = &cobra.Command{
 			var jsonSnapshots []output.SnapshotJSON
 			for _, s := range snapshots {
 				jsonSnapshots = append(jsonSnapshots, output.SnapshotJSON{
-					Name:      s.Name,
-					Machine:   s.Machine,
-					Backend:   s.Backend,
-					CreatedAt: s.CreatedAt,
-					Path:      s.Path,
-					Dataset:   s.Dataset,
-					LV:        s.LV,
+					Name:        s.Name,
+					Machine:     s.Machine,
+					Backend:     s.Backend,
+					CreatedAt:   s.CreatedAt,
+					Path:        s.Path,
+					Dataset:     s.Dataset,
+					LV:          s.LV,
+					Description: s.Description,
 				})
 			}
 			return output.PrintJSON(&output.SnapshotListData{

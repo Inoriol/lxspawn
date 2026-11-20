@@ -16,13 +16,14 @@ const (
 )
 
 type SnapshotInfo struct {
-	Name      string    `json:"name"`
-	Machine   string    `json:"machine"`
-	Backend   string    `json:"backend"`
-	CreatedAt string    `json:"created_at"`
-	Path      string    `json:"path,omitempty"`
-	Dataset   string    `json:"dataset,omitempty"`
-	LV        string    `json:"lv,omitempty"`
+	Name        string    `json:"name"`
+	Machine     string    `json:"machine"`
+	Backend     string    `json:"backend"`
+	CreatedAt   string    `json:"created_at"`
+	Path        string    `json:"path,omitempty"`
+	Dataset     string    `json:"dataset,omitempty"`
+	LV          string    `json:"lv,omitempty"`
+	Description string    `json:"description,omitempty"`
 }
 
 type SnapshotBackend interface {

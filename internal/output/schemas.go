@@ -33,10 +33,12 @@ type MachineJSON struct {
 }
 
 type ResourceJSON struct {
-	CPUs   float64 `json:"cpus,omitempty"`
-	Memory string  `json:"memory,omitempty"`
-	Swap   string  `json:"swap,omitempty"`
-	Tasks  string  `json:"tasks,omitempty"`
+	CPUs       float64 `json:"cpus,omitempty"`
+	Memory     string  `json:"memory,omitempty"`
+	MemoryHigh string  `json:"memory_high,omitempty"`
+	Swap       string  `json:"swap,omitempty"`
+	Tasks      string  `json:"tasks,omitempty"`
+	IOWeight   int     `json:"io_weight,omitempty"`
 }
 
 type MachineStatusData struct {
@@ -169,6 +171,41 @@ type ConfigData struct {
 	Security  *SecurityJSON      `json:"security,omitempty"`
 	GPU       *GPUJSON           `json:"gpu,omitempty"`
 	Advanced  *AdvancedJSON      `json:"advanced,omitempty"`
+	Hooks     *HooksJSON         `json:"hooks,omitempty"`
+	Provision []ProvisionJSON    `json:"provision,omitempty"`
+	Param     map[string]string  `json:"param,omitempty"`
+	Probes    []ProbeJSON        `json:"probes,omitempty"`
+	Journal   *JournalJSON       `json:"journal,omitempty"`
+}
+
+type HooksJSON struct {
+	PreStart  string `json:"pre_start,omitempty"`
+	PostStart string `json:"post_start,omitempty"`
+	PostStop  string `json:"post_stop,omitempty"`
+}
+
+type ProvisionJSON struct {
+	Mode        string `json:"mode"`
+	Script      string `json:"script,omitempty"`
+	Path        string `json:"path,omitempty"`
+	Content     string `json:"content,omitempty"`
+	Owner       string `json:"owner,omitempty"`
+	Permissions string `json:"permissions,omitempty"`
+	Overwrite   *bool  `json:"overwrite,omitempty"`
+	Expression  string `json:"expression,omitempty"`
+	Format      string `json:"format,omitempty"`
+	User        string `json:"user,omitempty"`
+}
+
+type ProbeJSON struct {
+	Mode        string `json:"mode"`
+	Description string `json:"description"`
+	Script      string `json:"script"`
+	Hint        string `json:"hint,omitempty"`
+}
+
+type JournalJSON struct {
+	Link string `json:"link,omitempty"`
 }
 
 type StorageJSON struct {

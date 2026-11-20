@@ -95,11 +95,12 @@ func TestSnapshotStateEmpty(t *testing.T) {
 
 func TestSnapshotInfoJSONFields(t *testing.T) {
 	info := SnapshotInfo{
-		Name:      "test-snap",
-		Machine:   "test-machine",
-		Backend:   "zfs",
-		CreatedAt: "2024-01-15T10:30:00Z",
-		Dataset:   "rpool/machines/test-machine",
+		Name:        "test-snap",
+		Machine:     "test-machine",
+		Backend:     "zfs",
+		CreatedAt:   "2024-01-15T10:30:00Z",
+		Dataset:     "rpool/machines/test-machine",
+		Description: "Test snapshot description",
 	}
 
 	data, err := json.Marshal(info)
@@ -112,7 +113,7 @@ func TestSnapshotInfoJSONFields(t *testing.T) {
 		t.Fatalf("failed to unmarshal to map: %v", err)
 	}
 
-	expectedFields := []string{"name", "machine", "backend", "created_at", "dataset"}
+	expectedFields := []string{"name", "machine", "backend", "created_at", "dataset", "description"}
 	for _, field := range expectedFields {
 		if _, ok := raw[field]; !ok {
 			t.Errorf("expected field %s not found in JSON", field)
@@ -124,6 +125,9 @@ func TestSnapshotInfoJSONFields(t *testing.T) {
 	}
 	if raw["backend"] != "zfs" {
 		t.Errorf("backend = %v, want zfs", raw["backend"])
+	}
+	if raw["description"] != "Test snapshot description" {
+		t.Errorf("description = %v, want 'Test snapshot description'", raw["description"])
 	}
 }
 
@@ -151,5 +155,8 @@ func TestSnapshotInfoOmitsEmptyFields(t *testing.T) {
 	}
 	if _, ok := raw["lv"]; ok {
 		t.Error("lv should be omitted when empty")
+	}
+	if _, ok := raw["description"]; ok {
+		t.Error("description should be omitted when empty")
 	}
 }
