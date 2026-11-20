@@ -7,6 +7,8 @@ import (
 	"github.com/Inoriol/lxspawn/internal/output"
 )
 
+var stopForce bool
+
 var stopCmd = &cobra.Command{
 	Use:   "stop <name>",
 	Short: "Stop a running machine",
@@ -18,8 +20,14 @@ var stopCmd = &cobra.Command{
 		}
 		defer mgr.Close()
 
-		if err := mgr.Stop(args[0]); err != nil {
-			return err
+		if stopForce {
+			if err := mgr.ForceStop(args[0]); err != nil {
+				return err
+			}
+		} else {
+			if err := mgr.Stop(args[0]); err != nil {
+				return err
+			}
 		}
 
 		if output.IsJSONMode() {
@@ -32,4 +40,8 @@ var stopCmd = &cobra.Command{
 
 		return nil
 	},
+}
+
+func init() {
+	stopCmd.Flags().BoolVarP(&stopForce, "force", "f", false, "Force stop (poweroff, then terminate, then SIGKILL)")
 }

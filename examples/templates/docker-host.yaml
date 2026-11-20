@@ -1,6 +1,10 @@
 name: docker-host
 distro: debian:bookworm
 
+# NOTE: This template runs Docker inside a container with reduced isolation.
+# The pre_start hook enables IP forwarding and loads br_netfilter on the host,
+# which affects all network workloads on the host, not just this container.
+
 resources:
   cpus: 2
   memory: 2G
@@ -33,24 +37,14 @@ hooks:
     sleep 2
 
 provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      # Mask unnecessary services
-      systemctl mask systemd-udevd
-      systemctl mask systemd-modules-load.service
-
   - mode: system
     script: |
       #!/bin/bash
       set -eux -o pipefail
-      # Install Docker
       apt-get update
       apt-get install -y ca-certificates curl gnupg
       install -m 0755 -d /etc/apt/keyrings
       
-      # Download and install Docker GPG key
       rm -f /etc/apt/keyrings/docker.gpg
       curl -fsSL https://download.docker.com/linux/debian/gpg -o /tmp/docker.gpg.asc
       gpg --batch --no-tty --dearmor -o /etc/apt/keyrings/docker.gpg /tmp/docker.gpg.asc
@@ -62,7 +56,6 @@ provision:
       apt-get update
       apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
       
-      # Configure Docker to use cgroupfs instead of systemd (required for Docker-in-container)
       mkdir -p /etc/docker
       cat > /etc/docker/daemon.json <<'EOF'
       {
@@ -71,17 +64,15 @@ provision:
       }
       EOF
       
-      # Start Docker manually (systemctl enable/start doesn't work reliably in containers)
-      dockerd >/var/log/docker.log 2>&1 &
-      sleep 3
-      chmod 666 /var/run/docker.sock 2>/dev/null || true
+      systemctl enable docker.service
+      
+      groupadd -r docker 2>/dev/null || true
 
 probes:
   - mode: readiness
     description: "Docker daemon to be running"
     script: |
       #!/bin/bash
-      until docker info >/dev/null 2>&1; do sleep 2; done
+      until systemctl is-active --quiet docker; do sleep 2; done
     hint: |
       Docker may not have started. Check: journalctl -M {{.Name}} -u docker
-      Or check: cat /var/log/docker.log

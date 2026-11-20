@@ -10,15 +10,16 @@ network:
   interface: auto
 
 volumes:
-  - host: /var/lib/nextcloud  # Create this directory on host or change path
-    mount: /var/www/html/data
+  - host: /var/lib/nextcloud
+    mount: /var/www/html/nextcloud/data
 
 param:
   db_name: "nextcloud"
   db_user: "nextcloud"
-  db_pass: "nextcloud"      # Change this!
+  db_pass: "CHANGE_ME_DB"
   admin_user: "admin"
-  admin_pass: "admin"       # Change this!
+  admin_pass: "CHANGE_ME_ADMIN"
+  version: "29.0.9"               # Nextcloud version (pin for reproducibility)
 
 security:
   capabilities:
@@ -28,47 +29,55 @@ hooks:
   pre_start: |
     #!/bin/bash
     set -euo pipefail
-    # Create data directory if it doesn't exist
     mkdir -p /var/lib/nextcloud
 
 provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      # Mask unnecessary services
-      systemctl mask systemd-udevd
-      systemctl mask systemd-modules-load.service
-
   - mode: system
     script: |
       #!/bin/bash
-      set -eux -o pipefail
+      set -eu -o pipefail
+
+      if [ "{{.Param.db_pass}}" = "CHANGE_ME_DB" ] || [ "{{.Param.admin_pass}}" = "CHANGE_ME_ADMIN" ]; then
+        echo "ERROR: Set db_pass and admin_pass params before launching"
+        exit 1
+      fi
+
       apt-get update
       apt-get install -y apache2 libapache2-mod-php php php-gd php-mysql \
         php-xml php-mbstring php-curl php-zip php-intl php-bz2 php-fileinfo \
         mariadb-server wget bzip2
-      
-      # Download Nextcloud
-      cd /var/www/html
-      wget -q https://download.nextcloud.com/server/releases/latest.tar.bz2
-      tar -xjf latest.tar.bz2
-      chown -R www-data:www-data /var/www/html
-      
-      # Setup database
+
+      if [ ! -d /var/www/html/nextcloud ]; then
+        cd /var/www/html
+        wget -q https://download.nextcloud.com/server/releases/nextcloud-{{.Param.version}}.tar.bz2
+        tar -xjf nextcloud-{{.Param.version}}.tar.bz2
+        rm -f nextcloud-{{.Param.version}}.tar.bz2
+      fi
+
       systemctl start mariadb
-      mysql -e "CREATE DATABASE {{.Param.db_name}};"
-      mysql -e "CREATE USER '{{.Param.db_user}}'@'localhost' IDENTIFIED BY '{{.Param.db_pass}}';"
+
+      set +x
+      mysql -e "CREATE DATABASE IF NOT EXISTS {{.Param.db_name}};"
+      mysql -e "CREATE USER IF NOT EXISTS '{{.Param.db_user}}'@'localhost' IDENTIFIED BY '{{.Param.db_pass}}';"
       mysql -e "GRANT ALL PRIVILEGES ON {{.Param.db_name}}.* TO '{{.Param.db_user}}'@'localhost';"
       mysql -e "FLUSH PRIVILEGES;"
-      
-      # Install Nextcloud (occ must run as www-data user)
-      su - www-data -s /bin/bash -c "php /var/www/html/nextcloud/occ maintenance:install \
-        --database 'mysql' --database-name '{{.Param.db_name}}' \
-        --database-user '{{.Param.db_user}}' --database-pass '{{.Param.db_pass}}' \
-        --admin-user '{{.Param.admin_user}}' --admin-pass '{{.Param.admin_pass}}'"
-      
-      # Configure Apache
+      set -x
+
+      mkdir -p /var/www/html/nextcloud/data
+      chown www-data:www-data /var/www/html/nextcloud/data
+
+      if ! su - www-data -s /bin/bash -c "php /var/www/html/nextcloud/occ status" >/dev/null 2>&1; then
+        set +x
+        su - www-data -s /bin/bash -c "php /var/www/html/nextcloud/occ maintenance:install \
+          --database 'mysql' --database-name '{{.Param.db_name}}' \
+          --database-user '{{.Param.db_user}}' --database-pass '{{.Param.db_pass}}' \
+          --admin-user '{{.Param.admin_user}}' --admin-pass '{{.Param.admin_pass}}' \
+          --data-dir /var/www/html/nextcloud/data"
+        set -x
+      fi
+
+      chown -R www-data:www-data /var/www/html/nextcloud
+
       cat > /etc/apache2/sites-available/nextcloud.conf <<EOF
       <VirtualHost *:80>
           DocumentRoot /var/www/html/nextcloud
@@ -81,11 +90,11 @@ provision:
           </Directory>
       </VirtualHost>
       EOF
-      
+
       a2dissite 000-default
       a2ensite nextcloud
       a2enmod rewrite headers env dir mime
-      
+
       systemctl enable --now apache2 mariadb
 
 probes:

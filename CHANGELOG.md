@@ -7,11 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **New CLI commands for lifecycle management (C8):**
+  - `lxspawn restart <name>` - Stop then start a machine
+  - `lxspawn stop --force <name>` - Force stop using poweroff, terminate, then SIGKILL
+  - `lxspawn autostart <name> on|off` - Enable/disable machine autostart at boot
+- **`lxspawn version` command (C11)** - Show version, Go version, platform, systemd version, kernel version, and storage backend. Supports `--json` for structured output.
+- **`lxspawn doctor` command (C11)** - Check system configuration and dependencies. Verifies lxspawn group membership, systemd-nspawn, machinectl, polkit rules, sudoers rules, storage backend, nftables, and machines directory. Supports `--json` for structured output.
+- **`lxspawn apply` command (C1)** - Declarative configuration apply. Reads YAML from file or stdin, validates, and regenerates config files in place without touching rootfs. Supports `--dry-run` for preview. Returns `restart_required` in JSON output.
+- **`ParseString()` function** - Parse YAML config from string instead of file, used by `apply` command.
+- **Service masking in image cleanup (X2)** - `systemd-udevd`, `systemd-udevd-control.socket`, `systemd-udevd-kernel.socket`, and `systemd-modules-load.service` are now automatically masked during image extraction via symlinks to `/dev/null`. Eliminates need for duplicated boot scripts in templates.
+- **Sudoers rules for systemctl enable/disable** - Added rules for `systemctl enable/disable systemd-nspawn@<name>.service` to support `autostart` command.
+
+### Changed
+
+- **`DEBIAN_FRONTEND=noninteractive` always exported (X6)** - All system/user provision scripts now have `DEBIAN_FRONTEND=noninteractive` set, preventing apt prompts during package installation.
+- **Template version pinning (X3):**
+  - AdGuard Home pinned to `v0.107.55` (was `master` branch)
+  - Pi-hole pinned to `v5.18.3` (was unpinned)
+  - Nextcloud pinned to `29.0.9` (was `latest.tar.bz2`)
+- **Template security improvements (X4):**
+  - Nextcloud: placeholder passwords (`CHANGE_ME_DB`, `CHANGE_ME_ADMIN`), guard clause rejects defaults, `set +x` around password-bearing commands
+  - Pi-hole: placeholder password (`CHANGE_ME`), guard clause rejects default
+  - Samba: placeholder password (`CHANGE_ME`), guard clause rejects default, `set +x` around smbpasswd
+- **Template fixes:**
+  - **T1 (Nextcloud):** Volume mount path corrected to `/var/www/html/nextcloud/data`, added `--data-dir` flag, SQL uses `IF NOT EXISTS` for idempotency, `occ status` check prevents re-install
+  - **T8 (Docker):** Replaced `dockerd &` background process with `systemctl enable docker.service`, removed `chmod 666` on socket, added `docker` group creation, probe uses `systemctl is-active`
+  - **T11 (Samba):** Secure defaults (`guest ok = no`, `read only = yes`, `map to guest = Never`), added `valid users` and `force user` params, probe uses port 445 check instead of smbclient
+- **Boot script deduplication (X2)** - Removed identical `boot:` blocks from all 10 templates (debian-base, ubuntu-base, fedora-base, docker-host, nextcloud, samba, adguard, pihole, jellyfin, plex). Fedora-base retains only `systemd-resolved` masking and resolv.conf workaround.
+
+### Fixed
+
+- **BuildEnvExport now always returns non-empty string** - Previously returned empty string when no params, now always includes `DEBIAN_FRONTEND=noninteractive`. Updated tests accordingly.
+- **Template validation** - All templates now pass `lxspawn validate` after boot block removal and version pinning.
+
 ### Security
 
-#### P1 Security Hardening (SUGGESTIONS.md R1-R8)
+- **Template secret handling** - Passwords in templates use placeholder values with guard clauses that refuse to run if defaults are not changed. Secret-bearing commands wrapped in `set +x` to prevent logging.
 
-All P1 (data loss and host compromise) issues from code review have been fixed:
+## [0.1.1] - 2026-11-10
+
+### Security
 
 - **R1: `lxspawn edit` no longer destroys container contents** - Added `Manager.Apply()` method that regenerates config files in place, preserving rootfs. Previously, edit would delete and recreate the machine, losing all installed packages and data.
 - **R2: Btrfs snapshots moved to sibling directory** - Snapshots now stored in `<machine>.snapshots/` instead of `<rootfs>/.snapshots/`. Rollback no longer deletes snapshots since they're not child subvolumes of the rootfs.
@@ -52,11 +89,6 @@ All P1 (data loss and host compromise) issues from code review have been fixed:
 - **R6: Symlink escape in provisioners** - Secure path resolution with symlink following
 - **R7: Shell injection in hooks** - Error on invalid names, shell-quote all values
 - **R8: Injection in generated files** - Comprehensive input validation
-
-#### P2 Bug Fixes (SUGGESTIONS.md R9-R27, partial)
-
-11 of 19 P2 (broken features and wrong behaviour) issues have been fixed:
-
 - **R9: Edit commands now regenerate unit files** - `edit-resources`, `edit-network`, `add-volume`, `edit-volume`, and `remove-volume` now call `config.Validate()` and `mgr.Apply()` after editing YAML. Previously, these commands only rewrote the source YAML without regenerating the `.nspawn`, slice, and drop-in files, so changes had no effect until the machine was recreated.
 - **R10: `lxspawn validate` now actually validates** - The validate command now calls `config.Validate()` and uses `ParseStrict()` with `yaml.Decoder.KnownFields(true)`. Previously, it only called `config.Parse()` which silently ignored typos like `memroy:` or `no_new_privilege:`. Now reports "field not found" errors for unknown fields.
 - **R11: Boot service symlink fixed** - The boot service enable symlink now uses a relative path (`../lxspawn-boot.service`) instead of an absolute host path that dangled inside the container. Previously, the symlink pointed to `/var/lib/machines/<name>/etc/systemd/system/lxspawn-boot.service` which doesn't exist inside the container's filesystem namespace.
@@ -68,11 +100,6 @@ All P1 (data loss and host compromise) issues from code review have been fixed:
 - **R17: Btrfs usage parsing fixed** - `GetUsage()` now trims whitespace from lines and uses proper prefix matching. Previously, `fmt.Sscanf(line, "Device size: %d", ...)` failed on indented lines like `    Device size:    50.00GiB` because the format string didn't skip leading whitespace, always returning 0/0.
 - **R18: Snapshot/rollback check machine state** - `snapshot` and `rollback` commands now verify the machine is stopped before proceeding. Previously, the commands would proceed on running machines, potentially causing data loss when rollback deleted the rootfs of a running container.
 - **R19: Btrfs subvolume listing uses inode detection** - Btrfs subvolume listing now uses inode-based detection (inode 256) instead of parsing `btrfs subvolume list` output. This fixes snapshot listing on Fedora/Ubuntu layouts where `/` is not the top-level subvolume (e.g., Fedora's `root` or Ubuntu's `@`). Added `TestIsBtrfsSubvolume` unit tests in both snapshot and storage packages.
-
-#### P2 Bug Fixes (SUGGESTIONS.md R21-R27, continued)
-
-7 additional P2 issues have been fixed:
-
 - **R21: D-Bus machine name escaping for leading digits** - Machine names starting with digits (e.g., `3dprint`) are now correctly escaped in D-Bus object paths (`_33dprint`). Previously, sd-bus would reject these paths. Also, `GetMachineState` now returns real errors instead of silently returning "stopped" for D-Bus errors, allowing proper error handling. Added `TestMachineName` and `TestIsMachineNotFound` unit tests.
 - **R22: GPU detection fixes** - Multiple fixes to GPU detection: (1) Render node now read from sysfs (`/sys/class/drm/cardN/device/drm/renderD*`) instead of calculated from card index, fixing cases where some cardN entries are not recognized GPUs; (2) PCI resource file parsing fixed to compute size as `end - start + 1` instead of reading the flags field; (3) NVIDIA GPU deduplication added to prevent the same GPU being reported twice (once via DRM scan, once via `/dev/nvidia*`); (4) `/dev/kfd` now bind-mounted for AMD GPUs, enabling ROCm compute support. Added `TestIsDiscreteGPU`, `TestFindRenderNode`, `TestIsNVIDIAGPUDetected` unit tests.
 - **R23: `logs --json` consistency** - `GetLogs()` now reads from the container journal using `-M` flag (same as text mode `Logs()`), instead of reading the host unit log with `-u systemd-nspawn@<name>.service`. Previously, text mode showed container logs while JSON mode showed host logs, causing confusion.
@@ -83,10 +110,6 @@ All P1 (data loss and host compromise) issues from code review have been fixed:
 
 **Deferred:**
 - **R20: LVM thin volumes not remounted after reboot** - Deferred because LVM backend is disabled pending testing infrastructure (see Phase 6).
-
-#### P3 Hardening & Cleanup (SUGGESTIONS.md)
-
-All P3 (hardening and cleanup) issues have been fixed:
 
 - **File modes/ownership in provision/data.go** - `os.Chmod()` now called after write to ensure permissions are applied correctly. `setOwnership()` errors now returned instead of logged as warnings, preventing silent failures when ownership cannot be set.
 - **Network config permissions** - `/var/lib/lxspawn/config.json` now written with 0644 permissions instead of 0600, allowing group users to read it for `interface: auto`. Previously, non-root users couldn't read the config, breaking adaptive network mode.
@@ -218,5 +241,6 @@ Initial public release of lxspawn - a daemonless, lightweight "Light VM" orchest
 - **machinectl shell PTY errors** - Intermittent issues with interactive shell (exec uses nsenter as workaround)
 - **Macvlan host visibility** - Host cannot ping macvlan containers (kernel limitation, solved with host_access feature)
 
-[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.0

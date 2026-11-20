@@ -52,7 +52,8 @@ lxspawn/
 │   ├── create.go             # Create machine (don't start)
 │   ├── launch.go             # Create + start
 │   ├── start.go              # Start existing machine
-│   ├── stop.go               # Stop machine
+│   ├── stop.go               # Stop machine (with --force flag)
+│   ├── restart.go            # Restart machine (stop then start)
 │   ├── delete.go             # Delete machine and cleanup
 │   ├── list.go               # List all machines
 │   ├── shell.go              # Interactive shell
@@ -74,7 +75,11 @@ lxspawn/
 │   ├── edit_network.go       # Edit network configuration
 │   ├── add_volume.go         # Add bind mount
 │   ├── edit_volume.go        # Edit bind mount
-│   └── remove_volume.go      # Remove bind mount
+│   ├── remove_volume.go      # Remove bind mount
+│   ├── autostart.go          # Enable/disable machine autostart
+│   ├── version.go            # Show version and system info
+│   ├── doctor.go             # Check system configuration
+│   └── apply.go              # Declarative config apply
 │
 ├── internal/
 │   ├── config/               # YAML parsing and validation
@@ -94,7 +99,7 @@ lxspawn/
 │   │   ├── boot.go           # boot mode (write scripts to rootfs)
 │   │   ├── data.go           # data mode (write files to rootfs)
 │   │   ├── yq.go             # yq mode (edit config files)
-│   │   ├── exec.go           # system/user modes (nsenter)
+│   │   ├── exec.go           # system/user modes (systemd-run)
 │   │   ├── file.go           # File reference handling
 │   │   └── probe.go          # Readiness probes
 │   │
@@ -102,11 +107,11 @@ lxspawn/
 │   │   ├── fetcher.go        # Download and extract images
 │   │   ├── xz.go             # XZ decompression wrapper
 │   │   ├── validate.go       # Validate init system presence
-│   │   ├── cleanup.go        # Remove machine-id, resolv.conf, write securetty
+│   │   ├── cleanup.go        # Remove machine-id, resolv.conf, mask services
 │   │   └── network.go        # Inject systemd-networkd configs
 │   │
 │   ├── machine/              # Machine lifecycle management
-│   │   └── manager.go        # Create, start, stop, delete, shell, exec, status
+│   │   └── manager.go        # Create, start, stop, force stop, restart, delete, shell, exec, status, apply
 │   │
 │   ├── storage/              # Storage backend abstraction
 │   │   ├── backend.go        # StorageBackend interface
@@ -265,18 +270,19 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    POST-BOOT PHASE                          │
-│   Container IS running. Exec via nsenter.                   │
+│   Container IS running. Exec via systemd-run -M.            │
 │                                                             │
-│   4. system → sudo nsenter -t <leader-pid> -m -u -i -n -p \ │
+│   4. system → sudo systemd-run -M <name> --pipe --wait \    │
 │              -- /bin/bash -c "<script>"                     │
 │                   (run as root inside container)            │
-│   5. user   → sudo nsenter -t <leader-pid> -m -u -i -n -p \ │
+│   5. user   → sudo systemd-run -M <name> --pipe --wait \    │
 │              -- /bin/bash -c "su <user> -c '<script>'"      │
 │                   (run as unprivileged user inside)         │
 │                                                             │
-│   Note: Post-boot commands use nsenter to enter the         │
-│   container's namespaces directly, avoiding PTY allocation  │
-│   issues that occurred with machinectl shell.               │
+│   Note: Post-boot commands use systemd-run to execute       │
+│   commands inside the container via machined, avoiding      │
+│   PTY allocation issues and providing machine name          │
+│   validation (more secure than PID-based nsenter).          │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
@@ -284,7 +290,7 @@ The provisioning engine implements Lima's provisioning model adapted for systemd
 │                    READINESS PHASE                          │
 │   Check if container is actually ready.                     │
 │                                                             │
-│   6. probes → Exec readiness scripts via nsenter            │
+│   6. probes → Exec readiness scripts via systemd-run -M     │
 │                   (wait for services to be available)       │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -328,6 +334,17 @@ type TemplateContext struct {
 - `data` mode: `overwrite: false` skips if file exists
 - `boot` mode: scripts re-run on each boot by design
 - Script hashes are tracked to detect changes
+
+### Provisioning Environment
+
+All system and user provision scripts run with the following environment variables automatically set:
+
+- `DEBIAN_FRONTEND=noninteractive` - Prevents apt prompts during package installation
+- `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket` - Required for systemctl commands
+- `XDG_RUNTIME_DIR=/run/user/0` - Required for D-Bus connections
+- `LXSPAWN_PARAM_<key>=<value>` - All `param:` values exported as environment variables
+
+The `DEBIAN_FRONTEND=noninteractive` setting ensures that package installations never prompt for user input, even when config files need to be replaced or services need to be restarted.
 
 ## Generated Files
 
@@ -490,13 +507,15 @@ ExecStopPost=/var/lib/lxspawn/myserver/.hooks/post_stop.sh
 - Two commands instead of one (but `launch` combines them)
 - Slightly more complex state management (created but not started)
 
-### 7. Why nsenter for Exec and machinectl for Shell?
+### 7. Why systemd-run for Exec and machinectl for Shell?
 
-**nsenter advantages for exec:**
+**systemd-run advantages for exec:**
 - No PTY allocation issues (machinectl shell has intermittent PTY errors)
 - Works reliably in non-interactive contexts
-- Faster than machinectl shell
-- Direct namespace entry without D-Bus overhead
+- Goes through systemd-machined (machine name validation, no arbitrary PID access)
+- Clean exit status reporting
+- D-Bus works inside container (systemctl commands work)
+- More secure than nsenter (machine names instead of PIDs, can be restricted with sudoers regex)
 
 **machinectl advantages for shell:**
 - Interactive PTY allocation handled correctly
@@ -505,13 +524,19 @@ ExecStopPost=/var/lib/lxspawn/myserver/.hooks/post_stop.sh
 - Integrates with journal (logs visible on host)
 
 **Implementation:**
-- `internal/machine/manager.go:Exec()` uses `nsenter` to enter container namespaces
+- `internal/machine/manager.go:Exec()` uses `systemd-run -M <name> --pipe --wait` to execute commands
 - `internal/machine/manager.go:Shell()` uses `machinectl shell` for interactive sessions
 - Exec sets `DBUS_SYSTEM_BUS_ADDRESS` and `XDG_RUNTIME_DIR` for systemctl commands
 
 **Trade-offs:**
-- Exec requires sudo (nsenter needs root to enter namespaces)
+- Exec requires sudo (systemd-run needs root to create transient services)
 - Shell requires machine to be running (can't shell into stopped container)
+- systemd-run output includes service status reporting (cosmetic, not a functional issue)
+
+**Security:**
+- Sudoers rule uses regex to restrict machine names: `^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$`
+- Prevents arbitrary PID access (unlike nsenter which allowed `nsenter -t 1` for host root)
+- Machine names validated by both sudoers regex and machined
 
 ### 8. Why D-Bus for Status?
 
@@ -709,7 +734,7 @@ Running Docker inside lxspawn containers requires special configuration to work 
 
 **Implementation:**
 - `internal/compiler/slice.go` - Generates special drop-in when `seccomp: false`
-- `internal/provision/exec.go` - Adds D-Bus environment variables to nsenter commands
+- `internal/provision/exec.go` - Adds D-Bus environment variables to systemd-run commands
 - `examples/templates/docker-host.yaml` - Reference template for Docker-in-container
 
 **Key requirements:**
@@ -737,25 +762,25 @@ Running Docker inside lxspawn containers requires special configuration to work 
    - `echo 1 > /proc/sys/net/ipv4/ip_forward`
    - `modprobe br_netfilter`
 
-**D-Bus environment for nsenter:**
+**D-Bus environment for systemd-run:**
 
-Post-boot provisioning uses `nsenter` to execute commands inside the container. For `systemctl` commands to work, the following environment variables must be set:
+Post-boot provisioning uses `systemd-run -M` to execute commands inside the container. For `systemctl` commands to work, the following environment variables must be set:
 - `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket`
 - `XDG_RUNTIME_DIR=/run/user/0`
 
-However, even with these variables, `systemctl start/stop/restart` doesn't work reliably in nsenter context. The workaround is to:
+However, even with these variables, `systemctl start/stop/restart` doesn't work reliably in systemd-run context. The workaround is to:
 - Use `systemctl enable` (creates symlinks, doesn't need D-Bus)
 - Start services manually in readiness probes if needed
 - Or use boot scripts for services that must start automatically
 
 **GPG key installation:**
 
-When installing GPG keys in nsenter context (no TTY), use:
+When installing GPG keys in systemd-run context (no TTY), use:
 ```bash
 gpg --batch --no-tty --dearmor -o /path/to/keyring.gpg /path/to/key.asc
 ```
 
-The `--batch --no-tty` flags prevent GPG from trying to access `/dev/tty` which doesn't exist in nsenter context.
+The `--batch --no-tty` flags prevent GPG from trying to access `/dev/tty` which doesn't exist in systemd-run context.
 
 ### 18. Adaptive Network Mode
 
@@ -1047,7 +1072,7 @@ provision:
 **Alternative Approaches:**
 
 1. **Configure systemd-resolved directly** (doesn't work in containers):
-   - `resolvectl dns` requires D-Bus, which isn't available in nsenter context
+   - `resolvectl dns` requires D-Bus, which isn't available in systemd-run context
    - `/etc/systemd/resolved.conf.d/` config is ignored if systemd-resolved isn't properly initialized
 
 2. **Mask systemd-resolved in boot scripts** (doesn't work):
@@ -1111,7 +1136,7 @@ lxspawn uses direct `sudo` calls with specific sudoers rules instead of a privil
 
 The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required operation:
 
-- **Core operations**: `rm`, `chown`, `chmod`, `mv`, `mkdir`, `nsenter`, `journalctl`
+- **Core operations**: `rm`, `chown`, `chmod`, `mv`, `mkdir`, `systemd-run`, `journalctl`
 - **btrfs operations**: `btrfs subvolume create/delete/show/list/snapshot`, `btrfs filesystem usage`
 - **LVM storage operations**: `lvs`, `lvcreate`, `lvremove`, `mkfs.ext4`, `mount`, `umount` (snapshots disabled)
 
@@ -1271,7 +1296,7 @@ The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/chmod [0-7]* /var/lib/machines/*
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/mv /var/lib/machines/* /var/lib/machines/*
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/mkdir -p /var/lib/machines/*
-%lxspawn ALL=(root) NOPASSWD: /usr/sbin/nsenter -t [0-9]* -m -u -i -n -p -- /bin/bash -c *
+%lxspawn ALL=(root) NOPASSWD: /usr/sbin/systemd-run ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$
 %lxspawn ALL=(root) NOPASSWD: /usr/sbin/journalctl -u systemd-nspawn@*.service -n [0-9]* -o short-iso
 ```
 
@@ -1610,7 +1635,7 @@ All privileged operations (storage management, provisioning, snapshots, logs) us
 
 The original design granted passwordless sudo access to individual commands with broad argument patterns:
 - `sudo rm -rf /var/lib/machines/*` - Could delete any machine
-- `sudo nsenter -t * -m -u -i -n -p -- /bin/bash -c *` - Could execute any command in any namespace
+- `sudo systemd-run -M <name> ...` - Could execute commands in any container (mitigated by regex validation of machine names)
 - `sudo btrfs subvolume *` - Could perform any btrfs operation
 - `sudo journalctl -u *` - Could read any systemd journal
 

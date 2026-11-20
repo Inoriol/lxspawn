@@ -52,6 +52,7 @@ func main() {
 	rootCmd.AddCommand(launchCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(stopCmd)
+	rootCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(deleteCmd)
 	rootCmd.AddCommand(listCmd)
 	rootCmd.AddCommand(shellCmd)
@@ -76,6 +77,10 @@ func main() {
 	rootCmd.AddCommand(removeVolumeCmd)
 	rootCmd.AddCommand(validateCmd)
 	rootCmd.AddCommand(listTemplatesCmd)
+	rootCmd.AddCommand(autostartCmd)
+	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(doctorCmd)
+	rootCmd.AddCommand(applyCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if output.IsJSONMode() {

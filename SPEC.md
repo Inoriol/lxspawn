@@ -386,7 +386,7 @@ provision:
       systemctl enable docker || true
 ```
 
-**Note:** The `--batch --no-tty` flags are required for GPG when running in nsenter context (no TTY available).
+**Note:** The `--batch --no-tty` flags are required for GPG when running in systemd-run context (no TTY available).
 
 ---
 
@@ -571,8 +571,8 @@ The built-in yq provisioner supports a **subset** of yq expression syntax. It is
 | `boot` | Pre-boot | Host writes to rootfs | Early setup before systemd starts. Script is written to `<rootfs>/etc/lxspawn/boot/` and executed by a oneshot systemd service on first boot. |
 | `data` | Pre-boot | Host writes to rootfs | Write config files directly into the rootfs. No shell needed. |
 | `yq` | Pre-boot | Host edits rootfs | Edit existing config files (JSON/YAML/TOML) using yq expressions. |
-| `system` | Post-boot | `nsenter` as root | Package installation, service management. Uses `nsenter` to enter the container's namespaces directly, avoiding PTY allocation issues. |
-| `user` | Post-boot | `nsenter` as user | User-level setup, dotfiles. Uses `nsenter` with `su` to run as the specified user. |
+| `system` | Post-boot | `systemd-run -M` as root | Package installation, service management. Uses `systemd-run -M` to execute commands via machined, providing machine name validation and avoiding PTY allocation issues. |
+| `user` | Post-boot | `systemd-run -M` as user | User-level setup, dotfiles. Uses `systemd-run -M` with `su` to run as the specified user. |
 
 **DNS Configuration with systemd-resolved:**
 
@@ -612,6 +612,11 @@ provision:
 
 **Environment variable export:** Parameters are also exported as `LXSPAWN_PARAM_Key` environment variables inside provision scripts. Parameter keys must be valid shell variable names (start with letter or underscore, contain only letters, digits, underscores). Invalid keys are silently skipped.
 
+**Automatic environment variables:** All system and user provision scripts have the following environment variables automatically set:
+- `DEBIAN_FRONTEND=noninteractive` - Prevents apt prompts during package installation
+- `DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket` - Required for systemctl commands
+- `XDG_RUNTIME_DIR=/run/user/0` - Required for D-Bus connections
+
 ---
 
 ### `param`
@@ -634,7 +639,7 @@ Readiness probes run after post-boot provisioning to verify services are availab
 |-------|------|----------|-------------|
 | `mode` | string | yes | Must be `readiness` (only supported mode). |
 | `description` | string | yes | Human-readable description of what the probe waits for. |
-| `script` | string | yes | Script executed inside the container via `nsenter`. Must exit 0 when the service is ready. |
+| `script` | string | yes | Script executed inside the container via `systemd-run -M`. Must exit 0 when the service is ready. |
 | `hint` | string | no | Message displayed if the probe fails. Supports template variables. |
 
 ---

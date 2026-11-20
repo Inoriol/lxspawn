@@ -56,5 +56,35 @@ pts/9
 	}
 	logger.Info("Wrote etc/securetty")
 
+	if err := maskContainerServices(rootfs); err != nil {
+		logger.Warn(fmt.Sprintf("failed to mask container services: %v", err))
+	}
+
+	return nil
+}
+
+func maskContainerServices(rootfs string) error {
+	services := []string{
+		"systemd-udevd.service",
+		"systemd-udevd-control.socket",
+		"systemd-udevd-kernel.socket",
+		"systemd-modules-load.service",
+	}
+
+	systemdDir := filepath.Join(rootfs, "etc", "systemd", "system")
+	if err := os.MkdirAll(systemdDir, 0755); err != nil {
+		return fmt.Errorf("failed to create systemd system dir: %w", err)
+	}
+
+	for _, svc := range services {
+		link := filepath.Join(systemdDir, svc)
+		if err := os.Symlink("/dev/null", link); err != nil {
+			if os.IsExist(err) {
+				continue
+			}
+			return fmt.Errorf("failed to mask %s: %w", svc, err)
+		}
+		logger.Info(fmt.Sprintf("Masked %s", svc))
+	}
 	return nil
 }

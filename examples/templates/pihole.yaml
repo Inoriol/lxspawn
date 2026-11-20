@@ -17,17 +17,10 @@ param:
   gateway: "192.168.0.1"          # Your network gateway
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
-  web_password: "admin"           # Change this!
+  web_password: "CHANGE_ME"       # Required: change before launch
+  version: "v5.18.3"              # Pi-hole version (pin for reproducibility)
 
 provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      # Mask unnecessary services
-      systemctl mask systemd-udevd
-      systemctl mask systemd-modules-load.service
-
   - mode: data
     path: /etc/systemd/network/10-eth.network
     content: |
@@ -57,11 +50,18 @@ provision:
   - mode: system
     script: |
       #!/bin/bash
-      set -eux -o pipefail
+      set -eu -o pipefail
+
+      if [ "{{.Param.web_password}}" = "CHANGE_ME" ]; then
+        echo "ERROR: Set web_password param before launching"
+        exit 1
+      fi
+
       apt-get update
       apt-get install -y curl iproute2 dnsutils
       
-      # Install Pi-hole unattended
+      # Install Pi-hole unattended (pinned version)
+      export PIHOLE_BRANCH={{.Param.version}}
       curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
       
       systemctl enable --now pihole-FTL

@@ -102,6 +102,10 @@ func (e *Engine) Provision(cfg *config.Config, sourcePath string) error {
 func (e *Engine) ProvisionPostBoot(cfg *config.Config, sourcePath string) error {
 	logger.Action("Starting post-boot provisioning")
 
+	// Wait for container's systemd to be fully ready
+	// systemd-run needs the container's D-Bus to be available
+	time.Sleep(5 * time.Second)
+
 	ctx, err := NewTemplateContext(
 		cfg.Name,
 		cfg.Advanced.Hostname,

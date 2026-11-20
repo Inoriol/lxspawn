@@ -312,6 +312,60 @@ func (m *Manager) Stop(name string) error {
 	return nil
 }
 
+func (m *Manager) ForceStop(name string) error {
+	logger.Action(fmt.Sprintf("Force stopping machine '%s'", name))
+
+	poweroffCmd := exec.Command("machinectl", "poweroff", name)
+	if output, err := poweroffCmd.CombinedOutput(); err != nil {
+		logger.Debug(fmt.Sprintf("machinectl poweroff warning: %v (%s)", err, string(output)))
+	}
+
+	time.Sleep(2 * time.Second)
+
+	state, _, err := m.systemd.GetMachineState(name)
+	if err == nil && state != "stopped" {
+		terminateCmd := exec.Command("machinectl", "terminate", name)
+		if output, err := terminateCmd.CombinedOutput(); err != nil {
+			logger.Debug(fmt.Sprintf("machinectl terminate warning: %v (%s)", err, string(output)))
+		}
+	}
+
+	time.Sleep(1 * time.Second)
+
+	state, _, err = m.systemd.GetMachineState(name)
+	if err == nil && state != "stopped" {
+		unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
+		killCmd := deploy.Sudo("systemctl", "kill", "-s", "SIGKILL", unitName)
+		if output, err := killCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to force stop machine: %w (%s)", err, string(output))
+		}
+	}
+
+	logger.Success(fmt.Sprintf("Machine '%s' force stopped", name))
+	return nil
+}
+
+func (m *Manager) Restart(name string) error {
+	logger.Action(fmt.Sprintf("Restarting machine '%s'", name))
+
+	if _, exists := m.state.GetMachine(name); !exists {
+		return fmt.Errorf("machine '%s' not found", name)
+	}
+
+	if err := m.Stop(name); err != nil {
+		return fmt.Errorf("failed to stop machine for restart: %w", err)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	if err := m.Start(name); err != nil {
+		return fmt.Errorf("failed to start machine after stop: %w", err)
+	}
+
+	logger.Success(fmt.Sprintf("Machine '%s' restarted", name))
+	return nil
+}
+
 func (m *Manager) Delete(name string) error {
 	logger.Action(fmt.Sprintf("Deleting machine '%s'", name))
 
@@ -383,15 +437,10 @@ func (m *Manager) Exec(name string, command []string) error {
 		return fmt.Errorf("machine '%s' not found", name)
 	}
 
-	leaderPID, err := m.systemd.GetMachineLeader(name)
-	if err != nil {
-		return fmt.Errorf("failed to get leader PID: %w", err)
-	}
-
 	shellCmd := shellQuoteArgs(command)
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
 
-	args := []string{"nsenter", "-t", fmt.Sprintf("%d", leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", envScript}
+	args := []string{"systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
 	cmd := deploy.Sudo(args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout

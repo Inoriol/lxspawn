@@ -17,16 +17,9 @@ param:
   gateway: "192.168.0.1"          # Your network gateway
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
+  version: "v0.107.55"            # AdGuard Home version (pin for reproducibility)
 
 provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      # Mask unnecessary services
-      systemctl mask systemd-udevd
-      systemctl mask systemd-modules-load.service
-
   - mode: data
     path: /etc/systemd/network/10-eth.network
     content: |
@@ -47,8 +40,8 @@ provision:
       apt-get update
       apt-get install -y curl iproute2 dnsutils
       
-      # Install AdGuard Home
-      curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/master/scripts/install.sh | sh -s -- -v
+      # Install AdGuard Home (pinned version)
+      curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/{{.Param.version}}/scripts/install.sh | sh -s -- -v
       systemctl enable --now AdGuardHome
 
 probes:

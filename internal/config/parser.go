@@ -40,6 +40,40 @@ func ParseStrict(filename string) (*Config, error) {
 	return parse(filename, true)
 }
 
+func ParseString(data string) (*Config, error) {
+	return parseString(data, false)
+}
+
+func parseString(data string, strict bool) (*Config, error) {
+	var cfg Config
+	if strict {
+		decoder := yaml.NewDecoder(strings.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(&cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal([]byte(data), &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse YAML: %w", err)
+		}
+	}
+
+	if cfg.Network.Mode == "" {
+		cfg.Network.Mode = NetworkHost
+	}
+
+	if cfg.Advanced.Hostname == "" {
+		cfg.Advanced.Hostname = cfg.Name
+	}
+
+	if cfg.Security.NoNewPrivileges == nil {
+		t := true
+		cfg.Security.NoNewPrivileges = &t
+	}
+
+	return &cfg, nil
+}
+
 func parse(filename string, strict bool) (*Config, error) {
 	absPath, err := filepath.Abs(filename)
 	if err != nil {

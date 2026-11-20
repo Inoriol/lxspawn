@@ -6,6 +6,108 @@ Remaining tasks for lxspawn, organized by priority.
 
 ## Current Status
 
+**Phase 4.18 (V2) - Template Security & CLI Gaps - COMPLETE ✅**
+
+**Goal:** Address template security issues (X2-X6, X3, X4, T1, T8, T11) and CLI gaps (C1, C8, C11) from SUGGESTIONS.md.
+
+**Status:** All items completed.
+
+**Phase A - Template Fixes:**
+- ✅ **X6: DEBIAN_FRONTEND=noninteractive** - Added to `buildEnvExport()` in `internal/provision/exec.go`. All system/user provision scripts now have non-interactive apt.
+- ✅ **X2: Boot script deduplication** - Moved `systemctl mask systemd-udevd` and `systemd-modules-load.service` to `internal/image/cleanup.go` (writes `/dev/null` symlinks). Removed boot blocks from all 10 templates.
+- ✅ **T1: Nextcloud data volume fix** - Volume mount path corrected to `/var/www/html/nextcloud/data`, added `--data-dir` flag, SQL uses `IF NOT EXISTS`, `occ status` check prevents re-install.
+- ✅ **T8: Docker survives restart** - Replaced `dockerd &` with `systemctl enable docker.service`, removed `chmod 666` on socket, added `docker` group creation.
+- ✅ **T11: Samba security** - Changed defaults to `guest ok = no`, `read only = yes`, `map to guest = Never`. Added `valid users` and `force user` params.
+
+**Phase B - Template Security:**
+- ✅ **X3: Pin downloads** - AdGuard pinned to `v0.107.55`, Pi-hole to `v5.18.3`, Nextcloud to `29.0.9`.
+- ✅ **X4: Secret handling** - Added placeholder passwords with guard clauses to Nextcloud, Pi-hole, Samba templates. Added `set +x` around password-bearing commands.
+
+**Phase C - CLI Gaps:**
+- ✅ **C8: Lifecycle operations** - Added `stop --force`, `restart`, `autostart` commands.
+- ✅ **C11: Version and health** - Added `version --json` and `doctor --json` commands.
+- ✅ **C1: Apply command** - Added `apply` command with `--dry-run` support, reads from file or stdin.
+
+**Files modified:**
+- `internal/provision/exec.go` - DEBIAN_FRONTEND always exported
+- `internal/provision/exec_test.go` - Updated tests for new behavior
+- `internal/image/cleanup.go` - Added `maskContainerServices()` function
+- `internal/image/cleanup_test.go` - Added tests for service masking
+- `internal/machine/manager.go` - Added `ForceStop()`, `Restart()` methods
+- `internal/config/parser.go` - Added `ParseString()` function
+- `internal/output/schemas.go` - Added `AutostartData`, `ApplyData` types
+- `cmd/lxspawn/stop.go` - Added `--force` flag
+- `cmd/lxspawn/restart.go` - New restart command
+- `cmd/lxspawn/autostart.go` - New autostart command
+- `cmd/lxspawn/version.go` - New version command
+- `cmd/lxspawn/doctor.go` - New doctor command
+- `cmd/lxspawn/apply.go` - New apply command
+- `cmd/lxspawn/setup.go` - Added systemctl enable/disable sudoers rules
+- `examples/templates/debian-base.yaml` - Removed boot block
+- `examples/templates/ubuntu-base.yaml` - Removed boot block
+- `examples/templates/fedora-base.yaml` - Removed udevd/modules masking (kept resolved)
+- `examples/templates/docker-host.yaml` - Removed boot block, fixed Docker systemd, added host side-effects comment
+- `examples/templates/nextcloud.yaml` - Removed boot block, fixed volume path, added --data-dir, IF NOT EXISTS, password guards
+- `examples/templates/samba.yaml` - Removed boot block, secure defaults, parameterized password, fixed probe
+- `examples/templates/adguard.yaml` - Removed boot block, pinned version
+- `examples/templates/pihole.yaml` - Removed boot block, pinned version, password guard
+- `examples/templates/jellyfin.yaml` - Removed boot block
+- `examples/templates/plex.yaml` - Removed boot block
+
+**Tests added:**
+- `TestBuildEnvExportAlwaysIncludesDebianFrontend` - Verifies DEBIAN_FRONTEND always present
+- `TestCleanupRootfsMasksServices` - Verifies service masking symlinks created
+- `TestMaskContainerServicesIdempotent` - Verifies masking is idempotent
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ X6: Verified `DEBIAN_FRONTEND=noninteractive` set in provision environment
+- ✅ X2: Verified `systemd-udevd` and `systemd-modules-load` show as `masked`
+- ✅ C8: Verified `restart` command works
+- ✅ C11: Verified `version` and `doctor` commands work
+- ✅ C1: Verified `apply` command with `--dry-run` and file input
+
+---
+
+**Phase 4.17 (V2) - Privilege Hardening - COMPLETE ✅**
+
+**Goal:** Address critical security issues from SUGGESTIONS.md privilege hardening review.
+
+**Status:** All 6 privilege hardening items completed.
+
+**Completed:**
+- ✅ **Item 1: Replace nsenter with systemd-run** - All container command execution (exec, provisioning, probes) now uses `systemd-run -M` instead of `nsenter`. Eliminates arbitrary PID access vulnerability. Machine names validated via sudoers regex and machined.
+- ✅ **Item 2: Sudoers regex argument validation** - All sudoers rules now use POSIX extended regular expressions with `^...$` anchoring. Prevents multi-argument injection and path traversal attacks. Requires sudo 1.9.10+.
+- ✅ **Item 3: Sudo version check** - Setup validates sudo version and refuses to install rules on versions older than 1.9.10.
+- ✅ **Item 4: Sudoers syntax validation** - Sudoers file validated with `visudo -cf` before installation. Prevents syntax errors from breaking sudo system-wide.
+- ✅ **Item 5: Honest trust model documentation** - README and ARCHITECTURE now clearly document that `lxspawn` group membership is root-equivalent (like `docker`, `libvirt`, `lxc` groups).
+- ✅ **Item 6: Group-writable directories documented** - Security model section explains why group-writable systemd directories are necessary for usability, matching industry practice.
+
+**Additional fixes:**
+- ✅ **Provisioning timing** - Added 5-second delay before post-boot provisioning to wait for container systemd initialization.
+
+**Files modified:**
+- `internal/machine/manager.go` - Exec() uses systemd-run instead of nsenter
+- `internal/provision/exec.go` - buildSystemdRunCommand() replaces buildNsenterCommand()
+- `internal/provision/probe.go` - runProbe() uses systemd-run
+- `internal/provision/engine.go` - Added 5-second delay before post-boot provisioning
+- `cmd/lxspawn/setup.go` - Sudoers regex rules, sudo version check, visudo validation
+- `README.md` - Updated security model documentation
+- `ARCHITECTURE.md` - Updated provisioning execution model
+- `SPEC.md` - Updated provisioning mode descriptions
+
+**Tests added:**
+- `TestGetSudoVersion` - Sudo version parsing
+- `TestSudoVersionSupportsRegex` - Version comparison logic
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ Full lifecycle (create, start, exec, stop, snapshot, delete)
+- ✅ All provisioning modes (boot, data, system)
+- ✅ Readiness probes
+- ✅ Machine names with hyphens (D-Bus escaping)
+- ✅ Sudoers bypass attempts blocked (multi-argument injection, path traversal)
+
+---
+
 **Phase 4.15 (V2) - P2 Bug Fixes - COMPLETE ✅**
 
 **Goal:** Fix all P2 (broken features and wrong behaviour) issues from SUGGESTIONS.md code review.

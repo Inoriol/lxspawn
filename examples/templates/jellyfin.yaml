@@ -33,14 +33,6 @@ hooks:
     mkdir -p /var/lib/jellyfin
 
 provision:
-  - mode: boot
-    script: |
-      #!/bin/bash
-      set -eux -o pipefail
-      # Mask unnecessary services
-      systemctl mask systemd-udevd
-      systemctl mask systemd-modules-load.service
-
   - mode: system
     script: |
       #!/bin/bash

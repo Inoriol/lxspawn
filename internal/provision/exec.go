@@ -53,17 +53,17 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		switch prov.Mode {
 		case config.ProvisionSystem:
 			fullScript := fmt.Sprintf("%s\n%s", envExport, script)
-			retryCmd, err = e.buildNsenterCommand("root", fullScript)
+			retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
 			if err != nil {
-				return fmt.Errorf("failed to build nsenter command: %w", err)
+				return fmt.Errorf("failed to build systemd-run command: %w", err)
 			}
 		case config.ProvisionUser:
 			user := ctx.User
 			escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
 			fullScript := fmt.Sprintf("%s\nsu - %s -c '%s'", envExport, user, escapedScript)
-			retryCmd, err = e.buildNsenterCommand("root", fullScript)
+			retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
 			if err != nil {
-				return fmt.Errorf("failed to build nsenter command: %w", err)
+				return fmt.Errorf("failed to build systemd-run command: %w", err)
 			}
 		default:
 			return fmt.Errorf("unsupported provision mode for exec: %s", prov.Mode)
@@ -110,52 +110,19 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 	return nil
 }
 
-func (e *ExecProvisioner) buildNsenterCommand(user string, script string) (*exec.Cmd, error) {
-	leaderPID, err := e.getLeaderPID()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get leader PID: %w", err)
-	}
-
+func (e *ExecProvisioner) buildSystemdRunCommand(user string, script string) (*exec.Cmd, error) {
 	// Set environment variables for D-Bus and systemd
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", script)
 	
-	args := []string{"nsenter", "-t", strconv.Itoa(leaderPID), "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", envScript}
+	args := []string{"systemd-run", "-M", e.machineName, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
 	return deploy.Sudo(args...), nil
 }
 
-func (e *ExecProvisioner) getLeaderPID() (int, error) {
-	systemd, err := deploy.NewSystemdManager()
-	if err != nil {
-		return 0, fmt.Errorf("failed to connect to systemd: %w", err)
-	}
-	defer systemd.Close()
-
-	state, _, err := systemd.GetMachineState(e.machineName)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get machine state: %w", err)
-	}
-
-	if state != "running" {
-		return 0, fmt.Errorf("machine is not running")
-	}
-
-	leader, err := systemd.GetMachineLeader(e.machineName)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get leader PID: %w", err)
-	}
-
-	return leader, nil
-}
-
 func buildEnvExport(params map[string]string) string {
-	if len(params) == 0 {
-		return ""
-	}
-	var lines []string
+	lines := []string{"export DEBIAN_FRONTEND=noninteractive"}
 	for k, v := range params {
-		// Validate key is a valid shell variable name
 		if !isValidEnvVarName(k) {
-			continue // Skip invalid keys
+			continue
 		}
 		escaped := strings.ReplaceAll(v, "'", "'\"'\"'")
 		lines = append(lines, fmt.Sprintf("export LXSPAWN_PARAM_%s='%s'", k, escaped))

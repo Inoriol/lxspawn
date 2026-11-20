@@ -105,9 +105,16 @@ lxspawn create <yaml>            # Create machine (don't start)
 lxspawn launch <yaml>            # Create + start machine
 lxspawn start <name>             # Start existing machine
 lxspawn stop <name>              # Stop machine (graceful)
+lxspawn stop --force <name>      # Force stop (poweroff, terminate, SIGKILL)
+lxspawn restart <name>           # Restart machine (stop then start)
 lxspawn delete <name>            # Delete machine and all data
 lxspawn provision <name>         # Re-run provisioning (full cycle)
 lxspawn edit <name>              # Edit config and re-apply
+lxspawn apply <name> <yaml>      # Apply config from file (preserves rootfs)
+lxspawn apply <name> - < yaml    # Apply config from stdin
+lxspawn apply <name> --dry-run   # Validate config without applying
+lxspawn autostart <name> on      # Enable machine autostart at boot
+lxspawn autostart <name> off     # Disable machine autostart at boot
 ```
 
 ### Access
@@ -157,6 +164,10 @@ lxspawn list-templates           # List available machine templates
 lxspawn list-templates --json    # JSON output
 lxspawn validate <yaml>          # Validate YAML configuration
 lxspawn validate <yaml> --json   # JSON output
+lxspawn version                  # Show version and system info
+lxspawn version --json           # JSON output
+lxspawn doctor                   # Check system configuration and dependencies
+lxspawn doctor --json            # JSON output
 ```
 
 ### Configuration Editing
@@ -290,8 +301,8 @@ lxspawn supports Lima-inspired provisioning with five modes:
 | `boot` | Pre-boot | Host → rootfs | Early setup before systemd starts (mask services, write drop-ins) |
 | `data` | Pre-boot | Host → rootfs | Write config files cleanly (no shell script needed) |
 | `yq` | Pre-boot | Host → rootfs | Edit existing config files with expressions |
-| `system` | Post-boot | `nsenter` (root) | Package installation, service management |
-| `user` | Post-boot | `nsenter` (user) | User-level setup, dotfiles |
+| `system` | Post-boot | `systemd-run -M` (root) | Package installation, service management |
+| `user` | Post-boot | `systemd-run -M` (user) | User-level setup, dotfiles |
 
 **Template variables** (available in all modes):
 
@@ -571,12 +582,23 @@ lxspawn implements multiple layers of security:
 
 ### Privilege Model
 
+**Important:** Membership in the `lxspawn` group is equivalent to root access. This is by design and matches the security model of `docker`, `libvirt`, and `lxc` groups.
+
 After `lxspawn setup`, users in the `lxspawn` group can:
 - Create/start/stop/delete machines without sudo
 - Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
 - Reload the systemd daemon (required for `lxspawn start`)
-- Cannot modify other systemd units
-- Execute privileged operations via specific sudoers rules with path and argument restrictions
+- Execute privileged operations via specific sudoers rules with regex argument restrictions
+
+**Why root-equivalent?**
+
+The setup process creates group-writable directories (`/etc/systemd/nspawn`, `/etc/systemd/system/systemd-nspawn@.service.d`, `/var/lib/lxspawn/<name>/.hooks`) to allow machine management without sudo. A group member can write malicious systemd unit files or hook scripts that execute as root. This is the same trade-off made by Docker, libvirt, and LXC for usability.
+
+**Mitigations:**
+- Sudoers rules use regex (sudo 1.9.10+) to restrict arguments to valid machine names
+- Polkit rules restrict unit management to lxspawn machine patterns
+- Hook scripts are validated and SELinux-labeled
+- Only trusted users should be added to the `lxspawn` group
 
 ### Security Features
 
@@ -599,58 +621,83 @@ After `lxspawn setup`, users in the `lxspawn` group can:
 - Port validation - Port forwarding restricted to valid ranges (1-65535)
 
 **Sudoers Hardening:**
-- Argument pattern matching - Numeric-only patterns prevent injection
+- Regex argument matching (sudo 1.9.10+) - Machine names validated by pattern
 - Path restrictions - All operations scoped to `/var/lib/machines/*`
 - Command-specific rules - Each operation has explicit sudoers rule
+- visudo validation - Sudoers file syntax-checked before installation
 
 See [SPEC.md](SPEC.md) for complete security configuration options.
 
 ## Privilege Model
 
+**Important:** Membership in the `lxspawn` group grants root-equivalent privileges. Only trusted users should be added to this group.
+
 After `lxspawn setup`, users in the `lxspawn` group can:
 - Create/start/stop/delete machines without sudo
 - Manage only `machine-*.slice` and `systemd-nspawn@*.service` units (validated by polkit regex)
 - Reload the systemd daemon (required for `lxspawn start`)
-- Cannot modify other systemd units
-- Execute privileged operations via specific sudoers rules with path and argument restrictions
+- Execute privileged operations via specific sudoers rules with regex argument restrictions
+
+### Why Root-Equivalent?
+
+The setup process creates group-writable directories to enable passwordless machine management:
+- `/etc/systemd/nspawn` (container configs)
+- `/etc/systemd/system/systemd-nspawn@.service.d` (drop-in overrides)
+- `/var/lib/lxspawn/<name>/.hooks` (lifecycle hook scripts)
+
+A group member can write malicious unit files or hook scripts that execute as root. This is the same security model as Docker (`docker` group), libvirt (`libvirt` group), and LXC (`lxc` group), which prioritize usability over strict isolation.
+
+**If you need strict privilege separation**, do not add untrusted users to the `lxspawn` group. Use a dedicated admin account for machine management.
 
 ### Sudoers Rules
 
-The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions rather than a helper binary.
+The `lxspawn setup` command generates specific sudoers rules in `/etc/sudoers.d/lxspawn` for each required privileged operation. This approach provides security through explicit rule definitions with regex argument restrictions (requires sudo 1.9.10+).
+
+**Requirements:**
+- Sudo 1.9.10 or later (for regex argument support)
+- Setup validates sudo version and refuses to install rules on older versions
 
 **Core operations:**
-- `rm -rf /var/lib/machines/*` - Delete machine storage
-- `chown root\:lxspawn /var/lib/machines/*` - Change ownership to root:lxspawn
-- `chown -R 0\:0 /var/lib/machines/*` - Recursively change ownership to root:root
-- `chown [0-9]*\:[0-9]* /var/lib/machines/*` - Change ownership to numeric UID:GID
-- `chmod [0-7]* /var/lib/machines/*` - Change permissions (numeric only)
-- `mv /var/lib/machines/* /var/lib/machines/*` - Move/rename machine directories
-- `mkdir -p /var/lib/machines/*` - Create machine and snapshot directories
-- `nsenter -t [0-9]* -m -u -i -n -p -- /bin/bash -c *` - Execute commands in container namespaces (PID must be numeric)
-- `journalctl -u systemd-nspawn@*.service -n [0-9]* -o short-iso` - Read container logs (lines must be numeric)
+- `rm ^-rf /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Delete machine storage (machine name validated)
+- `chown ^root\:lxspawn /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change ownership to root:lxspawn
+- `chown ^-R 0\:0 /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Recursively change ownership to root:root
+- `chown ^[0-9]+\:[0-9]+ /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change ownership to numeric UID:GID
+- `chmod ^[0-7]{3,4} /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Change permissions (numeric only)
+- `mv ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Move/rename machine directories
+- `mkdir ^-p /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create machine and snapshot directories
+- `systemd-run ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$` - Execute commands in containers (machine name validated, no arbitrary PID access)
+- `journalctl ^-u systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service -n [0-9]+ -o short-iso$` - Read container logs
 
 **btrfs operations (when btrfs is detected):**
-- `btrfs subvolume create/delete/show /var/lib/machines/*` - Manage machine subvolumes
-- `btrfs subvolume delete /var/lib/machines/*.snapshots/*` - Delete snapshot subvolumes
-- `btrfs subvolume list -o /var/lib/machines/*.snapshots` - List child subvolumes
-- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*` - Create read-only snapshots
-- `btrfs subvolume snapshot -r /var/lib/machines/* /var/lib/machines/*.snapshots/*` - Create snapshots in sibling .snapshots directory
-- `btrfs subvolume snapshot /var/lib/machines/* /var/lib/machines/*` - Create writable snapshots
-- `btrfs subvolume snapshot /var/lib/machines/*.snapshots/* /var/lib/machines/*` - Restore from snapshots
-- `btrfs filesystem usage -b /var/lib/machines` - Check filesystem usage
+- `btrfs ^subvolume create /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create machine subvolume
+- `btrfs ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Delete machine subvolume
+- `btrfs ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$` - Delete snapshot subvolume
+- `btrfs ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Show subvolume info
+- `btrfs ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots$` - List snapshot subvolumes
+- `btrfs ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create read-only snapshot
+- `btrfs ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$` - Create snapshot in sibling directory
+- `btrfs ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Create writable snapshot
+- `btrfs ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Restore from snapshot
+- `btrfs ^filesystem usage -b /var/lib/machines$` - Check filesystem usage
 
 **LVM storage operations (when LVM is detected):**
-- `lvs --noheadings *` - List logical volumes (with noheadings flag)
-- `lvs */lxspawn-*` - List lxspawn logical volumes
-- `lvcreate --name lxspawn-* *` - Create thin volumes
-- `lvremove -f */lxspawn-*` - Remove logical volumes
-- `mkfs.ext4 -q /dev/*/lxspawn-*` - Format volumes
-- `mount /dev/*/lxspawn-* /var/lib/machines/*` - Mount volumes
-- `umount /var/lib/machines/*` - Unmount volumes
+- `lvs ^--noheadings -o lv_attr .*$` - List logical volumes (with noheadings flag)
+- `lvs ^.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - List lxspawn logical volumes
+- `lvcreate ^--name lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* --virtualsize [0-9]+[gG] -T .*/lxspawn-pool$` - Create thin volumes
+- `lvremove ^-f .*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Remove logical volumes
+- `mkfs.ext4 ^-q /dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Format volumes
+- `mount ^/dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Mount volumes
+- `umount ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$` - Unmount volumes
 
 Note: LVM snapshot operations (`lvcreate --snapshot`, `lvconvert --merge`) and ZFS operations are not included in sudoers rules since these backends are disabled pending testing infrastructure.
 
-Each rule is scoped to specific paths and arguments with pattern matching, preventing privilege escalation while allowing necessary operations. Argument patterns use regex-like wildcards (e.g., `[0-9]*` for numeric values only).
+**Security features:**
+- All rules use POSIX extended regular expressions (sudo 1.9.10+) with `^...$` anchoring
+- Machine names validated by regex pattern `[a-zA-Z0-9][a-zA-Z0-9_-]*` (same as Go validation)
+- No trailing wildcards - exact flag sets required
+- Sudoers file validated with `visudo -cf` before installation
+- Prevents multi-argument injection (e.g., `rm -rf /var/lib/machines/x /etc/foo` is rejected)
+- Prevents path traversal (e.g., `/var/lib/machines/../../etc` is rejected)
 
 Commands that require group membership:
 - `create`, `launch`, `start`, `stop`, `delete`
@@ -719,7 +766,7 @@ The selected backend is logged at startup: `Using storage backend: <type>`
 
 Intermittent "Failed to get shell PTY: Protocol error" or "There is no system bus in container" when using `lxspawn shell` or post-boot provisioning.
 
-**Fixed:** Post-boot provisioning, readiness probes, and `lxspawn exec` now use `nsenter` for non-interactive execution, which avoids PTY allocation issues entirely. Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
+**Fixed:** Post-boot provisioning, readiness probes, and `lxspawn exec` now use `systemd-run -M` for non-interactive execution, which avoids PTY allocation issues entirely and provides better security (machine name validation instead of arbitrary PID access). Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
 
 ### Macvlan Host Visibility
 
@@ -781,6 +828,21 @@ Host cannot ping macvlan containers (expected limitation of macvlan). Container 
 - [x] Download timeout (30 minutes)
 - [x] Secure cache directory permissions (0700)
 - [x] Resource leak fixes (defer mgr.Close())
+
+**Phase 4.18 (V2) - Template Security & CLI Gaps - Complete:**
+- [x] Boot script deduplication (service masking moved to image cleanup)
+- [x] DEBIAN_FRONTEND=noninteractive for all provision scripts
+- [x] Template version pinning (AdGuard, Pi-hole, Nextcloud)
+- [x] Template secret handling (placeholder passwords, guard clauses)
+- [x] Nextcloud data volume fix (--data-dir, IF NOT EXISTS)
+- [x] Docker survives restart (systemctl enable instead of background process)
+- [x] Samba security (auth required, read-only default)
+- [x] `lxspawn restart` command
+- [x] `lxspawn stop --force` command
+- [x] `lxspawn autostart` command
+- [x] `lxspawn version` command
+- [x] `lxspawn doctor` command
+- [x] `lxspawn apply` command (declarative config apply)
 
 **Phase 5 (V2+) - Cockpit Web UI - IN PROGRESS:**
 - [ ] Cockpit web UI plugin (dashboard, details page, create wizard)
