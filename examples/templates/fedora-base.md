@@ -4,10 +4,10 @@
 Minimal Fedora base system with common utilities. Use as a starting point for custom workloads.
 
 ## Features
-- Fedora 40
-- Host networking (simple, works rootless)
+- Fedora 44
+- Host networking (no isolation, shares host ports)
 - Common utilities pre-installed (curl, wget, vim, htop, net-tools)
-- Masked unnecessary services for faster boot
+- Configurable DNS servers via params
 
 ## Usage
 ```bash

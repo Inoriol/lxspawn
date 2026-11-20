@@ -6,6 +6,50 @@ Remaining tasks for lxspawn, organized by priority.
 
 ## Current Status
 
+**Phase 4.19 (V2) - Template Leftovers - COMPLETE ✅**
+
+**Goal:** Address remaining template issues (T2, T5-T7, T13-T22) from SUGGESTIONS.md template review.
+
+**Status:** All 16 items completed.
+
+**Completed:**
+- ✅ **T2: Nextcloud trusted_domains** - Added `trusted_domain` param, set via `occ config:system:set` after install for LAN access.
+- ✅ **T5: AdGuard probe fix** - Pre-seeded `AdGuardHome.yaml` config to skip setup wizard. DNS works immediately after launch. Added `admin_pass` param.
+- ✅ **T6: Pi-hole interface detection** - Moved `setupVars.conf` to system mode, detect actual interface at provision time (`ip -o link show | grep -E 'eth|mv-'`).
+- ✅ **T7: Pi-hole v5/v6 comment** - Added comment noting v5 uses setupVars.conf, v6 migration is future work.
+- ✅ **T13: Samba probe** - Verified probe uses bash built-in `/dev/tcp`, works without smbclient. No change needed.
+- ✅ **T14: Samba CAP_DAC_OVERRIDE** - Removed redundant capability (already in nspawn default set).
+- ✅ **T15: Jellyfin/Plex GPU check** - Added `vainfo` check after driver install. Logs whether GPU acceleration is available.
+- ✅ **T16: Jellyfin arch fix** - Replaced hard-coded `arch=amd64` with `arch=$(dpkg --print-architecture)` for ARM support.
+- ✅ **T17: Jellyfin/Plex paths** - Changed host paths from `/var/lib/jellyfin|plex` to `/var/lib/lxspawn-data/jellyfin|plex` to avoid collision with host installs.
+- ✅ **T18: Jellyfin/Plex ownership** - Added `chown` in pre_start hook for correct UID (121 for Jellyfin, 123 for Plex).
+- ✅ **T19: Jellyfin/Plex cleanup** - Removed `software-properties-common`, added comments about rocm not in bookworm.
+- ✅ **T20: Base template comments** - Added `# Host networking: no isolation, container shares host ports` comment.
+- ✅ **T21: Fedora DNS params** - Made DNS servers configurable via params (`dns1`, `dns2`, `dns3`). Removed non-working boot mode block.
+- ✅ **T22: Base template cleanup** - Ubuntu: merged apt-get into single command. Fedora: added upgrade guard (`/etc/lxspawn-upgraded`).
+
+**Files modified:**
+- `examples/templates/nextcloud.yaml` - Added trusted_domain param, occ config:system:set
+- `examples/templates/adguard.yaml` - Added admin_pass param, pre-seeded AdGuardHome.yaml
+- `examples/templates/pihole.yaml` - Moved setupVars.conf to system mode, detect interface
+- `examples/templates/jellyfin.yaml` - arch=$(dpkg), lxspawn-data paths, vainfo check, chown
+- `examples/templates/plex.yaml` - lxspawn-data paths, vainfo check, chown
+- `examples/templates/samba.yaml` - Removed CAP_DAC_OVERRIDE
+- `examples/templates/debian-base.yaml` - Added host network comment
+- `examples/templates/ubuntu-base.yaml` - Merged apt-get, added host network comment
+- `examples/templates/fedora-base.yaml` - DNS params, removed boot mode, upgrade guard
+- `examples/templates/nextcloud.md` - Updated docs for trusted_domain
+- `examples/templates/adguard.md` - Updated docs for pre-seeded config
+- `examples/templates/jellyfin.md` - Updated paths, removed br0 requirement
+- `examples/templates/plex.md` - Updated paths, removed br0 requirement
+- `examples/templates/fedora-base.md` - Updated for DNS params
+
+**Live testing on Bazzite (192.168.0.200):**
+- ✅ debian-base: Launch, provision, delete works
+- ✅ fedora-base: Launch with DNS params, upgrade guard works
+
+---
+
 **Phase 4.18 (V2) - Template Security & CLI Gaps - COMPLETE ✅**
 
 **Goal:** Address template security issues (X2-X6, X3, X4, T1, T8, T11) and CLI gaps (C1, C8, C11) from SUGGESTIONS.md.

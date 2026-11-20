@@ -4,7 +4,6 @@
 Plex media server with GPU pass-through support for hardware transcoding. Uses bridge networking for LAN access.
 
 ## Requirements
-- Bridge interface `br0` must exist on the host
 - Media directory at `/mnt/media` (adjust in YAML if different)
 - User must be in `lxspawn` group
 
@@ -44,11 +43,11 @@ lxspawn launch examples/templates/plex.yaml
 - [ ] Logs visible via `journalctl -M plex`
 
 ## Configuration
-- **Network:** bridge (for LAN access)
+- **Network:** adaptive (bridge if available, else macvlan)
 - **Memory:** 4G (adjust based on library size)
 - **Volumes:** 
   - `/mnt/media` → `/media` (read-only)
-  - `/var/lib/plex` → `/var/lib/plex` (metadata)
+  - `/var/lib/lxspawn-data/plex` → `/var/lib/plex` (metadata)
 
 ## GPU Troubleshooting
 Check if GPU is visible:

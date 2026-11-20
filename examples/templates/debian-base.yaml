@@ -6,7 +6,7 @@ resources:
   memory: 512M
 
 network:
-  mode: host
+  mode: host  # Host networking: no isolation, container shares host ports
 
 provision:
   - mode: system

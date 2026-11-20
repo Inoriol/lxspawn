@@ -13,7 +13,7 @@ volumes:
   - host: /mnt/media  # Create this directory on host or change path
     mount: /media
     readonly: true
-  - host: /var/lib/jellyfin  # Create this directory on host or change path
+  - host: /var/lib/lxspawn-data/jellyfin  # lxspawn-specific path (avoids collision with host installs)
     mount: /var/lib/jellyfin
 
 security:
@@ -28,9 +28,14 @@ hooks:
   pre_start: |
     #!/bin/bash
     set -euo pipefail
-    # Create media directory if it doesn't exist
-    mkdir -p /mnt/media
-    mkdir -p /var/lib/jellyfin
+    # Fail if media directory doesn't exist (prevents empty library)
+    if [ ! -d /mnt/media ]; then
+      echo "ERROR: Media directory /mnt/media does not exist. Create it or update volumes in YAML."
+      exit 1
+    fi
+    mkdir -p /var/lib/lxspawn-data/jellyfin
+    # Ensure correct ownership for jellyfin user (UID 121 on Debian)
+    chown -R 121:121 /var/lib/lxspawn-data/jellyfin 2>/dev/null || true
 
 provision:
   - mode: system
@@ -38,22 +43,30 @@ provision:
       #!/bin/bash
       set -eux -o pipefail
       apt-get update
-      apt-get install -y curl gnupg software-properties-common vainfo
+      apt-get install -y curl gnupg vainfo
       
       # Install GPU drivers (install both Intel and AMD for compatibility)
-      # Intel iGPU/dGPU: intel-media-va-driver is in Debian repos
+      # Intel iGPU/dGPU:
       apt-get install -y intel-media-va-driver || true
-      # intel-compute-runtime not in Debian bookworm, try to install but don't fail
-      apt-get install -y intel-compute-runtime || echo "intel-compute-runtime not available, using software decoding"
+      # intel-compute-runtime not in Debian bookworm repos; available via Intel's repo if needed
+      apt-get install -y intel-compute-runtime || true
       # AMD iGPU/dGPU:
       apt-get install -y mesa-va-drivers || true
+      # rocm-opencl-runtime is not in Debian bookworm; available via AMD's repo on newer releases
       apt-get install -y rocm-opencl-runtime || true
       # NVIDIA: requires proprietary driver matching host version exactly
       # apt-get install -y nvidia-driver-XXX
       
+      # Check GPU acceleration
+      if vainfo 2>/dev/null | grep -q "VAProfile"; then
+        echo "GPU hardware acceleration: available"
+      else
+        echo "WARNING: GPU hardware acceleration not available, using software decoding"
+      fi
+      
       # Add Jellyfin repository
       curl -fsSL https://repo.jellyfin.org/jellyfin.gpg | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/jellyfin.gpg
-      echo "deb [signed-by=/usr/share/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list
+      echo "deb [signed-by=/usr/share/keyrings/jellyfin.gpg arch=$(dpkg --print-architecture)] https://repo.jellyfin.org/debian bookworm main" > /etc/apt/sources.list.d/jellyfin.list
       
       apt-get update
       apt-get install -y jellyfin

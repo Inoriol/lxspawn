@@ -18,7 +18,7 @@ param:
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
   web_password: "CHANGE_ME"       # Required: change before launch
-  version: "v5.18.3"              # Pi-hole version (pin for reproducibility)
+  version: "v5.18.3"              # Pi-hole v5 (uses setupVars.conf); v6 uses pihole.toml (not yet supported)
 
 provision:
   - mode: data
@@ -34,19 +34,6 @@ provision:
       DNS={{.Param.dns1}}
       DNS={{.Param.dns2}}
 
-  - mode: data
-    path: /etc/pihole/setupVars.conf
-    content: |
-      # Pi-hole will bind to the first available interface
-      # The actual interface name is determined by systemd-networkd
-      PIHOLE_INTERFACE=eth0
-      IPV4_ADDRESS={{.Param.pihole_ip}}
-      PIHOLE_DNS_1={{.Param.dns1}}
-      PIHOLE_DNS_2={{.Param.dns2}}
-      WEBPASSWORD={{.Param.web_password}}
-      INSTALL_WEB_INTERFACE=true
-      LIGHTTPD_ENABLED=true
-
   - mode: system
     script: |
       #!/bin/bash
@@ -59,6 +46,26 @@ provision:
 
       apt-get update
       apt-get install -y curl iproute2 dnsutils
+      
+      # Detect actual network interface (works with adaptive mode)
+      INTERFACE=$(ip -o link show | grep -E 'eth|mv-' | head -1 | awk '{print $2}' | tr -d ':')
+      if [ -z "$INTERFACE" ]; then
+        echo "WARNING: Could not detect network interface, using eth0"
+        INTERFACE="eth0"
+      fi
+      
+      # Write Pi-hole config with detected interface
+      # Note: Pi-hole v5 uses setupVars.conf; v6 uses pihole.toml (future migration)
+      mkdir -p /etc/pihole
+      cat > /etc/pihole/setupVars.conf <<EOF
+      PIHOLE_INTERFACE=${INTERFACE}
+      IPV4_ADDRESS={{.Param.pihole_ip}}
+      PIHOLE_DNS_1={{.Param.dns1}}
+      PIHOLE_DNS_2={{.Param.dns2}}
+      WEBPASSWORD={{.Param.web_password}}
+      INSTALL_WEB_INTERFACE=true
+      LIGHTTPD_ENABLED=true
+      EOF
       
       # Install Pi-hole unattended (pinned version)
       export PIHOLE_BRANCH={{.Param.version}}

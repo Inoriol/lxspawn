@@ -6,20 +6,14 @@ resources:
   memory: 512M
 
 network:
-  mode: host
+  mode: host  # Host networking: no isolation, container shares host ports
 
 provision:
   - mode: system
     script: |
       #!/bin/bash
       set -eux -o pipefail
-      # Install ca-certificates first to fix GPG key warnings
+      # Update system and install utilities in one go
       apt-get update
-      apt-get install -y ca-certificates
-      
-      # Update system
-      apt-get update
+      apt-get install -y ca-certificates curl wget vim htop net-tools
       apt-get upgrade -y
-      
-      # Install common utilities
-      apt-get install -y curl wget vim htop net-tools

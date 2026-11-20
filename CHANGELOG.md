@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ParseString()` function** - Parse YAML config from string instead of file, used by `apply` command.
 - **Service masking in image cleanup (X2)** - `systemd-udevd`, `systemd-udevd-control.socket`, `systemd-udevd-kernel.socket`, and `systemd-modules-load.service` are now automatically masked during image extraction via symlinks to `/dev/null`. Eliminates need for duplicated boot scripts in templates.
 - **Sudoers rules for systemctl enable/disable** - Added rules for `systemctl enable/disable systemd-nspawn@<name>.service` to support `autostart` command.
+- **Nextcloud `trusted_domain` param (T2)** - New parameter for LAN access configuration via `occ config:system:set trusted_domains`.
+- **AdGuard Home `admin_pass` param (T5)** - New required parameter for web admin password.
+- **Fedora-base DNS params (T21)** - New `dns1`, `dns2`, `dns3` parameters for configurable DNS servers.
 
 ### Changed
 
@@ -36,11 +39,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **T8 (Docker):** Replaced `dockerd &` background process with `systemctl enable docker.service`, removed `chmod 666` on socket, added `docker` group creation, probe uses `systemctl is-active`
   - **T11 (Samba):** Secure defaults (`guest ok = no`, `read only = yes`, `map to guest = Never`), added `valid users` and `force user` params, probe uses port 445 check instead of smbclient
 - **Boot script deduplication (X2)** - Removed identical `boot:` blocks from all 10 templates (debian-base, ubuntu-base, fedora-base, docker-host, nextcloud, samba, adguard, pihole, jellyfin, plex). Fedora-base retains only `systemd-resolved` masking and resolv.conf workaround.
+- **Template leftovers (Phase 4.19):**
+  - **T5 (AdGuard):** Pre-seeded `AdGuardHome.yaml` config to skip setup wizard, DNS works immediately after launch
+  - **T6 (Pi-hole):** Moved `setupVars.conf` to system mode, detect actual interface at provision time
+  - **T14 (Samba):** Removed redundant `CAP_DAC_OVERRIDE` (already in nspawn default set)
+  - **T15 (Jellyfin/Plex):** Added `vainfo` check after driver install, logs whether GPU acceleration is available
+  - **T16 (Jellyfin):** Replaced hard-coded `arch=amd64` with `arch=$(dpkg --print-architecture)` for ARM support
+  - **T17 (Jellyfin/Plex):** Changed host paths from `/var/lib/jellyfin|plex` to `/var/lib/lxspawn-data/jellyfin|plex` to avoid collision with host installs
+  - **T18 (Jellyfin/Plex):** Added `chown` in pre_start hook for correct UID (121 for Jellyfin, 123 for Plex)
+  - **T19 (Jellyfin/Plex):** Removed `software-properties-common`, added comments about rocm not in bookworm
+  - **T20 (Base templates):** Added `# Host networking: no isolation, container shares host ports` comment
+  - **T21 (Fedora):** Made DNS servers configurable via params, removed non-working boot mode block
+  - **T22 (Base templates):** Ubuntu merged apt-get into single command, Fedora added upgrade guard (`/etc/lxspawn-upgraded`)
 
 ### Fixed
 
 - **BuildEnvExport now always returns non-empty string** - Previously returned empty string when no params, now always includes `DEBIAN_FRONTEND=noninteractive`. Updated tests accordingly.
 - **Template validation** - All templates now pass `lxspawn validate` after boot block removal and version pinning.
+- **T2 (Nextcloud):** LAN access now works via `trusted_domain` param (was rejected with "Access through untrusted domain")
+- **T5 (AdGuard):** Probe no longer hangs waiting for wizard completion (pre-seeded config)
+- **T6 (Pi-hole):** Interface detection now works with adaptive/macvlan networking (was hard-coded to eth0)
+- **T16 (Jellyfin):** ARM architecture now supported (was hard-coded to amd64)
+- **T17 (Jellyfin/Plex):** Host paths no longer collide with host installations
+- **T21 (Fedora):** DNS servers now configurable, boot mode block removed (didn't work due to systemd-resolved timing)
+- **T22 (Ubuntu):** Removed duplicate `apt-get update` call
+- **T22 (Fedora):** System upgrade only runs on first provision (idempotent)
 
 ### Security
 

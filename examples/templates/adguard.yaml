@@ -18,6 +18,8 @@ param:
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
   version: "v0.107.55"            # AdGuard Home version (pin for reproducibility)
+  admin_user: "admin"
+  admin_pass: "CHANGE_ME"         # Required: change before launch
 
 provision:
   - mode: data
@@ -37,11 +39,41 @@ provision:
     script: |
       #!/bin/bash
       set -eux -o pipefail
+
+      if [ "{{.Param.admin_pass}}" = "CHANGE_ME" ]; then
+        echo "ERROR: Set admin_pass param before launching"
+        exit 1
+      fi
+
       apt-get update
       apt-get install -y curl iproute2 dnsutils
       
       # Install AdGuard Home (pinned version)
       curl -s -S -L https://raw.githubusercontent.com/AdguardTeam/AdGuardHome/{{.Param.version}}/scripts/install.sh | sh -s -- -v
+      
+      # Pre-seed config to skip setup wizard (allows DNS to work immediately)
+      # Generate password hash using AdGuard's built-in utility
+      PASS_HASH=$(cd /opt/AdGuardHome && ./AdGuardHome -m {{.Param.admin_pass}} 2>/dev/null || echo "")
+      if [ -z "$PASS_HASH" ]; then
+        # Fallback: use plaintext (AdGuard will hash on first login)
+        PASS_HASH="{{.Param.admin_pass}}"
+      fi
+      
+      cat > /opt/AdGuardHome/AdGuardHome.yaml <<EOF
+      bind_host: 0.0.0.0
+      bind_port: 80
+      users:
+        - name: {{.Param.admin_user}}
+          password: '$PASS_HASH'
+      dns:
+        bind_hosts:
+          - 0.0.0.0
+        port: 53
+        upstream_dns:
+          - {{.Param.dns1}}
+          - {{.Param.dns2}}
+      EOF
+      
       systemctl enable --now AdGuardHome
 
 probes:
