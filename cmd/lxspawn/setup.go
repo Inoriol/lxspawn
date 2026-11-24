@@ -157,7 +157,11 @@ func ensureDir(path string) error {
 	}
 
 	cmd = exec.Command("chmod", "775", path)
-	return cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("chmod failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	return nil
 }
 
 func installPolkitRule() error {
