@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/Inoriol/lxspawn/internal/config"
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
@@ -29,11 +30,12 @@ var editResourcesCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", args[0])
 		}
 
-		if info.SourcePath == "" {
-			return fmt.Errorf("machine '%s' has no source YAML path", args[0])
+		configPath := info.ConfigPath
+		if configPath == "" || !deploy.FileExists(configPath) {
+			return fmt.Errorf("machine '%s' has no canonical config", args[0])
 		}
 
-		data, err := os.ReadFile(info.SourcePath)
+		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return fmt.Errorf("failed to read YAML: %w", err)
 		}
@@ -99,11 +101,7 @@ var editResourcesCmd = &cobra.Command{
 			return fmt.Errorf("failed to marshal YAML: %w", err)
 		}
 
-		if err := os.WriteFile(info.SourcePath, out, 0644); err != nil {
-			return fmt.Errorf("failed to write YAML: %w", err)
-		}
-
-		cfg, err := config.Parse(info.SourcePath)
+		cfg, err := config.ParseString(string(out))
 		if err != nil {
 			return fmt.Errorf("failed to parse updated config: %w", err)
 		}
@@ -112,7 +110,11 @@ var editResourcesCmd = &cobra.Command{
 			return fmt.Errorf("invalid config: %w", err)
 		}
 
-		if err := mgr.Apply(cfg, info.SourcePath); err != nil {
+		if err := os.WriteFile(configPath, out, 0600); err != nil {
+			return fmt.Errorf("failed to write YAML: %w", err)
+		}
+
+		if err := mgr.Apply(cfg, configPath); err != nil {
 			return fmt.Errorf("failed to apply changes: %w", err)
 		}
 

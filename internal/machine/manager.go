@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/compiler"
@@ -184,8 +185,10 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 	}
 
 	canonicalConfigPath := deploy.CanonicalConfigPath(cfg.Name)
-	if err := copyFile(sourcePath, canonicalConfigPath); err != nil {
-		logger.Warn(fmt.Sprintf("failed to copy config to canonical path: %v", err))
+	if err := writeCanonicalConfig(canonicalConfigPath, cfg); err != nil {
+		cleanupCreatedFiles(filesWritten, compiled)
+		m.storage.DeleteMachine(cfg.Name)
+		return nil, fmt.Errorf("failed to write canonical config: %w", err)
 	}
 
 	machineInfo := deploy.MachineInfo{
@@ -455,16 +458,9 @@ func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
 		Files:      info.Files,
 	}
 
-	configPath := info.ConfigPath
-	if configPath == "" || !deploy.FileExists(configPath) {
-		configPath = info.SourcePath
-	}
-
-	if configPath != "" {
-		if cfg, err := config.Parse(configPath); err == nil {
-			status.Ephemeral = cfg.Advanced.Ephemeral
-			status.ReadOnly = cfg.Advanced.ReadOnly
-		}
+	if cfg, err := LoadMachineConfig(info); err == nil {
+		status.Ephemeral = cfg.Advanced.Ephemeral
+		status.ReadOnly = cfg.Advanced.ReadOnly
 	}
 
 	state, addrs, err := m.systemd.GetMachineState(name)
@@ -701,8 +697,8 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 	}
 
 	canonicalConfigPath := deploy.CanonicalConfigPath(cfg.Name)
-	if err := copyFile(sourcePath, canonicalConfigPath); err != nil {
-		logger.Warn(fmt.Sprintf("failed to update canonical config: %v", err))
+	if err := writeCanonicalConfig(canonicalConfigPath, cfg); err != nil {
+		return fmt.Errorf("failed to update canonical config: %w", err)
 	}
 
 	if err := m.systemd.ReloadDaemon(); err != nil {
@@ -727,10 +723,21 @@ func cleanupCreatedFiles(filesWritten []string, compiled *compiler.CompiledFiles
 	deploy.RemoveAll(compiled.NspawnPath)
 }
 
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+func writeCanonicalConfig(path string, cfg *config.Config) error {
+	data, err := config.ToYAML(cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to serialize config: %w", err)
 	}
-	return deploy.WriteFileAtomic(dst, data, 0644)
+	return deploy.WriteFileAtomic(path, data, 0600)
+}
+
+func LoadMachineConfig(info deploy.MachineInfo) (*config.Config, error) {
+	configPath := info.ConfigPath
+	if configPath != "" && deploy.FileExists(configPath) {
+		return config.Parse(configPath)
+	}
+	if info.SourcePath != "" && info.SourcePath != "stdin" && !strings.HasPrefix(info.SourcePath, "template:") {
+		return config.Parse(info.SourcePath)
+	}
+	return nil, fmt.Errorf("no config available for machine %q", info.Name)
 }

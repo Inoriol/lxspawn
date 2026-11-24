@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dependency injection for `machine.Manager`** - Added `NewManagerWithDeps(state, systemd, storage)` constructor accepting `deploy.StateStore`, `deploy.SystemdClient`, and `storage.StorageBackend` interfaces. Enables unit and integration testing without real systemd, state files, or storage backends.
 - **Fake implementations for testing** - New `internal/testutil` package with `FakeSystemdClient` and `FakeStorageBackend`. Both record method calls for assertion and support custom function hooks for error injection.
 - **Integration tests for machine lifecycle** - 20+ tests in `manager_integration_test.go` covering Start, Stop, Restart, Delete, GetStatus, ListMachines, ListMachinesWithState, Close, and error paths. All tests use fakes, no root or systemd required.
+- **Template validation tests (T3)** - New `templates/templates_test.go` with tests that parse, validate, and compile all embedded templates. Catches regressions in template configuration and defaults.
+- **`config.ToYAML()` function** - Serialize a `*config.Config` back to YAML. Used to persist the effective configuration (after `--name` and `--param` overrides) to the canonical config path.
+- **`machine.LoadMachineConfig()` helper** - Load machine config preferring `ConfigPath` over `SourcePath`. Used by all commands that need to read machine configuration.
 
 ### Changed
 
@@ -20,10 +23,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Manager` fields use interface types** - `state` changed from `*deploy.StateManager` to `deploy.StateStore`, `systemd` changed from `*deploy.SystemdManager` to `deploy.SystemdClient`. `storage` was already an interface.
 - **`SystemdClient` interface expanded** - Added `ResetFailedUnit` and `GetMachineLeader` methods to match what `Manager` actually calls.
 - **`parse()` refactored to call `parseString()`** - Eliminated duplicated default-setting logic. Both `Parse()` and `ParseString()` now share the same code path.
+- **Edit commands use canonical config** - All edit commands (`edit-resources`, `edit-network`, `add-volume`, `edit-volume`, `remove-volume`, `edit`) now read from and write to the canonical config path (`/var/lib/lxspawn/<name>/config.yaml`) instead of the original source path. This ensures template and stdin-created machines can be edited.
+- **Canonical config written with 0600 permissions** - Canonical config files are now written with 0600 permissions instead of 0644, protecting sensitive data like `param:` secrets.
 
 ### Fixed
 
 - **`ParseString()` missing defaults** - `ParseString()` (used by templates and stdin) was missing defaults for `security.seccomp` (`true`), `resources.io_weight` (`100`), and `storage.size` (`"10G"`). Templates loaded via `--template` or stdin now get the same defaults as file-based configs.
+- **Template and stdin machines have no usable config (C1)** - Machines created with `--template` or `-` (stdin) now have a proper canonical config. The effective `*config.Config` (after `--name` and `--param` overrides) is serialized and written to `CanonicalConfigPath`. Previously, `copyFile(sourcePath, canonical)` would fail with "template:nextcloud: no such file" and only log a warning.
+- **`--param` and `--name` overrides are lost (C2)** - Parameter and name overrides are now preserved in the canonical config. Previously, the canonical copy was the raw YAML, so a later `provision` would re-render with template defaults.
+- **Rollback sudoers rules mismatch (D1)** - Added sudoers rules for rollback paths (`.rollback-temp`, `.rollback-old`) and snapshot show commands. Previously, non-root rollback failed at the first sudo call because the rules didn't match the actual paths.
+- **Rollback failure recovery never runs (D2)** - Recovery commands are now actually executed and their errors checked. If the second `mv` fails, the old rootfs is recovered to its original location. Previously, recovery commands were built but never called, leading to data loss.
+- **Rollback auto-deletes leftovers (D2)** - Rollback now refuses to proceed if `.rollback-temp` or `.rollback-old` exist, asking the user to inspect and remove them manually. Previously, it would auto-delete these directories, potentially destroying data from a failed previous rollback.
+- **Rollback flattens all ownership (D3)** - Removed the `chown -R 0:0` after rollback. With `PrivateUsers=identity`, container uids are real host uids, so chown would break services like MariaDB/Apache that expect specific ownership.
+- **GPU device path injection (V1)** - `gpu.devices` now validated with strict regex `^/dev/[A-Za-z0-9._/-]+$` and rejects colons. Previously, newlines in device paths could inject INI lines into `.nspawn` files.
+- **tmpfs options injection (V2)** - tmpfs `options` now validated against `^[A-Za-z0-9=,._-]*$`. Colons are rejected in volume host and mount paths. Previously, crafted YAML could inject INI lines.
+- **Sensitive path check bypassed (V3)** - Expanded sensitive paths list to include `/bin`, `/boot`, `/etc`, `/lib`, `/lib64`, `/opt`, `/root`, `/sbin`, `/srv`, `/usr`, `/var/lib/lxspawn`, `/var/lib/machines`. Previously, paths like `/etc`, `/root`, `/var/lib/machines` were not blocked.
 
 ## [0.1.3] - 2026-11-21
 

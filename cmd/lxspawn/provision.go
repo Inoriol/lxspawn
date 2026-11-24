@@ -5,7 +5,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
 )
@@ -27,20 +26,12 @@ var provisionCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", name)
 		}
 
-		if info.SourcePath == "" {
-			return fmt.Errorf("machine '%s' has no source path recorded", name)
-		}
-
-		cfg, err := config.Parse(info.SourcePath)
+		cfg, err := machine.LoadMachineConfig(info)
 		if err != nil {
-			return fmt.Errorf("failed to parse source config: %w", err)
+			return fmt.Errorf("failed to load config: %w", err)
 		}
 
-		if err := config.Validate(cfg); err != nil {
-			return fmt.Errorf("invalid config: %w", err)
-		}
-
-		if err := mgr.Provision(cfg, info.SourcePath); err != nil {
+		if err := mgr.Provision(cfg, info.ConfigPath); err != nil {
 			return err
 		}
 

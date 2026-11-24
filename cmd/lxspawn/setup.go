@@ -207,6 +207,9 @@ func installSudoersRules() error {
 	}
 	if bin := findBinary("mv"); bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-old$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-temp /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-old /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 	}
 	if bin := findBinary("mkdir"); bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
@@ -227,13 +230,16 @@ func installSudoersRules() error {
 		rules = append(rules, "# btrfs operations")
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume create /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-temp$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-old$", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.snapshots$", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*\\.rollback-temp$", bin))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^filesystem usage -b /var/lib/machines$", bin))
 	}
 

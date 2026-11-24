@@ -622,7 +622,7 @@ func TestValidateGPUDevicePathInvalid(t *testing.T) {
 		},
 	}
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "must start with /dev/") {
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
 		t.Errorf("expected GPU device path error, got: %v", err)
 	}
 }
@@ -1404,5 +1404,35 @@ storage:
 	}
 	if cfg.Storage.Size != "20G" {
 		t.Errorf("Storage.Size = %q, want %q", cfg.Storage.Size, "20G")
+	}
+}
+
+func TestParseStringSetsAllDefaults(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Network.Mode != NetworkHost {
+		t.Errorf("network.mode = %q, want %q", cfg.Network.Mode, NetworkHost)
+	}
+	if cfg.Advanced.Hostname != "testbox" {
+		t.Errorf("hostname = %q, want %q", cfg.Advanced.Hostname, "testbox")
+	}
+	if cfg.Security.NoNewPrivileges == nil || !*cfg.Security.NoNewPrivileges {
+		t.Error("no_new_privileges default should be true")
+	}
+	if cfg.Security.Seccomp == nil || !*cfg.Security.Seccomp {
+		t.Error("seccomp default should be true")
+	}
+	if cfg.Resources.IOWeight != 100 {
+		t.Errorf("io_weight = %d, want 100", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "10G" {
+		t.Errorf("storage.size = %q, want %q", cfg.Storage.Size, "10G")
 	}
 }

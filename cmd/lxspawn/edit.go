@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Inoriol/lxspawn/internal/config"
+	"github.com/Inoriol/lxspawn/internal/deploy"
 	"github.com/Inoriol/lxspawn/internal/logger"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
@@ -30,8 +31,9 @@ var editCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", name)
 		}
 
-		if info.SourcePath == "" {
-			return fmt.Errorf("machine '%s' has no source path recorded", name)
+		configPath := info.ConfigPath
+		if configPath == "" || !deploy.FileExists(configPath) {
+			return fmt.Errorf("machine '%s' has no canonical config", name)
 		}
 
 		editor := os.Getenv("EDITOR")
@@ -39,7 +41,7 @@ var editCmd = &cobra.Command{
 			editor = "vi"
 		}
 
-		editorCmd := exec.Command(editor, info.SourcePath)
+		editorCmd := exec.Command(editor, configPath)
 		editorCmd.Stdin = os.Stdin
 		editorCmd.Stdout = os.Stdout
 		editorCmd.Stderr = os.Stderr
@@ -48,7 +50,7 @@ var editCmd = &cobra.Command{
 			return fmt.Errorf("editor failed: %w", err)
 		}
 
-		cfg, err := config.Parse(info.SourcePath)
+		cfg, err := config.Parse(configPath)
 		if err != nil {
 			return fmt.Errorf("failed to parse updated config: %w", err)
 		}
@@ -74,7 +76,13 @@ var editCmd = &cobra.Command{
 			}
 		}
 
-		if err := mgr.Apply(cfg, info.SourcePath); err != nil {
+		if err := mgr.Apply(cfg, configPath); err != nil {
+			if wasRunning {
+				logger.Info("Restarting machine after failed apply...")
+				if startErr := mgr.Start(name); startErr != nil {
+					logger.Warn(fmt.Sprintf("failed to restart machine: %v", startErr))
+				}
+			}
 			return fmt.Errorf("failed to apply config changes: %w", err)
 		}
 

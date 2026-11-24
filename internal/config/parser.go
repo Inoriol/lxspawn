@@ -11,6 +11,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func ToYAML(cfg *Config) ([]byte, error) {
+	return yaml.Marshal(cfg)
+}
+
 var validMachineNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`)
 
 func ValidateMachineName(name string) error {
@@ -363,17 +367,30 @@ func validatePort(port string) error {
 }
 
 func validateVolumes(cfg *Config) error {
-	// Sensitive paths that should not be exposed to containers
 	sensitivePaths := []string{
+		"/bin",
+		"/boot",
+		"/dev",
+		"/etc",
 		"/etc/shadow",
 		"/etc/gshadow",
 		"/etc/master.passwd",
+		"/lib",
+		"/lib64",
+		"/opt",
 		"/proc",
-		"/sys",
-		"/dev",
+		"/root",
 		"/run",
+		"/sbin",
+		"/srv",
+		"/sys",
+		"/usr",
+		"/var/lib/lxspawn",
+		"/var/lib/machines",
 		"/var/run",
 	}
+
+	validTmpfsOptionsRegex := regexp.MustCompile(`^[A-Za-z0-9=,._-]*$`)
 
 	for i, v := range cfg.Volumes {
 		if v.Type == "tmpfs" {
@@ -382,6 +399,9 @@ func validateVolumes(cfg *Config) error {
 			}
 			if strings.ContainsAny(v.Mount, "\n\r") {
 				return fmt.Errorf("volumes[%d]: mount point cannot contain newlines", i)
+			}
+			if v.Options != "" && !validTmpfsOptionsRegex.MatchString(v.Options) {
+				return fmt.Errorf("volumes[%d]: tmpfs options %q contains invalid characters", i, v.Options)
 			}
 			continue
 		}
@@ -397,6 +417,12 @@ func validateVolumes(cfg *Config) error {
 		if strings.ContainsAny(v.Mount, "\n\r") {
 			return fmt.Errorf("volumes[%d]: mount point cannot contain newlines", i)
 		}
+		if strings.Contains(v.Host, ":") {
+			return fmt.Errorf("volumes[%d]: host path cannot contain colons: %s", i, v.Host)
+		}
+		if strings.Contains(v.Mount, ":") {
+			return fmt.Errorf("volumes[%d]: mount path cannot contain colons: %s", i, v.Mount)
+		}
 		if !filepath.IsAbs(v.Host) {
 			return fmt.Errorf("volumes[%d]: host path must be absolute: %s", i, v.Host)
 		}
@@ -404,7 +430,6 @@ func validateVolumes(cfg *Config) error {
 			return fmt.Errorf("volumes[%d]: mount point must be absolute: %s", i, v.Mount)
 		}
 
-		// Check for sensitive paths
 		cleanHost := filepath.Clean(v.Host)
 		for _, sensitive := range sensitivePaths {
 			if cleanHost == sensitive || strings.HasPrefix(cleanHost, sensitive+"/") {
@@ -500,16 +525,17 @@ func validateGPU(cfg *Config) error {
 		return fmt.Errorf("gpu.type must be one of: auto, intel, amd, nvidia, mali, adreno")
 	}
 
+	validDeviceRegex := regexp.MustCompile(`^/dev/[A-Za-z0-9._/-]+$`)
+
 	for i, device := range cfg.GPU.Devices {
 		if device == "" {
 			return fmt.Errorf("gpu.devices[%d]: device path cannot be empty", i)
 		}
-		if !strings.HasPrefix(device, "/dev/") {
-			return fmt.Errorf("gpu.devices[%d]: device path must start with /dev/: %s", i, device)
+		if !validDeviceRegex.MatchString(device) {
+			return fmt.Errorf("gpu.devices[%d]: device path %q contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes allowed)", i, device)
 		}
-		cleanDevice := filepath.Clean(device)
-		if cleanDevice != device {
-			return fmt.Errorf("gpu.devices[%d]: device path must be clean (no '..' or extra slashes): %s", i, device)
+		if strings.Contains(device, ":") {
+			return fmt.Errorf("gpu.devices[%d]: device path cannot contain colons: %s", i, device)
 		}
 		if strings.Contains(device, "..") {
 			return fmt.Errorf("gpu.devices[%d]: device path cannot contain '..': %s", i, device)
