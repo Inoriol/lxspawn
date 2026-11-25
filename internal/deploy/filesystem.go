@@ -17,7 +17,8 @@ const (
 )
 
 func Sudo(args ...string) *exec.Cmd {
-	return exec.Command("sudo", args...)
+	sudoArgs := append([]string{"-n"}, args...)
+	return exec.Command("sudo", sudoArgs...)
 }
 
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {

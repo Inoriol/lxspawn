@@ -38,10 +38,6 @@ func NewExecProvisioner(machineName string) *ExecProvisioner {
 func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext, fileHandler *FileHandler, baseDir string) error {
 	script := prov.Script
 
-	// Security note: Scripts should come from trusted sources only.
-	// File references are validated (HTTPS-only, digest verification).
-	// Scripts execute inside the container as root.
-
 	envExport := buildEnvExport(ctx.Param)
 
 	logger.Info(fmt.Sprintf("Executing %s provision script", prov.Mode))
@@ -57,18 +53,18 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 			if err != nil {
 				return fmt.Errorf("failed to build systemd-run command: %w", err)
 			}
-	case config.ProvisionUser:
-		user := prov.User
-		if user == "" {
-			logger.Warn("user mode has no 'user' field set, defaulting to 'root'. Set the 'user' field to specify a container user.")
-			user = "root"
-		}
-		escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
-		fullScript := fmt.Sprintf("%s\nsu - %s -c '%s'", envExport, user, escapedScript)
-		retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
-		if err != nil {
-			return fmt.Errorf("failed to build systemd-run command: %w", err)
-		}
+		case config.ProvisionUser:
+			user := prov.User
+			if user == "" {
+				logger.Warn("user mode has no 'user' field set, defaulting to 'root'. Set the 'user' field to specify a container user.")
+				user = "root"
+			}
+			escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
+			fullScript := fmt.Sprintf("%s\nsu -p %s -c '%s'", envExport, user, escapedScript)
+			retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
+			if err != nil {
+				return fmt.Errorf("failed to build systemd-run command: %w", err)
+			}
 		default:
 			return fmt.Errorf("unsupported provision mode for exec: %s", prov.Mode)
 		}
@@ -115,11 +111,13 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 }
 
 func (e *ExecProvisioner) buildSystemdRunCommand(user string, script string) (*exec.Cmd, error) {
-	// Set environment variables for D-Bus and systemd
-	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", script)
-	
-	args := []string{"systemd-run", "-M", e.machineName, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
-	return deploy.Sudo(args...), nil
+	envPrefix := "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n"
+	fullScript := envPrefix + script
+
+	args := []string{"systemd-run", "-M", e.machineName, "--pipe", "--wait", "--", "/bin/bash", "-s"}
+	cmd := deploy.Sudo(args...)
+	cmd.Stdin = strings.NewReader(fullScript)
+	return cmd, nil
 }
 
 func buildEnvExport(params map[string]string) string {

@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/compiler"
@@ -60,8 +61,45 @@ func (m *Manager) Close() {
 	}
 }
 
+func (m *Manager) lockMachine(name string) (*os.File, error) {
+	lockDir := filepath.Join(deploy.LxspawnDataDirPath(), "locks")
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create lock directory: %w", err)
+	}
+
+	lockPath := filepath.Join(lockDir, name+".lock")
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open lock file: %w", err)
+	}
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if err == syscall.EWOULDBLOCK {
+			return nil, lxerrors.NewMachineExistsError(fmt.Sprintf("machine '%s' is being modified by another operation", name))
+		}
+		return nil, fmt.Errorf("failed to acquire lock: %w", err)
+	}
+
+	return f, nil
+}
+
+func unlockMachine(f *os.File) {
+	if f == nil {
+		return
+	}
+	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+	f.Close()
+}
+
 func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error) {
 	logger.Action(fmt.Sprintf("Creating machine '%s'", cfg.Name))
+
+	lock, err := m.lockMachine(cfg.Name)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockMachine(lock)
 
 	if _, exists := m.state.GetMachine(cfg.Name); exists {
 		return nil, lxerrors.NewMachineExistsError(cfg.Name)
@@ -279,7 +317,7 @@ func (m *Manager) Start(name string) error {
 	logger.Action(fmt.Sprintf("Starting machine '%s'", name))
 
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	if err := m.systemd.ReloadDaemon(); err != nil {
@@ -358,7 +396,7 @@ func (m *Manager) Restart(name string) error {
 	logger.Action(fmt.Sprintf("Restarting machine '%s'", name))
 
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	if err := m.Stop(name); err != nil {
@@ -378,8 +416,14 @@ func (m *Manager) Restart(name string) error {
 func (m *Manager) Delete(name string) error {
 	logger.Action(fmt.Sprintf("Deleting machine '%s'", name))
 
+	lock, err := m.lockMachine(name)
+	if err != nil {
+		return err
+	}
+	defer unlockMachine(lock)
+
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
@@ -445,7 +489,7 @@ type MachineStatus struct {
 func (m *Manager) GetStatus(name string) (*MachineStatus, error) {
 	info, exists := m.state.GetMachine(name)
 	if !exists {
-		return nil, fmt.Errorf("machine '%s' not found", name)
+		return nil, lxerrors.NewMachineNotFoundError(name)
 	}
 
 	status := &MachineStatus{
@@ -523,7 +567,10 @@ func (m *Manager) WaitForMachine(name string, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		status, err := m.GetStatus(name)
 		if err == nil && status.State == "running" {
-			return nil
+			checkCmd := exec.Command("sudo", "-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/true")
+			if err := checkCmd.Run(); err == nil {
+				return nil
+			}
 		}
 
 		time.Sleep(500 * time.Millisecond)
@@ -623,8 +670,15 @@ func fixRootfsOwnership(rootfsPath string) error {
 func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 	logger.Action(fmt.Sprintf("Applying config changes to machine '%s'", cfg.Name))
 
-	if _, exists := m.state.GetMachine(cfg.Name); !exists {
-		return fmt.Errorf("machine '%s' not found", cfg.Name)
+	lock, err := m.lockMachine(cfg.Name)
+	if err != nil {
+		return err
+	}
+	defer unlockMachine(lock)
+
+	existingInfo, exists := m.state.GetMachine(cfg.Name)
+	if !exists {
+		return lxerrors.NewMachineNotFoundError(cfg.Name)
 	}
 
 	compiled, err := compiler.Compile(cfg)
@@ -646,6 +700,12 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 		}
 		filesWritten = append(filesWritten, compiled.SlicePath)
 		logger.Debug(fmt.Sprintf("Wrote %s", compiled.SlicePath))
+	} else if existingInfo.Files != nil {
+		for _, f := range existingInfo.Files {
+			if strings.HasSuffix(f, ".slice") {
+				deploy.RemoveAll(f)
+			}
+		}
 	}
 
 	if err := deploy.WriteFileAtomic(compiled.DropInPath, []byte(compiled.DropIn), 0644); err != nil {
@@ -677,6 +737,14 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 		}
 		filesWritten = append(filesWritten, compiled.HooksPath)
 		logger.Debug(fmt.Sprintf("Wrote %s", compiled.HooksPath))
+	} else {
+		oldHooksDir := deploy.HooksDir(cfg.Name)
+		if deploy.FileExists(oldHooksDir) {
+			deploy.RemoveAll(oldHooksDir)
+		}
+		if deploy.FileExists(compiled.HooksPath) {
+			deploy.RemoveAll(compiled.HooksPath)
+		}
 	}
 
 	machineInfo := deploy.MachineInfo{
@@ -690,6 +758,7 @@ func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {
 		Memory:     cfg.Resources.Memory,
 		Swap:       cfg.Resources.Swap,
 		Tasks:      cfg.Resources.Tasks,
+		CreatedAt:  existingInfo.CreatedAt,
 	}
 
 	if err := m.state.RegisterMachine(machineInfo); err != nil {

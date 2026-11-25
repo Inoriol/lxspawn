@@ -2,6 +2,8 @@ package image
 
 import (
 	"archive/tar"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,6 +43,15 @@ func unixModeToFileMode(mode int64) os.FileMode {
 
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Scheme == "http" {
+			return fmt.Errorf("refusing to follow redirect to insecure HTTP: %s", req.URL)
+		}
+		if len(via) >= 10 {
+			return fmt.Errorf("too many redirects")
+		}
+		return nil
+	},
 }
 
 func getDownloadTimeout() time.Duration {
@@ -55,6 +66,15 @@ func getDownloadTimeout() time.Duration {
 func newDownloadClient() *http.Client {
 	return &http.Client{
 		Timeout: getDownloadTimeout(),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme == "http" {
+				return fmt.Errorf("refusing to follow redirect to insecure HTTP: %s", req.URL)
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("too many redirects")
+			}
+			return nil
+		},
 	}
 }
 
@@ -95,6 +115,10 @@ func (f *Fetcher) Fetch() error {
 		return fmt.Errorf("failed to download rootfs: %w", err)
 	}
 	defer os.Remove(tmpFile)
+
+	if err := f.verifyDownload(tmpFile, url); err != nil {
+		logger.Warn(fmt.Sprintf("image verification failed: %v", err))
+	}
 
 	logger.Action(fmt.Sprintf("Extracting rootfs to %s", f.TargetDir))
 	
@@ -244,7 +268,63 @@ func (f *Fetcher) download(url string) (string, error) {
 	return tmpFile.Name(), nil
 }
 
-func extractTarXz(tarXzPath, targetDir string) error {
+func (f *Fetcher) verifyDownload(filePath, imageURL string) error {
+	shaURL := imageURL[:strings.LastIndex(imageURL, "/")] + "/SHA256SUMS"
+
+	resp, err := httpClient.Get(shaURL)
+	if err != nil {
+		return fmt.Errorf("failed to download SHA256SUMS: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("SHA256SUMS not available (HTTP %d)", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read SHA256SUMS: %w", err)
+	}
+
+	expectedHash := ""
+	filename := imageURL[strings.LastIndex(imageURL, "/")+1:]
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) == 2 && parts[1] == filename {
+			expectedHash = parts[0]
+			break
+		}
+	}
+
+	if expectedHash == "" {
+		return fmt.Errorf("SHA256SUMS does not contain hash for %s", filename)
+	}
+
+	file, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return err
+	}
+	actualHash := hex.EncodeToString(h.Sum(nil))
+
+	if actualHash != expectedHash {
+		return fmt.Errorf("SHA256 mismatch: expected %s, got %s", expectedHash, actualHash)
+	}
+
+	logger.Info(fmt.Sprintf("SHA256 verified: %s", actualHash))
+	return nil
+}
+
+func extractTarXz(tarXzPath, targetDir string) (err error) {
 	f, err := os.Open(tarXzPath)
 	if err != nil {
 		return err
@@ -265,7 +345,6 @@ func extractTarXz(tarXzPath, targetDir string) error {
 	tarReader := tar.NewReader(limitedReader)
 
 	cleanTargetDir := filepath.Clean(targetDir)
-	symlinks := make(map[string]string)
 	var totalDecompressed int64
 
 	for {
@@ -294,17 +373,12 @@ func extractTarXz(tarXzPath, targetDir string) error {
 
 		target := filepath.Join(targetDir, name)
 
-		if !strings.HasPrefix(filepath.Clean(target), cleanTargetDir+string(os.PathSeparator)) && filepath.Clean(target) != cleanTargetDir {
+		if !strings.HasPrefix(filepath.Clean(target)+string(os.PathSeparator), cleanTargetDir+string(os.PathSeparator)) && filepath.Clean(target) != cleanTargetDir {
 			return fmt.Errorf("tar entry escapes target directory: %s", header.Name)
 		}
 
-		resolvedTarget, err := resolvePath(target, targetDir, symlinks)
-		if err != nil {
-			return fmt.Errorf("failed to resolve path for %s: %w", header.Name, err)
-		}
-
-		if !strings.HasPrefix(resolvedTarget, cleanTargetDir+string(os.PathSeparator)) && resolvedTarget != cleanTargetDir {
-			return fmt.Errorf("tar entry resolves outside target directory (via symlink): %s", header.Name)
+		if err := checkNoSymlinkInPath(target, cleanTargetDir); err != nil {
+			return fmt.Errorf("refusing to extract %s: %w", header.Name, err)
 		}
 
 		switch header.Typeflag {
@@ -323,9 +397,6 @@ func extractTarXz(tarXzPath, targetDir string) error {
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 				return err
-			}
-			if isSymlinkInPath(target, targetDir, symlinks) {
-				return fmt.Errorf("refusing to write file through symlink: %s", header.Name)
 			}
 			outFile, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, unixModeToFileMode(header.Mode))
 			if err != nil {
@@ -357,14 +428,13 @@ func extractTarXz(tarXzPath, targetDir string) error {
 				resolvedLinkTarget = filepath.Join(filepath.Dir(target), linkTarget)
 			}
 			cleanLinkTarget := filepath.Clean(resolvedLinkTarget)
-			if !strings.HasPrefix(cleanLinkTarget, cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
+			if !strings.HasPrefix(cleanLinkTarget+string(os.PathSeparator), cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
 				return fmt.Errorf("symlink target escapes destination directory: %s -> %s", header.Name, header.Linkname)
 			}
 			os.Remove(target)
 			if err := os.Symlink(header.Linkname, target); err != nil {
 				return fmt.Errorf("failed to create symlink %s -> %s: %w", target, header.Linkname, err)
 			}
-			symlinks[filepath.Clean(target)] = header.Linkname
 			if os.Geteuid() == 0 {
 				if err := os.Lchown(target, int(header.Uid), int(header.Gid)); err != nil {
 					return fmt.Errorf("failed to lchown symlink %s: %w", target, err)
@@ -376,11 +446,8 @@ func extractTarXz(tarXzPath, targetDir string) error {
 			}
 			linkTarget := filepath.Join(targetDir, header.Linkname)
 			cleanLinkTarget := filepath.Clean(linkTarget)
-			if !strings.HasPrefix(cleanLinkTarget, cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
+			if !strings.HasPrefix(cleanLinkTarget+string(os.PathSeparator), cleanTargetDir+string(os.PathSeparator)) && cleanLinkTarget != cleanTargetDir {
 				return fmt.Errorf("hardlink target escapes destination directory: %s -> %s", header.Name, header.Linkname)
-			}
-			if isSymlinkInPath(linkTarget, targetDir, symlinks) {
-				return fmt.Errorf("refusing to create hardlink through symlink: %s", header.Name)
 			}
 			os.Remove(target)
 			if err := os.Link(linkTarget, target); err != nil {
@@ -392,13 +459,13 @@ func extractTarXz(tarXzPath, targetDir string) error {
 	return nil
 }
 
-func resolvePath(path, root string, symlinks map[string]string) (string, error) {
+func checkNoSymlinkInPath(path, root string) error {
 	cleanRoot := filepath.Clean(root)
 	cleanPath := filepath.Clean(path)
 
 	relPath, err := filepath.Rel(cleanRoot, cleanPath)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	parts := strings.Split(relPath, string(os.PathSeparator))
@@ -410,50 +477,22 @@ func resolvePath(path, root string, symlinks map[string]string) (string, error) 
 		}
 		next := filepath.Join(current, part)
 
-		if linkTarget, isSymlink := symlinks[next]; isSymlink {
-			var resolved string
-			if filepath.IsAbs(linkTarget) {
-				resolved = filepath.Join(cleanRoot, linkTarget)
-			} else {
-				resolved = filepath.Join(filepath.Dir(next), linkTarget)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
 			}
-			current = filepath.Clean(resolved)
-		} else {
-			current = next
+			return err
 		}
-	}
 
-	return current, nil
-}
-
-func isSymlinkInPath(path, root string, symlinks map[string]string) bool {
-	cleanRoot := filepath.Clean(root)
-	cleanPath := filepath.Clean(path)
-
-	relPath, err := filepath.Rel(cleanRoot, cleanPath)
-	if err != nil {
-		return false
-	}
-
-	parts := strings.Split(relPath, string(os.PathSeparator))
-	current := cleanRoot
-
-	for i, part := range parts {
-		if part == "" || part == "." {
-			continue
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("path component %s is a symlink", next)
 		}
-		if i == len(parts)-1 {
-			break
-		}
-		next := filepath.Join(current, part)
 
-		if _, isSymlink := symlinks[next]; isSymlink {
-			return true
-		}
 		current = next
 	}
 
-	return false
+	return nil
 }
 
 type nopReadCloser struct {

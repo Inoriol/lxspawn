@@ -5,11 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
 )
 
 func (m *Manager) Shell(name string) error {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	cmd := exec.Command("machinectl", "shell", name)
@@ -21,13 +23,13 @@ func (m *Manager) Shell(name string) error {
 
 func (m *Manager) Exec(name string, command []string) error {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	shellCmd := shellQuoteArgs(command)
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
 
-	args := []string{"systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
+	args := []string{"-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
 	cmd := exec.Command("sudo", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -63,7 +65,7 @@ func shellQuote(s string) string {
 
 func (m *Manager) Logs(name string) error {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	cmd := exec.Command("journalctl", "-M", name, "-f")
@@ -82,7 +84,7 @@ type LogOptions struct {
 
 func (m *Manager) LogsWithOptions(name string, opts LogOptions) error {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return fmt.Errorf("machine '%s' not found", name)
+		return lxerrors.NewMachineNotFoundError(name)
 	}
 
 	args := []string{"-M", name}
@@ -125,7 +127,7 @@ func (m *Manager) GetLogs(name string, lines int) ([]LogEntry, error) {
 
 func (m *Manager) GetLogsWithOptions(name string, opts LogOptions) ([]LogEntry, error) {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return nil, fmt.Errorf("machine '%s' not found", name)
+		return nil, lxerrors.NewMachineNotFoundError(name)
 	}
 
 	args := []string{"-M", name, "--no-pager", "-o", "short-iso"}

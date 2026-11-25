@@ -110,11 +110,19 @@ var editResourcesCmd = &cobra.Command{
 			return fmt.Errorf("invalid config: %w", err)
 		}
 
+		backup, err := os.ReadFile(configPath)
+		if err != nil {
+			backup = nil
+		}
+
 		if err := os.WriteFile(configPath, out, 0600); err != nil {
 			return fmt.Errorf("failed to write YAML: %w", err)
 		}
 
 		if err := mgr.Apply(cfg, configPath); err != nil {
+			if backup != nil {
+				os.WriteFile(configPath, backup, 0600)
+			}
 			return fmt.Errorf("failed to apply changes: %w", err)
 		}
 

@@ -63,6 +63,7 @@ Examples:
 
 		var reporter *progress.Reporter
 		if createProgress {
+			output.SetProgressMode(true)
 			reporter = progress.NewReporter(os.Stdout, true)
 			reporter.Emit(progress.EventProvisioning, "Creating machine", "create", 0)
 		}

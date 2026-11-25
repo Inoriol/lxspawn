@@ -65,7 +65,7 @@ func (b *BootProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 	scriptName := fmt.Sprintf("%02d-script.sh", scriptNum)
 	scriptPath := filepath.Join(bootDir, scriptName)
 
-	if err := os.WriteFile(scriptPath, []byte(rendered), 0755); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(rendered), 0700); err != nil {
 		return fmt.Errorf("failed to write boot script: %w", err)
 	}
 

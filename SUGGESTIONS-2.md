@@ -35,7 +35,7 @@ Result: `config`, `status`, `edit`, `provision`, `add-volume`, `edit-network` an
 ### C2. `--param` and `--name` overrides are lost. P1 [R] **[DONE]**
 Even for file sources, the canonical copy is the raw YAML. After `launch x.yaml --param db_pass=…`, a later `provision` re-renders with the template default `CHANGE_ME_DB`, and the template's own guard aborts. Fixed by the same change as C1.
 
-### C3. Edit commands rewrite the user's original file and are not transactional. P1 [R]
+### C3. Edit commands rewrite the user's original file and are not transactional. P1 [R] **[DONE]**
 `edit_resources.go:95-113` writes the YAML before `Validate` or `Apply` run, so `--memory banana` leaves an invalid file that breaks the next command. `edit.go:70-86` stops the machine, and if `Apply` then fails the machine stays stopped.
 
 **Fix.** Edit the canonical copy, validate, then write, and keep a backup that is restored on `Validate` or `Apply` failure. Only stop the machine after validation passes.
@@ -45,11 +45,11 @@ Even for file sources, the canonical copy is the raw YAML. After `launch x.yaml 
 
 **Fix.** One `applyDefaults(cfg)` called by both paths. Add a test that parses every embedded template through `ParseString` and runs `Validate`.
 
-### C5. `Apply` loses fields and leaves stale files. P2 [V for C5a]
+### C5. `Apply` loses fields and leaves stale files. P2 [V for C5a] **[DONE]**
 - **C5a.** `Apply` builds a fresh `MachineInfo` without `CreatedAt` (`manager.go:1093-1104`), and `RegisterMachine` replaces the entry, so `created_at` becomes empty after every apply, edit or `edit-resources`. Load the existing entry and update only what changed.
 - **C5b.** `Apply` writes new files but never removes stale ones. Removing `hooks:` or `resources:` from the config leaves `lxspawn-hooks.conf` and `machine-<n>.slice` in place, so the old hooks and limits keep applying. Delete artifacts that are no longer compiled, after writing the new ones.
 
-### C6. No operation lock. P2 [R]
+### C6. No operation lock. P2 [R] **[DONE]**
 `Create` checks existence against state loaded at startup, spends minutes fetching, and `RegisterMachine` overwrites without re-checking (`manager.go:61,64,204`, `state.go:149-158`). Two concurrent `create foo` calls both pass; the first to fail runs `storage.DeleteMachine("foo")` and destroys the other's rootfs. Delete and Apply have no lock either, although TODO C10 says an operation lock was added.
 
 **Fix.** Take a per-machine `flock` at the start of every mutating command. Make `RegisterMachine` fail if the name already exists (separate "update" from "register").
@@ -92,22 +92,22 @@ A typo such as `--param ipp=…` is silently accepted and the template default i
 
 ## 3. Image fetching and extraction
 
-### X1. Tar extraction can write outside the rootfs. P1 [R]
+### X1. Tar extraction can write outside the rootfs. P1 [R] **[DONE]**
 `image/fetcher.go:301-372`: `resolvePath` checks symlinks lexically, and absolute link targets are re-rooted (`Join(targetDir, "/etc")`) although the real filesystem does not re-root them. `isSymlinkInPath` is only called for `TypeReg` and `TypeLink`. `TypeDir` (`MkdirAll`, `Lchown`, `Chmod`), `TypeSymlink` (`os.Remove`, `os.Symlink`) and `TypeLink` follow symlinked parents. An archive with `x -> /etc/systemd/nspawn` followed by `x/evil` creates or removes host files; a `..` chain also passes the lexical check.
 
 **Fix.** `Lstat` every parent component of each entry and refuse if any is a symlink, for all entry types. Better, extract with `openat2(RESOLVE_IN_ROOT)`, or hand extraction to `importctl`/`bsdtar`.
 
-### X2. Downloaded images are never verified. P1 [R]
+### X2. Downloaded images are never verified. P1 [R] **[DONE]**
 Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or signature check. Fetch the index or `SHA256SUMS`, verify the hash (and ideally the GPG signature) before extracting. With X1 unfixed, a compromised mirror gets host write access.
 
 ### X3. Extraction does not preserve ownership, modes or capabilities. P2 [R, verify]
 - `fetcher.go:315,339,368`: `Lchown` and `Chmod` only run as root, and `fixRootfsOwnership` then runs `chown -R 0:0` (see O2). Check `stat /tmp /etc/shadow` and `find <rootfs> -perm -4000` in a fresh machine.
 - PAX xattrs are ignored (`fetcher.go`), so file capabilities such as `ping`'s `cap_net_raw` are lost.
 
-### X4. xz exit status is dropped. P2 [R]
+### X4. xz exit status is dropped. P2 [R] **[DONE]**
 `fetcher.go:258-262`: the deferred close error goes to a non-returned `err`, and `tar.Reader` accepts a clean EOF at a header boundary. A truncated stream can leave a partial rootfs that passes `ValidateInit`. Use a named return and check `cmd.Wait()`.
 
-### X5. Smaller fetcher issues. P3 [R]
+### X5. Smaller fetcher issues. P3 [R] **[DONE]**
 - HTTPS is only checked on the first URL, and Go follows https-to-http redirects. Add `CheckRedirect`. `distro:release` goes into the URL unvalidated (`:206,70-83,162`).
 - The newest dated directory is chosen without checking it contains `rootfs.tar.xz` (`:166-203`). An in-progress build gives a 404 with no fallback.
 - Temp files in `cache/` leak on SIGINT, and nothing is actually cached (`:225`).
@@ -146,7 +146,7 @@ Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or s
 
 The trust model is documented honestly in `ARCHITECTURE.md` (group = root-equivalent). The items below are bugs in the rules and in setup itself, not in that decision. If the group is root-equivalent anyway, either tighten the rules fully or stop listing regex restriction as a mitigation.
 
-### P1. Sudoers rules are still loose. P2 [V]
+### P1. Sudoers rules are still loose. P2 [V] **[DONE]**
 `setup.go:215,243-258`:
 - LVM block: `mkfs.ext4 ^-q /dev/.*/lxspawn-…$` matches `-q /dev/sda1 /dev/x/lxspawn-y` (`.*` spans spaces). `lvs`, `lvremove`, `lvcreate` use the same `.*`.
 - `systemd-run ^-M <name> --pipe --wait -- /bin/bash -c .*$` allows any command in any container.
@@ -156,26 +156,26 @@ The trust model is documented honestly in `ARCHITECTURE.md` (group = root-equiva
 
 **Fix.** Build every rule from one table with an `escapeRegex()` helper and shared name/path fragments. Use exact argument lists. Emit LVM rules only when that backend is enabled.
 
-### P2. Sudoers and Go call sites have drifted. P2 [V, R]
+### P2. Sudoers and Go call sites have drifted. P2 [V, R] **[DONE]**
 Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo systemctl kill` (`manager.go:311,345`), but only `systemctl enable|disable` are allowed. The btrfs backend falls back to `sudo mkdir -p <name>.snapshots` (`btrfs.go:36-39`), which the `mkdir` rule rejects because of the `.`.
 
 **Fix.** A unit test that extracts every `deploy.Sudo(...)` invocation shape and asserts a matching rule exists. Better, put the allowed commands in one table that both the generator and the callers use.
 
-### P3. `deploy.Sudo` has no `-n`. P3 [R]
+### P3. `deploy.Sudo` has no `-n`. P3 [R] **[DONE]**
 `filesystem.go:19`. An unmatched rule hangs on a TTY, or fails with "a terminal is required" under Cockpit. Use `sudo -n`.
 
-### P4. `setup` reports success when it fails. P2 [R, verify]
+### P4. `setup` reports success when it fails. P2 [R, verify] **[DONE]**
 `setup.go:98-108`: sudoers and polkit failures only log a warning, and the command still prints "Setup complete" and JSON `Success: true`. The sudo version gate (`:190`, 1.9.10+) excludes Ubuntu 22.04 (1.9.9) and RHEL/Alma/Rocky 9 (1.9.5), and `getSudoVersion` probably fails on `sudo-rs` output. The user then hits password prompts later with no rules installed.
 
 **Fix.** Return a non-zero exit with a list of failed items and the exact next step. Decide explicitly what to support on older sudo (for example, install the broad rules with a loud warning, or refuse).
 
-### P5. State is effectively single-user. P2 [R]
+### P5. State is effectively single-user. P2 [R] **[DONE]**
 `deploy/state.go:57,89,125`: `machines.json` and its lock are 0600 and owned by whoever wrote last, so a second group member gets EACCES and `NewStateManager` fails. Use 0660 with group `lxspawn`, or keep state root-owned behind a narrow writer.
 
-### P6. Provisioning secrets are passed as argv. P2 [R]
+### P6. Provisioning secrets are passed as argv. P2 [R] **[DONE]**
 `provision/exec.go:121`, `probe.go:51`, `manager.go:451`: the rendered script (including `db_pass` and `admin_pass`) goes in `sudo systemd-run … bash -c <script>`. It is visible in `/proc/<pid>/cmdline` and logged by sudo. Run `bash -s` and send the script on stdin (`--pipe` forwards it). Then pin the sudoers rule to exact arguments, which also removes the `.*`.
 
-### P7. Secrets are written world-readable. P2 [R]
+### P7. Secrets are written world-readable. P2 [R] **[DONE]**
 `manager.go:142-186` writes the YAML (with `param:` secrets) to `/var/lib/lxspawn/<name>/config.yaml` at 0644, and `provision/boot.go:68` writes rendered boot scripts at 0755 in the rootfs. Use 0600 and 0700.
 
 ### P8. Hook labelling is not persistent. P3 [R]
@@ -185,7 +185,7 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 
 ## 6. Lifecycle, provisioning and CLI behaviour
 
-### O1. `WaitForMachine` returns before the container has booted. P2 [R]
+### O1. `WaitForMachine` returns before the container has booted. P2 [R] **[DONE]**
 `manager.go:690-703` returns as soon as machined reports `running`, which is when the leader registers. Post-boot provisioning and probes race against boot, which likely contributes to the "no system bus in container" errors in Known Issues. Poll `systemd-run -M <n> --wait --pipe systemctl is-system-running --wait` (or `/bin/true`) until it succeeds, with a timeout.
 
 ### O2. `fixRootfsOwnership` runs `chown -R 0:0` on every new machine. P2 [R, verify]
@@ -203,10 +203,10 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 ### O6. Probe and exec timeouts don't stop the real process. P2 [R]
 `probe.go:70`, `exec.go:92`: `cmd.Process.Kill()` targets `sudo` (root), so the unprivileged kill gets EPERM (ignored), and the in-container unit keeps running. The nextcloud probe is an infinite `until curl` loop, so up to 30 of them pile up. Use `--unit=lxspawn-probe-<n>` plus `systemctl stop`, or `--property=RuntimeMaxSec=`, and drop infinite loops from probe scripts.
 
-### O7. Typed errors exist but are not used. P2 [V]
+### O7. Typed errors exist but are not used. P2 [V] **[DONE]**
 `NewMachineNotFoundError` and `NewMachineRunningError` (`errors/errors.go:46,60`) have no callers. `manager.go` (about `:280,359,380,432`) and `apply.go:38` return `fmt.Errorf("machine '%s' not found")`, so JSON consumers get `COMMAND_FAILED` and exit code 1, never `MACHINE_NOT_FOUND`. `COMMAND_FAILED` is also not in the declared enum. This undoes the structured-error work the Cockpit plugin needs.
 
-### O8. `--progress` is not a clean NDJSON stream. P2 [R]
+### O8. `--progress` is not a clean NDJSON stream. P2 [R] **[DONE]**
 `create.go:64-67`, `launch.go:64-81`, `logger.go:123-127`: the logger still prints human text on stdout unless `--json` or `-q` is also set. Only `provisioning`, `starting`, `done` and `error` events exist; `downloading`, `extracting` and `probe` are never emitted. `launch` also emits `starting` before anything is created. Make `--progress` imply quiet logging (or log to stderr) and emit events from the fetcher and probe code.
 
 ### O9. `readDiskUsage` reports the whole host filesystem. P2 [R]

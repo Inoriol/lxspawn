@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/Inoriol/lxspawn/internal/deploy"
+	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
 	"github.com/Inoriol/lxspawn/internal/testutil"
 )
 
@@ -355,5 +356,54 @@ func TestStart_SystemdError(t *testing.T) {
 	err := mgr.Start("testbox")
 	if err == nil {
 		t.Error("expected error when StartUnit fails")
+	}
+}
+
+func TestOperationLock_ConcurrentCreate(t *testing.T) {
+	mgr, _, _, _ := setupTestManager(t)
+
+	lock1, err := mgr.lockMachine("testbox")
+	if err != nil {
+		t.Fatalf("first lock failed: %v", err)
+	}
+
+	_, err = mgr.lockMachine("testbox")
+	if err == nil {
+		t.Error("expected error when trying to lock same machine twice")
+	}
+
+	unlockMachine(lock1)
+
+	lock2, err := mgr.lockMachine("testbox")
+	if err != nil {
+		t.Fatalf("lock after unlock failed: %v", err)
+	}
+	unlockMachine(lock2)
+}
+
+func TestTypedErrors_MachineNotFound(t *testing.T) {
+	mgr, _, _, _ := setupTestManager(t)
+
+	err := mgr.Start("nonexistent")
+	if err == nil {
+		t.Fatal("expected error for nonexistent machine")
+	}
+
+	var lxErr *lxerrors.LxspawnError
+	if !errors.As(err, &lxErr) {
+		t.Errorf("expected LxspawnError, got %T: %v", err, err)
+	} else if lxErr.Code != lxerrors.ErrCodeMachineNotFound {
+		t.Errorf("expected MACHINE_NOT_FOUND, got %s", lxErr.Code)
+	}
+}
+
+func TestTypedErrors_MachineExists(t *testing.T) {
+	mgr, state, _, _ := setupTestManager(t)
+
+	state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+	err := mgr.Start("testbox")
+	if err != nil {
+		t.Fatalf("Start should succeed for existing machine: %v", err)
 	}
 }

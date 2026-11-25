@@ -286,19 +286,19 @@ func TestSudo(t *testing.T) {
 			name:     "simple command",
 			args:     []string{"rm", "-rf", "/var/lib/machines/test"},
 			wantPath: "sudo",
-			wantArgs: []string{"sudo", "rm", "-rf", "/var/lib/machines/test"},
+			wantArgs: []string{"sudo", "-n", "rm", "-rf", "/var/lib/machines/test"},
 		},
 		{
 			name:     "btrfs command",
 			args:     []string{"btrfs", "subvolume", "create", "/var/lib/machines/test"},
 			wantPath: "sudo",
-			wantArgs: []string{"sudo", "btrfs", "subvolume", "create", "/var/lib/machines/test"},
+			wantArgs: []string{"sudo", "-n", "btrfs", "subvolume", "create", "/var/lib/machines/test"},
 		},
 		{
 			name:     "nsenter command",
 			args:     []string{"nsenter", "-t", "1234", "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", "echo test"},
 			wantPath: "sudo",
-			wantArgs: []string{"sudo", "nsenter", "-t", "1234", "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", "echo test"},
+			wantArgs: []string{"sudo", "-n", "nsenter", "-t", "1234", "-m", "-u", "-i", "-n", "-p", "--", "/bin/bash", "-c", "echo test"},
 		},
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/Inoriol/lxspawn/internal/config"
@@ -50,8 +51,9 @@ func (p *ProbeRunner) RunProbes(probes []config.Probe, ctx *TemplateContext) ([]
 func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext) error {
 	maxAttempts := 30
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		args := []string{"systemd-run", "-M", p.machineName, "--pipe", "--wait", "--", "/bin/bash", "-c", script}
+		args := []string{"systemd-run", "-M", p.machineName, "--pipe", "--wait", "--", "/bin/bash", "-s"}
 		cmd := deploy.Sudo(args...)
+		cmd.Stdin = strings.NewReader(script)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 

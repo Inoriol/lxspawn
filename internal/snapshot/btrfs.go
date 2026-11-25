@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -113,7 +112,7 @@ func isBtrfsSubvolume(path string) bool {
 }
 
 func getBtrfsSubvolumeCreatedAt(path string) *time.Time {
-	cmd := exec.Command("sudo", "btrfs", "subvolume", "show", path)
+	cmd := deploy.Sudo("btrfs", "subvolume", "show", path)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil

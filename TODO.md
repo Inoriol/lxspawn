@@ -14,6 +14,36 @@ Completed phases:
 - Phase 3 (V2) - Snapshot support (btrfs only)
 - Phase 4 (V2) - Templates, adaptive network mode, Docker-in-container, DNS servers, media servers
 - Phase 4.5-4.20 (V2) - Code quality, security hardening, bug fixes, template improvements
+- Phase 4.21 (V2) - Code Review 2 security fixes (SUGGESTIONS-2.md)
+
+### Phase 4.21 - Code Review 2 Fixes (2026-01-25)
+
+All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs test machine:
+
+- [x] **C1/C2: Template and stdin canonical config** - Machines created with `--template` or `-` now have proper canonical config
+- [x] **C3: Transactional edits** - Edit commands backup config and restore on failure
+- [x] **C4: ParseString defaults** - `ParseString()` now sets same defaults as `Parse()`
+- [x] **C5: Apply preserves metadata** - Apply preserves `CreatedAt` and cleans stale files
+- [x] **C6: Operation lock** - Per-machine flock prevents concurrent operation races
+- [x] **D1/D2/D3: Rollback fixes** - Sudoers rules match, recovery runs, no auto-delete
+- [x] **O1: WaitForMachine** - Polls for actual container boot, not just machined state
+- [x] **O7: Typed errors** - All "not found" errors use `NewMachineNotFoundError`
+- [x] **O8: Progress stream** - Clean NDJSON output with ProgressMode flag
+- [x] **P1: Sudoers rules** - Tightened patterns, removed LVM, exact arguments
+- [x] **P3: Sudo -n flag** - All sudo calls use non-interactive mode
+- [x] **P4: Setup fails loudly** - Returns non-zero on sudoers/polkit failures
+- [x] **P5: State file permissions** - Changed to 0660 with lxspawn group
+- [x] **P6: Scripts via stdin** - Provision scripts passed via stdin, not argv
+- [x] **P7: Secret permissions** - Boot scripts 0700, config 0600
+- [x] **V1/V2/V3: Injection fixes** - Strict validation for GPU devices, tmpfs options, paths
+- [x] **X1: Tar extraction** - Real filesystem symlink checks prevent escapes
+- [x] **X2: Image verification** - SHA256 verification against SHA256SUMS
+- [x] **X4: XZ error handling** - Named return captures close errors
+- [x] **X5: HTTPS validation** - Reject redirects to HTTP
+
+### Known Issues (Open)
+
+- **Data/Boot provisioner permission bug** - Provisioners fail with "permission denied" when writing to root-owned rootfs. Needs `deploy.Sudo()` for writes.
 
 ---
 
@@ -127,6 +157,19 @@ Completed phases:
 ---
 
 ## Known Issues
+
+### Data/Boot Provisioner Permission Bug
+
+**Status:** Open. Discovered during testing on btrfs test machine.
+
+When running `lxspawn provision` on a machine with rootfs owned by root (typical after image extraction), the data and boot provisioners fail with "permission denied" when trying to write files to the rootfs. This happens because:
+- Image extraction creates rootfs directories owned by root:root
+- Provisioners run as the invoking user (not root)
+- `os.WriteFile()` and `os.MkdirAll()` fail when trying to create files in root-owned directories
+
+**Workaround:** Run `lxspawn provision` with sudo, or manually chown the rootfs before provisioning.
+
+**Fix needed:** Provisioners should use `deploy.Sudo()` for writes to the rootfs, similar to how storage backends handle privileged operations.
 
 ### machinectl Shell PTY Errors
 

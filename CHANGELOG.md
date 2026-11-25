@@ -9,35 +9,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Configurable filesystem paths (`PathConfig`)** - All filesystem paths (nspawn dir, systemd dir, machines dir, lxspawn data dir) are now configurable via `deploy.SetPaths()`. Enables support for non-standard layouts such as NixOS. Default paths remain unchanged (`/etc/systemd/nspawn`, `/etc/systemd/system`, `/var/lib/machines`, `/var/lib/lxspawn`).
-- **Dependency injection for `machine.Manager`** - Added `NewManagerWithDeps(state, systemd, storage)` constructor accepting `deploy.StateStore`, `deploy.SystemdClient`, and `storage.StorageBackend` interfaces. Enables unit and integration testing without real systemd, state files, or storage backends.
-- **Fake implementations for testing** - New `internal/testutil` package with `FakeSystemdClient` and `FakeStorageBackend`. Both record method calls for assertion and support custom function hooks for error injection.
-- **Integration tests for machine lifecycle** - 20+ tests in `manager_integration_test.go` covering Start, Stop, Restart, Delete, GetStatus, ListMachines, ListMachinesWithState, Close, and error paths. All tests use fakes, no root or systemd required.
-- **Template validation tests (T3)** - New `templates/templates_test.go` with tests that parse, validate, and compile all embedded templates. Catches regressions in template configuration and defaults.
-- **`config.ToYAML()` function** - Serialize a `*config.Config` back to YAML. Used to persist the effective configuration (after `--name` and `--param` overrides) to the canonical config path.
-- **`machine.LoadMachineConfig()` helper** - Load machine config preferring `ConfigPath` over `SourcePath`. Used by all commands that need to read machine configuration.
+- **SHA256 image verification (X2)** - Downloaded rootfs images are now verified against `SHA256SUMS` from the image server before extraction. Prevents use of corrupted or tampered images from compromised mirrors.
+- **Per-machine operation lock (C6)** - `Create`, `Delete`, and `Apply` now acquire a per-machine `flock` before proceeding. Prevents race conditions where concurrent operations could destroy each other's work.
+- **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.
+- **HTTPS redirect validation (X5)** - HTTP clients now reject redirects to insecure HTTP URLs. Prevents https-to-http downgrade attacks during image downloads.
 
 ### Changed
 
-- **`machine/manager.go` split into focused files** - Extracted `stats.go` (MachineStats, GetStats, GetAllStats, cgroup readers) and `shell.go` (Shell, Exec, Logs, LogsWithOptions, shell quoting). `manager.go` now contains only core lifecycle and state methods.
-- **`Manager` fields use interface types** - `state` changed from `*deploy.StateManager` to `deploy.StateStore`, `systemd` changed from `*deploy.SystemdManager` to `deploy.SystemdClient`. `storage` was already an interface.
-- **`SystemdClient` interface expanded** - Added `ResetFailedUnit` and `GetMachineLeader` methods to match what `Manager` actually calls.
-- **`parse()` refactored to call `parseString()`** - Eliminated duplicated default-setting logic. Both `Parse()` and `ParseString()` now share the same code path.
-- **Edit commands use canonical config** - All edit commands (`edit-resources`, `edit-network`, `add-volume`, `edit-volume`, `remove-volume`, `edit`) now read from and write to the canonical config path (`/var/lib/lxspawn/<name>/config.yaml`) instead of the original source path. This ensures template and stdin-created machines can be edited.
-- **Canonical config written with 0600 permissions** - Canonical config files are now written with 0600 permissions instead of 0644, protecting sensitive data like `param:` secrets.
+- **Sudoers rules tightened (P1)** - Removed LVM rules (backend disabled), fixed `chmod` to `0[0-7]{3}` (no setuid), changed `systemd-run` to use `-s$` (stdin mode), added `stop`/`kill` systemctl rules, escaped `.` in patterns. All rules now use exact argument patterns.
+- **State file permissions changed to 0660 (P5)** - `machines.json` and lock file now use 0660 permissions with group ownership set to `lxspawn`. Enables multi-user support where multiple group members can manage machines.
+- **`deploy.Sudo()` now uses `-n` flag (P3)** - All sudo calls now use non-interactive mode. Prevents TTY hangs when rules don't match and provides clear errors under Cockpit.
+- **Provision scripts passed via stdin (P6)** - `systemd-run` commands now use `bash -s` with script on stdin instead of `bash -c` with script in argv. Secrets no longer visible in `/proc/<pid>/cmdline` or sudo logs.
+- **`WaitForMachine` polls for actual boot (O1)** - Now verifies container is ready by running `systemd-run -- /bin/true` instead of just checking machined state. Prevents race conditions with post-boot provisioning.
+- **Tar extraction hardened (X1)** - Replaced lexical symlink tracking with `checkNoSymlinkInPath()` that Lstats every parent component on the real filesystem. Prevents symlink-based escape attacks during extraction.
+- **Boot scripts written with 0700 permissions (P7)** - Boot provisioner scripts now use 0700 instead of 0755, protecting sensitive data that might be embedded in scripts.
+- **Edit commands are transactional (C3)** - `edit-resources` now backs up config before writing, restores on `Apply` failure. Prevents leaving invalid configs when apply fails.
+- **`Apply` preserves metadata and cleans stale files (C5)** - Now preserves `CreatedAt` timestamp from existing machine info. Removes stale slice and hook files when no longer needed.
+- **Typed errors used throughout (O7)** - All "machine not found" errors in manager now use `NewMachineNotFoundError`. JSON output returns proper error codes (`MACHINE_NOT_FOUND`, `MACHINE_EXISTS`) with distinct exit codes (2, 3).
+- **Setup fails loudly on errors (P4)** - `lxspawn setup` now returns non-zero exit code and lists failures when sudoers/polkit installation fails. Previously reported success even when critical components failed.
 
 ### Fixed
 
-- **`ParseString()` missing defaults** - `ParseString()` (used by templates and stdin) was missing defaults for `security.seccomp` (`true`), `resources.io_weight` (`100`), and `storage.size` (`"10G"`). Templates loaded via `--template` or stdin now get the same defaults as file-based configs.
-- **Template and stdin machines have no usable config (C1)** - Machines created with `--template` or `-` (stdin) now have a proper canonical config. The effective `*config.Config` (after `--name` and `--param` overrides) is serialized and written to `CanonicalConfigPath`. Previously, `copyFile(sourcePath, canonical)` would fail with "template:nextcloud: no such file" and only log a warning.
-- **`--param` and `--name` overrides are lost (C2)** - Parameter and name overrides are now preserved in the canonical config. Previously, the canonical copy was the raw YAML, so a later `provision` would re-render with template defaults.
-- **Rollback sudoers rules mismatch (D1)** - Added sudoers rules for rollback paths (`.rollback-temp`, `.rollback-old`) and snapshot show commands. Previously, non-root rollback failed at the first sudo call because the rules didn't match the actual paths.
-- **Rollback failure recovery never runs (D2)** - Recovery commands are now actually executed and their errors checked. If the second `mv` fails, the old rootfs is recovered to its original location. Previously, recovery commands were built but never called, leading to data loss.
-- **Rollback auto-deletes leftovers (D2)** - Rollback now refuses to proceed if `.rollback-temp` or `.rollback-old` exist, asking the user to inspect and remove them manually. Previously, it would auto-delete these directories, potentially destroying data from a failed previous rollback.
-- **Rollback flattens all ownership (D3)** - Removed the `chown -R 0:0` after rollback. With `PrivateUsers=identity`, container uids are real host uids, so chown would break services like MariaDB/Apache that expect specific ownership.
-- **GPU device path injection (V1)** - `gpu.devices` now validated with strict regex `^/dev/[A-Za-z0-9._/-]+$` and rejects colons. Previously, newlines in device paths could inject INI lines into `.nspawn` files.
-- **tmpfs options injection (V2)** - tmpfs `options` now validated against `^[A-Za-z0-9=,._-]*$`. Colons are rejected in volume host and mount paths. Previously, crafted YAML could inject INI lines.
-- **Sensitive path check bypassed (V3)** - Expanded sensitive paths list to include `/bin`, `/boot`, `/etc`, `/lib`, `/lib64`, `/opt`, `/root`, `/sbin`, `/srv`, `/usr`, `/var/lib/lxspawn`, `/var/lib/machines`. Previously, paths like `/etc`, `/root`, `/var/lib/machines` were not blocked.
+- **XZ close error handling (X4)** - `extractTarXz` now uses named return to properly capture and return xz reader close errors. Prevents silent failures from truncated archives.
+- **Sudoers journalctl rule syntax** - Fixed missing `$` terminator in journalctl rule that caused visudo validation to fail.
+- **Snapshot/rollback operations work correctly (D1/D2/D3)** - All btrfs snapshot operations now match sudoers rules. Rollback properly executes recovery commands and refuses to proceed if leftover directories exist.
+- **Template and stdin machines have usable config (C1/C2)** - Canonical config is now properly serialized and written for machines created with `--template` or `-` (stdin).
+- **Injection vulnerabilities fixed (V1/V2/V3)** - GPU device paths, tmpfs options, and volume paths now validated against strict patterns. Sensitive path check expanded to include more system directories.
+
+### Security
+
+- **Secrets no longer exposed in process list (P6)** - Provision scripts passed via stdin instead of argv prevent secret leakage through `/proc/<pid>/cmdline`.
+- **State file accessible to group (P5)** - Changed from 0600 to 0660 with lxspawn group, enabling multi-user scenarios while maintaining security.
+- **Image integrity verification (X2)** - SHA256 verification prevents use of tampered rootfs images.
+- **Tar extraction prevents symlink escapes (X1)** - Real filesystem checks prevent symlink-based attacks during extraction.
+- **Sudoers rules use exact patterns (P1)** - Removed overly permissive patterns, added exact argument matching for all privileged operations.
 
 ## [0.1.3] - 2026-11-21
 

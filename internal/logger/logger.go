@@ -56,7 +56,7 @@ func Print(msg string) {
 	mu.Lock()
 	q := quiet
 	mu.Unlock()
-	if q || output.IsJSONMode() {
+	if q || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(msg)
@@ -66,7 +66,7 @@ func Printf(format string, args ...interface{}) {
 	mu.Lock()
 	q := quiet
 	mu.Unlock()
-	if q || output.IsJSONMode() {
+	if q || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Printf(format, args...)
@@ -86,42 +86,42 @@ func colorize(colorCode, msg string) string {
 }
 
 func Info(msg string) {
-	if !IsVerbose() || IsQuiet() || output.IsJSONMode() {
+	if !IsVerbose() || IsQuiet() || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(colorize(cyan, "lxspawn: "+msg))
 }
 
 func Debug(msg string) {
-	if !IsVerbose() || IsQuiet() || output.IsJSONMode() {
+	if !IsVerbose() || IsQuiet() || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(colorize(cyan, "lxspawn: [debug] "+msg))
 }
 
 func Success(msg string) {
-	if IsQuiet() || output.IsJSONMode() {
+	if IsQuiet() || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(colorize(green, "lxspawn: "+msg))
 }
 
 func Warn(msg string) {
-	if IsQuiet() || output.IsJSONMode() {
+	if IsQuiet() || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(colorize(yellow, "lxspawn: "+msg))
 }
 
 func Error(msg string) {
-	if output.IsJSONMode() {
+	if output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Fprintln(os.Stderr, colorize(red, "lxspawn: "+msg))
 }
 
 func Action(msg string) {
-	if IsQuiet() || output.IsJSONMode() {
+	if IsQuiet() || output.IsJSONMode() || output.IsProgressMode() {
 		return
 	}
 	fmt.Println(colorize(blue, "lxspawn: "+msg))

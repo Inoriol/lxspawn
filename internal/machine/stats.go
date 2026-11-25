@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
 	"github.com/Inoriol/lxspawn/internal/deploy"
 )
 
@@ -25,7 +26,7 @@ type MachineStats struct {
 
 func (m *Manager) GetStats(name string) (*MachineStats, error) {
 	if _, exists := m.state.GetMachine(name); !exists {
-		return nil, fmt.Errorf("machine '%s' not found", name)
+		return nil, lxerrors.NewMachineNotFoundError(name)
 	}
 
 	state, _, err := m.systemd.GetMachineState(name)
