@@ -68,6 +68,11 @@ func TestEmbeddedTemplatesCompile(t *testing.T) {
 				t.Fatalf("Validate failed for template %q: %v", tmpl.Name, err)
 			}
 
+			// Skip GPU-enabled templates on CI (no GPU available)
+			if cfg.GPU.Enabled {
+				t.Skipf("Skipping GPU-enabled template %q (no GPU on CI)", tmpl.Name)
+			}
+
 			cfg.Network.Mode = config.NetworkHost
 
 			compiled, err := compiler.Compile(cfg)
