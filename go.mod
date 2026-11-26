@@ -1,6 +1,6 @@
 module github.com/Inoriol/lxspawn
 
-go 1.26.0
+go 1.26.11
 
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
