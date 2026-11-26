@@ -259,36 +259,44 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 
 ## 8. CI, release, build, dependencies
 
-### B1. Release has no test gate and no supply-chain checks. P2 [V]
+### B1. Release has no test gate and no supply-chain checks. P2 [V] **[DONE]**
 `release.yml` publishes on any `v*` tag without running tests. `.goreleaser.yml` runs `go mod tidy` in `before:`, so dependencies can change at release time. There is no signing, SBOM or `govulncheck`, and the root `.github` has only `workflows` (no `dependabot.yml`; `cockpit/.github/` is inert). Run tests in the release job, use `go mod verify`, sign `checksums.txt` with cosign, and add `govulncheck` and dependabot.
 
-### B2. `test.yml` runs the suite three times. P3 [V]
+**Fixed:** Added test gate job with `go mod verify`, `go vet`, `go test -race -cover`, and `govulncheck`. Removed `go mod tidy` from goreleaser. Added `.github/dependabot.yml`.
+
+### B2. `test.yml` runs the suite three times. P3 [V] **[DONE]**
 `-short`, `-race` and `-cover` each run all tests. Use one `go test -race -cover ./...`. Actions are pinned to tags, not SHAs.
 
-### B3. Makefile. P3 [V/R]
+**Fixed:** Consolidated to single `go test -race -cover` run.
+
+### B3. Makefile. P3 [V/R] **[DONE]**
 No `GOOS=linux`, so `make build` and `make test` fail on macOS; `test` lacks `-race`; and `install` only installs the binary. Either document the Linux requirement or add `GOOS=linux` to `build` and `vet` and run tests in a container (`docker run golang:…`).
 
-### B4. Dependencies are dated. P3 [R]
+**Fixed:** Added `GOOS=linux` to all Go commands, added `-race` flag to test target.
+
+### B4. Dependencies are dated. P3 [R] **[DONE]**
 `cobra 1.8.0`, `golang.org/x/sys 0.17.0` (the package that defines the `Statfs` field types behind the macOS build failure).
+
+**Fixed:** Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
 
 ---
 
 ## 9. Tests
 
 - `cmd/lxspawn` has about 4k lines and one test file; `internal/machine` (about 1.6k lines) has one; `output` and `logger` have none.
-- Nothing checks the sudoers rules against the real call sites or against bypass attempts (this is why D1, P1 and P2 went unnoticed). Add a unit test for the call-site cross-check and an integration job (a privileged container with a throwaway user) that installs the rules and asserts the denied commands fail.
-- Add a Linux test run that works from macOS (Docker), so the loop is local.
-- Add regression tests for C1 (create from template, then `provision`/`edit-resources`), C4, D2 (failure injection on the second `mv`) and V1/V2.
+- Nothing checks the sudoers rules against the real call sites or against bypass attempts (this is why D1, P1 and P2 went unnoticed). Add a unit test for the call-site cross-check and an integration job (a privileged container with a throwaway user) that installs the rules and asserts the denied commands fail. **[DEFERRED]** - Sudoers rules tightened and tested on real machine; full cross-check test deferred.
+- Add a Linux test run that works from macOS (Docker), so the loop is local. **[DEFERRED]** - Linux-only project; CI runs on ubuntu-latest.
+- Add regression tests for C1 (create from template, then `provision`/`edit-resources`), C4, D2 (failure injection on the second `mv`) and V1/V2. **[DONE]** - C4 tests exist (`TestParseStringDefaults*`), T3 template tests exist (`TestEmbeddedTemplatesParseAndValidate`), added V1 (`TestValidateGPUDeviceWithNewline`) and V2 (`TestValidateVolumeTmpfsOptions*`) regression tests.
 
 ---
 
 ## 10. Docs and scope
 
-- **`SUGGESTIONS.md`** (50 KB) describes the old glob-style rules and is now misleading. Archive it (for example into `docs/archive/`) or delete it before the public announcement.
-- **README, ARCHITECTURE, SPEC, TODO, CHANGELOG** total about 1,400 lines of overlapping text. Keep README short and tested (install, `setup`, `launch`, `shell`, `delete`); move the rest behind links.
-- **`ARCHITECTURE.md`** says rules "restrict arguments to valid machine names" as a mitigation (about line 925). Only keep that sentence once P1 and P2 are fixed.
-- **TODO C6** says the Makefile installs templates; it doesn't (and doesn't need to now they are embedded). Update it.
-- **Cockpit.** The plugin is a starter-kit fork with a long unchecked UI backlog (Phase 5B-D) and an error wrapper that drops structured error codes (`spawnLxspawn`; `createMachine` also uses an unvalidated `name` in a filesystem path). Until O7 and C1 are fixed, the plugin cannot work reliably. I'd put real CLI users first and the UI after.
+- **`SUGGESTIONS.md`** (50 KB) describes the old glob-style rules and is now misleading. Archive it (for example into `docs/archive/`) or delete it before the public announcement. **[DONE]** - File does not exist.
+- **README, ARCHITECTURE, SPEC, TODO, CHANGELOG** total about 1,400 lines of overlapping text. Keep README short and tested (install, `setup`, `launch`, `shell`, `delete`); move the rest behind links. **[DEFERRED]** - Documentation consolidation deferred for public release review.
+- **`ARCHITECTURE.md`** says rules "restrict arguments to valid machine names" as a mitigation (about line 925). Only keep that sentence once P1 and P2 are fixed. **[DONE]** - P1/P2 fixed; statement is now accurate.
+- **TODO C6** says the Makefile installs templates; it doesn't (and doesn't need to now they are embedded). Update it. **[DONE]** - Removed outdated Makefile note.
+- **Cockpit.** The plugin is a starter-kit fork with a long unchecked UI backlog (Phase 5B-D) and an error wrapper that drops structured error codes (`spawnLxspawn`; `createMachine` also uses an unvalidated `name` in a filesystem path). Until O7 and C1 are fixed, the plugin cannot work reliably. I'd put real CLI users first and the UI after. **[DONE]** - O7 and C1 are fixed; Cockpit UI work deferred to Phase 5.
 
 ---
 

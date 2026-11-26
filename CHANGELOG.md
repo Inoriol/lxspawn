@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Dependabot configuration** - Added `.github/dependabot.yml` for weekly dependency updates (gomod and github-actions).
+- **CI/CD test gate (B1)** - Release workflow now runs tests with `go mod verify`, `go vet`, `go test -race -cover`, and `govulncheck` before publishing.
+- **Regression tests for injection fixes (V1/V2)** - Added `TestValidateGPUDeviceWithNewline`, `TestValidateVolumeTmpfsOptionsInvalid`, and `TestValidateVolumeTmpfsOptionsWithColon` to prevent regression of injection vulnerabilities.
+
+### Changed
+
+- **Consolidated CI test runs (B2)** - Combined three separate test runs (short, race, cover) into single `go test -race -cover` run in test.yml.
+- **Makefile hardened (B3)** - Added `GOOS=linux` for cross-platform builds, added `-race` flag to test target.
+- **Removed `go mod tidy` from goreleaser (B1)** - Prevents dependency changes at release time. Added `go mod verify` step instead.
+- **Updated dependencies (B4)** - Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
+
+### Fixed
+
+- **TODO C6 outdated note** - Removed outdated "Update Makefile to install templates" note since templates are now embedded.
+
+### Added
+
 - **SHA256 image verification (X2)** - Downloaded rootfs images are now verified against `SHA256SUMS` from the image server before extraction. Prevents use of corrupted or tampered images from compromised mirrors.
 - **Per-machine operation lock (C6)** - `Create`, `Delete`, and `Apply` now acquire a per-machine `flock` before proceeding. Prevents race conditions where concurrent operations could destroy each other's work.
 - **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.

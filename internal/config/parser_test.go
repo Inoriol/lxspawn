@@ -427,6 +427,34 @@ func TestValidateVolumeTmpfsMissingMount(t *testing.T) {
 	}
 }
 
+func TestValidateVolumeTmpfsOptionsInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Type: "tmpfs", Mount: "/tmp", Options: "mode=1777\nExecStartPre=evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tmpfs options") {
+		t.Errorf("expected tmpfs options error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeTmpfsOptionsWithColon(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Type: "tmpfs", Mount: "/tmp", Options: "mode=1777:evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tmpfs options") {
+		t.Errorf("expected tmpfs options error for colon, got: %v", err)
+	}
+}
+
 func TestValidateVolumeMissingHost(t *testing.T) {
 	cfg := &Config{
 		Name:   "testbox",
@@ -624,6 +652,36 @@ func TestValidateGPUDevicePathInvalid(t *testing.T) {
 	err := Validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
 		t.Errorf("expected GPU device path error, got: %v", err)
+	}
+}
+
+func TestValidateGPUDeviceWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0\nExecStartPre=evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected GPU device newline injection to be rejected, got: %v", err)
+	}
+}
+
+func TestValidateGPUDeviceWithColon(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0:evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected GPU device colon to be rejected, got: %v", err)
 	}
 }
 

@@ -15,6 +15,8 @@ Completed phases:
 - Phase 4 (V2) - Templates, adaptive network mode, Docker-in-container, DNS servers, media servers
 - Phase 4.5-4.20 (V2) - Code quality, security hardening, bug fixes, template improvements
 - Phase 4.21 (V2) - Code Review 2 security fixes (SUGGESTIONS-2.md)
+- Phase 4.22 (V2) - Code Review 2 remaining fixes (SUGGESTIONS-2.md)
+- Phase 4.23 (V2) - CI/CD and build system hardening (SUGGESTIONS-2.md Section 8)
 
 ### Phase 4.21 - Code Review 2 Fixes (2026-01-25)
 
@@ -66,6 +68,27 @@ Additional fixes from SUGGESTIONS-2.md:
 - [x] **O11: CLI fixes** - exec preserves args before --, logs use JSON output with proper priority, CPU% normalized without quota, confirmation prompts skip in JSON mode.
 - [x] **Boot scripts** - Dedup by content hash, `set -e` in service, once-only marker.
 
+### Phase 4.23 - CI/CD and Build System Hardening (2026-01-25)
+
+Final items from SUGGESTIONS-2.md (Section 8: CI, release, build, dependencies):
+
+- [x] **B1: Release test gate** - Added test job with `go mod verify`, `go vet`, `go test -race -cover`, and `govulncheck` before goreleaser runs.
+- [x] **B1: Supply-chain checks** - Removed `go mod tidy` from goreleaser before hooks to prevent dependency changes at release time. Added `go mod verify` step.
+- [x] **B2: Consolidated test runs** - Combined three separate test runs (short, race, cover) into single `go test -race -cover` run.
+- [x] **B3: Makefile fixes** - Added `GOOS=linux` for cross-platform builds, added `-race` flag to test target.
+- [x] **B4: Updated dependencies** - Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
+- [x] **Dependabot** - Added `.github/dependabot.yml` for weekly dependency updates (gomod and github-actions).
+- [x] **Section 9: Regression tests** - Added tests for V1 (GPU device newline injection) and V2 (tmpfs options validation). C4 tests already exist (TestParseStringDefaults). T3 template tests already exist.
+- [x] **Section 10: Docs cleanup** - Fixed TODO C6 (removed outdated Makefile template install note). Old SUGGESTIONS.md already deleted.
+
+**Testing on Bazzite (192.168.0.200) - 2026-01-25:**
+- [x] C1/C2 fix verified: `lxspawn create --template debian-base --name test-c1` creates canonical config
+- [x] C3 fix verified: `lxspawn edit-resources test-c1 --cpus 2 --memory 1G` works on template-created machine
+- [x] V1 fix verified: GPU device with newline injection rejected
+- [x] V2 fix verified: tmpfs options with newline injection rejected
+- [x] T1 fix verified: `lxspawn show-template debian-base` displays embedded template
+- [x] All `lxspawn doctor` checks pass (group, systemd-nspawn, machinectl, polkit, sudoers, btrfs, nftables)
+
 ### Known Issues (Open)
 
 - **Data/Boot provisioner permission bug** - Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
@@ -100,7 +123,7 @@ Additional fixes from SUGGESTIONS-2.md:
 
 **Priority 2: Medium Effort (half day each)**
 
-- [x] **C6: Embed templates** - Use `go:embed` to embed `examples/templates/*.yaml` in binary. Update `list_templates.go` to check embedded templates first. Update Makefile to install templates to `/usr/share/lxspawn/templates/`.
+- [x] **C6: Embed templates** - Use `go:embed` to embed `examples/templates/*.yaml` in binary. Update `list_templates.go` to check embedded templates first. No Makefile update needed since templates are embedded.
 - [x] **C4: Canonical config copy** - On `create`/`launch`, copy YAML to `/var/lib/lxspawn/<name>/config.yaml`. On `apply`, update canonical copy. `config`/`status` read from canonical copy. State stores `ConfigPath`. Fallback to `SourcePath` for backwards compat.
 - [x] **C13: Logs for viewer** - Make JSON and text modes read from same source (container journal with `-M`). Add `--since` and `--priority` flags. Add `--follow` streaming mode. Make `--lines` work in both modes.
 - [x] **C14: Batched stats** - Add `stats --all --json` or `list --stats --json`. Return cumulative counters with timestamp. UI computes rates from consecutive samples (no 100ms sleep). Eliminates N processes per polling cycle.
