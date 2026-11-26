@@ -441,9 +441,27 @@ func (m *Manager) Delete(name string) error {
 		logger.Debug(fmt.Sprintf("machinectl terminate warning (may already be terminated): %v (%s)", err, string(output)))
 	}
 
-	state, _, err := m.systemd.GetMachineState(name)
-	if err == nil && state != "stopped" {
-		return fmt.Errorf("machine '%s' is still running (state: %s). Please stop it manually before deleting", name, state)
+	if err := m.waitForStopped(name, 10*time.Second); err != nil {
+		return fmt.Errorf("machine '%s' is still running. Please stop it manually before deleting", name)
+	}
+
+	disableCmd := deploy.Sudo("systemctl", "disable", unitName)
+	if output, err := disableCmd.CombinedOutput(); err != nil {
+		logger.Debug(fmt.Sprintf("disable unit warning (may not be enabled): %v (%s)", err, string(output)))
+	}
+
+	if err := m.storage.DeleteMachine(name); err != nil {
+		return fmt.Errorf("failed to delete machine storage: %w", err)
+	}
+
+	snapshotsDir := deploy.SnapshotsDir(name)
+	if deploy.FileExists(snapshotsDir) {
+		if err := deleteSnapshotSubvolumes(snapshotsDir); err != nil {
+			logger.Warn(fmt.Sprintf("failed to delete snapshot subvolumes: %v", err))
+		}
+		if err := deploy.RemoveAll(snapshotsDir); err != nil {
+			logger.Warn(fmt.Sprintf("failed to remove snapshots directory %s: %v", snapshotsDir, err))
+		}
 	}
 
 	var paths []string
@@ -453,11 +471,7 @@ func (m *Manager) Delete(name string) error {
 	paths = append(paths, deploy.LxspawnMachineDir(name))
 
 	if err := deploy.RemoveAll(paths...); err != nil {
-		return fmt.Errorf("failed to remove files: %w", err)
-	}
-
-	if err := m.storage.DeleteMachine(name); err != nil {
-		return fmt.Errorf("failed to delete machine storage: %w", err)
+		logger.Warn(fmt.Sprintf("failed to remove some files: %v", err))
 	}
 
 	if err := m.systemd.ReloadDaemon(); err != nil {
@@ -470,6 +484,21 @@ func (m *Manager) Delete(name string) error {
 
 	logger.Success(fmt.Sprintf("Machine '%s' deleted", name))
 	return nil
+}
+
+func (m *Manager) waitForStopped(name string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		state, _, err := m.systemd.GetMachineState(name)
+		if err != nil {
+			return nil
+		}
+		if state == "stopped" {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for machine to stop")
 }
 
 type MachineStatus struct {
@@ -590,12 +619,21 @@ func (m *Manager) Provision(cfg *config.Config, sourcePath string) error {
 	}
 
 	wasRunning := status.State == "running"
+	needsRestart := wasRunning
 
 	if wasRunning {
 		logger.Info("Stopping machine for pre-boot provisioning...")
 		if err := m.Stop(cfg.Name); err != nil {
 			return fmt.Errorf("failed to stop machine: %w", err)
 		}
+		defer func() {
+			if needsRestart {
+				logger.Info("Restarting machine after provisioning...")
+				if startErr := m.Start(cfg.Name); startErr != nil {
+					logger.Warn(fmt.Sprintf("failed to restart machine after provisioning: %v", startErr))
+				}
+			}
+		}()
 	}
 
 	hasPreBoot := false
@@ -621,6 +659,7 @@ func (m *Manager) Provision(cfg *config.Config, sourcePath string) error {
 		if err := m.Start(cfg.Name); err != nil {
 			return fmt.Errorf("failed to start machine: %w", err)
 		}
+		needsRestart = false
 
 		hasPostBoot := false
 		for _, p := range cfg.Provision {
@@ -809,4 +848,24 @@ func LoadMachineConfig(info deploy.MachineInfo) (*config.Config, error) {
 		return config.Parse(info.SourcePath)
 	}
 	return nil, fmt.Errorf("no config available for machine %q", info.Name)
+}
+
+func deleteSnapshotSubvolumes(snapshotsDir string) error {
+	entries, err := os.ReadDir(snapshotsDir)
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		snapPath := filepath.Join(snapshotsDir, entry.Name())
+		cmd := deploy.Sudo("btrfs", "subvolume", "delete", snapPath)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			logger.Warn(fmt.Sprintf("failed to delete snapshot subvolume %s: %v (%s)", snapPath, err, string(output)))
+		}
+	}
+
+	return nil
 }

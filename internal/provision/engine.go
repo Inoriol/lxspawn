@@ -163,6 +163,9 @@ func (e *Engine) ProvisionPostBoot(cfg *config.Config, sourcePath string) error 
 			}
 
 			state.ScriptHashes[scriptKey] = currentHash
+			if err := e.saveState(state); err != nil {
+				logger.Warn(fmt.Sprintf("failed to save provision state: %v", err))
+			}
 		}
 	}
 

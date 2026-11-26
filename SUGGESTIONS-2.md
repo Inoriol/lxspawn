@@ -77,7 +77,7 @@ A typo such as `--param ipp=…` is silently accepted and the template default i
 ### D3. Rollback flattens all ownership. P1 [R, verify] **[DONE]**
 `btrfs.go:231` runs `chown -R 0:0` on the rootfs after every rollback. With `PrivateUsers=identity`, container uids are real host uids, so `/var/lib/mysql` and `/var/www` become root-owned and MariaDB/Apache fail after rolling back the Nextcloud template. Drop the chown, or only apply it when uid shifting is in use. See also O2 for the same pattern at create time.
 
-### D4. Delete leaves snapshots, autostart links and orphaned config. P2 [R]
+### D4. Delete leaves snapshots, autostart links and orphaned config. P2 [R] **[DONE]** **[DONE]**
 - `storage/btrfs.go:80` only scans inside the machine path, and nothing removes the sibling `<name>.snapshots`. A new machine with the same name inherits old snapshots, so `snapshot create` says "already exists" and rollback restores stale data.
 - `Delete` never runs `systemctl disable`, so a dangling `systemd-nspawn@<n>.service` enable link makes a later same-name machine autostart.
 - `manager.go:409-416` removes config files before deleting storage. If the storage delete fails, the machine is registered but has no config and can't start. Delete storage first.
@@ -112,7 +112,7 @@ Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or s
 - The newest dated directory is chosen without checking it contains `rootfs.tar.xz` (`:166-203`). An in-progress build gives a 404 with no fallback.
 - Temp files in `cache/` leak on SIGINT, and nothing is actually cached (`:225`).
 - `image/cleanup.go:32-36` hardcodes 8.8.8.8, 1.1.1.1 and 8.8.4.4, which overrides LAN DNS such as Pi-hole/AdGuard. `archToLXC` lacks `386->i386` and `ppc64le->ppc64el`.
-- Host-side writes into the rootfs (`provision/boot.go:68`, `cleanup.go:37`, `engine.go`) use plain `os.WriteFile` and `MkdirAll`, so they follow symlinks planted in an image. `data.go` already has a `secureJoin`; use it everywhere.
+- Host-side writes into the rootfs (`provision/boot.go:68`, `cleanup.go:37`, `engine.go`) use plain `os.WriteFile` and `MkdirAll`, so they follow symlinks planted in an image. `data.go` already has a `secureJoin`; use it everywhere. **Fixed: All rootfs writes now use `secureJoin` and `deploy.Sudo()` for proper permission handling.**
 
 ---
 
@@ -134,7 +134,7 @@ Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or s
 - `Environment=K=V` values with spaces are not quoted, and nspawn splits unquoted values on whitespace (not run-tested).
 - `ValidateMachineName` accepts one-character names (`parser.go:20`), but the polkit regex needs two or more (`setup.go:25`), so such a machine can never start. Reject them.
 
-### V5. GPU detection errors are swallowed. P2 [V]
+### V5. GPU detection errors are swallowed. P2 [V] **[DONE]** **[DONE]**
 `compiler/nspawn.go:67-71` and `:114-118` use `if err == nil`. With `gpu.enabled: true` and no GPU found, the machine starts with no devices and no warning. Return the error, or at least warn.
 
 ### V6. Template params are interpolated unescaped into shell scripts. P2 [V]
@@ -191,16 +191,16 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 ### O2. `fixRootfsOwnership` runs `chown -R 0:0` on every new machine. P2 [R, verify]
 `manager.go:230,786`. The kernel clears setuid/setgid bits and file capabilities on chown, which would break `sudo`, `su`, `passwd` and `ping` in the container, and it flattens image ownership (`_apt`, `systemd-*`, groups). Check with `find <rootfs> -perm -4000` after create. Extract with correct ownership (see X3) and chown only what lxspawn itself created.
 
-### O3. `Provision` can leave a service down and says "complete" when it skipped work. P2 [R]
+### O3. `Provision` can leave a service down and says "complete" when it skipped work. P2 [R] **[DONE]** **[DONE]**
 `manager.go:709-778`: it stops a running machine and returns on pre-boot failure without restarting it. For a stopped machine it skips post-boot scripts yet prints "Provisioning complete". Restart in a `defer` when `wasRunning`, and report skipped work.
 
-### O4. Provision scripts run up to three times on failure. P2 [R]
+### O4. Provision scripts run up to three times on failure. P2 [R] **[DONE]** **[DONE]**
 `provision/exec.go:49-103` retries the whole script on any non-zero exit. A script that fails after a partial install repeats from the top. Retry only when `systemd-run` fails to connect (D-Bus not ready); fail immediately on script exit codes.
 
-### O5. Script hashes are saved only after all scripts pass. P2 [R]
+### O5. Script hashes are saved only after all scripts pass. P2 [R] **[DONE]** **[DONE]**
 `engine.go:155-197`. If script 2 fails, script 1's hash is never written, so a re-run repeats finished scripts. Save state after each script.
 
-### O6. Probe and exec timeouts don't stop the real process. P2 [R]
+### O6. Probe and exec timeouts don't stop the real process. P2 [R] **[DONE]** **[DONE]**
 `probe.go:70`, `exec.go:92`: `cmd.Process.Kill()` targets `sudo` (root), so the unprivileged kill gets EPERM (ignored), and the in-container unit keeps running. The nextcloud probe is an infinite `until curl` loop, so up to 30 of them pile up. Use `--unit=lxspawn-probe-<n>` plus `systemctl stop`, or `--property=RuntimeMaxSec=`, and drop infinite loops from probe scripts.
 
 ### O7. Typed errors exist but are not used. P2 [V] **[DONE]**

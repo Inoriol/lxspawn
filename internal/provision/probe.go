@@ -1,9 +1,9 @@
 package provision
 
 import (
-	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -51,42 +51,30 @@ func (p *ProbeRunner) RunProbes(probes []config.Probe, ctx *TemplateContext) ([]
 func (p *ProbeRunner) runProbe(script string, hint string, ctx *TemplateContext) error {
 	maxAttempts := 30
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		args := []string{"systemd-run", "-M", p.machineName, "--pipe", "--wait", "--", "/bin/bash", "-s"}
+		timeoutSec := int(defaultProbeTimeout.Seconds())
+		args := []string{
+			"systemd-run", "-M", p.machineName, "--pipe", "--wait",
+			fmt.Sprintf("--property=RuntimeMaxSec=%d", timeoutSec),
+			"--", "/bin/bash", "-s",
+		}
 		cmd := deploy.Sudo(args...)
 		cmd.Stdin = strings.NewReader(script)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		ctxTimeout, cancel := context.WithTimeout(context.Background(), defaultProbeTimeout)
-		
-		err := cmd.Start()
-		if err != nil {
-			cancel()
-			if attempt < maxAttempts-1 {
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			return fmt.Errorf("probe failed to start after %d attempts: %w", maxAttempts, err)
+		err := cmd.Run()
+		if err == nil {
+			return nil
 		}
 
-		done := make(chan error, 1)
-		go func() { done <- cmd.Wait() }()
-
-		select {
-		case <-ctxTimeout.Done():
-			cancel()
-			if cmd.Process != nil {
-				cmd.Process.Kill()
-			}
-			if attempt < maxAttempts-1 {
-				logger.Warn(fmt.Sprintf("Probe attempt %d timed out after %v, retrying...", attempt+1, defaultProbeTimeout))
-				time.Sleep(2 * time.Second)
-				continue
-			}
-		case err := <-done:
-			cancel()
-			if err == nil {
-				return nil
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			if exitCode == 137 || exitCode == 143 {
+				if attempt < maxAttempts-1 {
+					logger.Warn(fmt.Sprintf("Probe attempt %d timed out after %v, retrying...", attempt+1, defaultProbeTimeout))
+					time.Sleep(2 * time.Second)
+					continue
+				}
 			}
 		}
 

@@ -108,3 +108,8 @@ func LxspawnDataDirPath() string {
 	paths := GetPaths()
 	return paths.LxspawnDataDir
 }
+
+func SnapshotsDir(name string) string {
+	paths := GetPaths()
+	return filepath.Join(paths.MachinesDir, name+".snapshots")
+}

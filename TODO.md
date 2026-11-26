@@ -26,7 +26,12 @@ All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs
 - [x] **C5: Apply preserves metadata** - Apply preserves `CreatedAt` and cleans stale files
 - [x] **C6: Operation lock** - Per-machine flock prevents concurrent operation races
 - [x] **D1/D2/D3: Rollback fixes** - Sudoers rules match, recovery runs, no auto-delete
+- [x] **D4: Delete cleanup** - Removes snapshots directory, disables autostart, polls for stopped state
 - [x] **O1: WaitForMachine** - Polls for actual container boot, not just machined state
+- [x] **O3: Provision restart** - Defers restart if machine was running before provisioning
+- [x] **O4: Exec retry logic** - Only retries on connection errors, not script exit codes
+- [x] **O5: Script hash state** - Saves provision state after each script, not just at end
+- [x] **O6: Timeout handling** - Uses RuntimeMaxSec for proper in-container process termination
 - [x] **O7: Typed errors** - All "not found" errors use `NewMachineNotFoundError`
 - [x] **O8: Progress stream** - Clean NDJSON output with ProgressMode flag
 - [x] **P1: Sudoers rules** - Tightened patterns, removed LVM, exact arguments
@@ -36,6 +41,7 @@ All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs
 - [x] **P6: Scripts via stdin** - Provision scripts passed via stdin, not argv
 - [x] **P7: Secret permissions** - Boot scripts 0700, config 0600
 - [x] **V1/V2/V3: Injection fixes** - Strict validation for GPU devices, tmpfs options, paths
+- [x] **V5: GPU error handling** - Returns error when GPU detection fails with gpu.enabled
 - [x] **X1: Tar extraction** - Real filesystem symlink checks prevent escapes
 - [x] **X2: Image verification** - SHA256 verification against SHA256SUMS
 - [x] **X4: XZ error handling** - Named return captures close errors
@@ -43,7 +49,7 @@ All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs
 
 ### Known Issues (Open)
 
-- **Data/Boot provisioner permission bug** - Provisioners fail with "permission denied" when writing to root-owned rootfs. Needs `deploy.Sudo()` for writes.
+- **Data/Boot provisioner permission bug** - Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
 
 ---
 

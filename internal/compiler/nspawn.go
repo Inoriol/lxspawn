@@ -21,7 +21,10 @@ func compileNspawn(cfg *config.Config) (string, error) {
 		sections["Exec"] = execLines
 	}
 
-	filesLines := buildFilesSection(cfg)
+	filesLines, err := buildFilesSection(cfg)
+	if err != nil {
+		return "", err
+	}
 	if len(filesLines) > 0 {
 		sections["Files"] = filesLines
 	}
@@ -65,9 +68,10 @@ func buildExecSection(cfg *config.Config) ([]string, error) {
 
 	if cfg.GPU.Enabled {
 		gpuCaps, err := getGPUCapabilities(cfg)
-		if err == nil {
-			allCaps = append(allCaps, gpuCaps...)
+		if err != nil {
+			return nil, fmt.Errorf("GPU capabilities detection failed: %w", err)
 		}
+		allCaps = append(allCaps, gpuCaps...)
 	}
 
 	if len(allCaps) > 0 {
@@ -103,7 +107,7 @@ func buildExecSection(cfg *config.Config) ([]string, error) {
 	return lines, nil
 }
 
-func buildFilesSection(cfg *config.Config) []string {
+func buildFilesSection(cfg *config.Config) ([]string, error) {
 	var lines []string
 
 	if cfg.Advanced.ReadOnly {
@@ -112,10 +116,11 @@ func buildFilesSection(cfg *config.Config) []string {
 
 	if cfg.GPU.Enabled {
 		gpuDevices, err := getGPUDevices(cfg)
-		if err == nil {
-			for _, device := range gpuDevices {
-				lines = append(lines, fmt.Sprintf("Bind=%s", device))
-			}
+		if err != nil {
+			return nil, fmt.Errorf("GPU device detection failed: %w", err)
+		}
+		for _, device := range gpuDevices {
+			lines = append(lines, fmt.Sprintf("Bind=%s", device))
 		}
 	}
 
@@ -141,7 +146,7 @@ func buildFilesSection(cfg *config.Config) []string {
 		lines = append(lines, fmt.Sprintf("Inaccessible=%s", path))
 	}
 
-	return lines
+	return lines, nil
 }
 
 func getGPUDevices(cfg *config.Config) ([]string, error) {

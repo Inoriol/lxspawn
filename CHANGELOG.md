@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-machine operation lock (C6)** - `Create`, `Delete`, and `Apply` now acquire a per-machine `flock` before proceeding. Prevents race conditions where concurrent operations could destroy each other's work.
 - **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.
 - **HTTPS redirect validation (X5)** - HTTP clients now reject redirects to insecure HTTP URLs. Prevents https-to-http downgrade attacks during image downloads.
+- **Sudoers rules for rootfs operations** - Added sudoers rules for `tee`, `ln`, `rm`, `mkdir`, `chmod`, `chown` on files inside machine rootfs. Enables non-root users to run provision commands on root-owned rootfs.
 
 ### Changed
 
@@ -27,6 +28,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`Apply` preserves metadata and cleans stale files (C5)** - Now preserves `CreatedAt` timestamp from existing machine info. Removes stale slice and hook files when no longer needed.
 - **Typed errors used throughout (O7)** - All "machine not found" errors in manager now use `NewMachineNotFoundError`. JSON output returns proper error codes (`MACHINE_NOT_FOUND`, `MACHINE_EXISTS`) with distinct exit codes (2, 3).
 - **Setup fails loudly on errors (P4)** - `lxspawn setup` now returns non-zero exit code and lists failures when sudoers/polkit installation fails. Previously reported success even when critical components failed.
+- **Provision restarts machine after completion (O3)** - `lxspawn provision` now restarts the machine if it was running before provisioning. Uses defer to ensure restart happens even if provisioning fails.
+- **Exec provisioner only retries on connection errors (O4)** - Script execution no longer retries on non-zero exit codes. Only retries when `systemd-run` fails to connect (D-Bus not ready). Prevents repeating partially-completed scripts.
+- **Script hashes saved incrementally (O5)** - Provision state now saved after each script succeeds, not just at the end. Prevents re-running completed scripts if a later script fails.
+- **Probe and exec timeouts use RuntimeMaxSec (O6)** - Timeouts now use `--property=RuntimeMaxSec=` to terminate in-container processes properly. Previously, killing the sudo process left orphaned processes running inside the container.
+- **GPU detection errors propagated (V5)** - `compiler/nspawn.go` now returns errors when GPU detection fails with `gpu.enabled: true`. Previously silently ignored errors, leading to machines starting without GPU access.
+- **Delete cleans up completely (D4)** - `lxspawn delete` now removes sibling snapshots directory, runs `systemctl disable` to prevent autostart issues, and polls for stopped state with timeout before deletion.
+- **Rootfs writes use secure paths and sudo (X5)** - All rootfs writes (boot, data, yq provisioners, cleanup) now use `secureJoin` for path resolution and `deploy.Sudo()` for privileged operations. Prevents permission errors when provisioning root-owned rootfs and closes symlink escape vulnerability.
 
 ### Fixed
 
@@ -35,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Snapshot/rollback operations work correctly (D1/D2/D3)** - All btrfs snapshot operations now match sudoers rules. Rollback properly executes recovery commands and refuses to proceed if leftover directories exist.
 - **Template and stdin machines have usable config (C1/C2)** - Canonical config is now properly serialized and written for machines created with `--template` or `-` (stdin).
 - **Injection vulnerabilities fixed (V1/V2/V3)** - GPU device paths, tmpfs options, and volume paths now validated against strict patterns. Sensitive path check expanded to include more system directories.
+- **Data/Boot provisioner permission bug** - Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs. Previously failed with "permission denied" when writing to directories owned by root.
 
 ### Security
 
@@ -43,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Image integrity verification (X2)** - SHA256 verification prevents use of tampered rootfs images.
 - **Tar extraction prevents symlink escapes (X1)** - Real filesystem checks prevent symlink-based attacks during extraction.
 - **Sudoers rules use exact patterns (P1)** - Removed overly permissive patterns, added exact argument matching for all privileged operations.
+- **Rootfs writes use secure paths** - All rootfs writes now use `secureJoin` to prevent symlink escape attacks. Combined with sudo for proper permission handling.
 
 ## [0.1.3] - 2026-11-21
 
