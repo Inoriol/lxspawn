@@ -608,7 +608,8 @@ func (m *Manager) WaitForMachine(name string, timeout time.Duration) error {
 	for time.Now().Before(deadline) {
 		status, err := m.GetStatus(name)
 		if err == nil && status.State == "running" {
-			checkCmd := exec.Command("sudo", "-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/true")
+			checkCmd := deploy.Sudo("systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-s")
+			checkCmd.Stdin = strings.NewReader("")
 			if err := checkCmd.Run(); err == nil {
 				return nil
 			}

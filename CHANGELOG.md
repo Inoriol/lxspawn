@@ -7,25 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
 ### Added
 
 - **Dependabot configuration** - Added `.github/dependabot.yml` for weekly dependency updates (gomod and github-actions).
 - **CI/CD test gate (B1)** - Release workflow now runs tests with `go mod verify`, `go vet`, `go test -race -cover`, and `govulncheck` before publishing.
 - **Regression tests for injection fixes (V1/V2)** - Added `TestValidateGPUDeviceWithNewline`, `TestValidateVolumeTmpfsOptionsInvalid`, and `TestValidateVolumeTmpfsOptionsWithColon` to prevent regression of injection vulnerabilities.
-
-### Changed
-
-- **Consolidated CI test runs (B2)** - Combined three separate test runs (short, race, cover) into single `go test -race -cover` run in test.yml.
-- **Makefile hardened (B3)** - Added `GOOS=linux` for cross-platform builds, added `-race` flag to test target.
-- **Removed `go mod tidy` from goreleaser (B1)** - Prevents dependency changes at release time. Added `go mod verify` step instead.
-- **Updated dependencies (B4)** - Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
-
-### Fixed
-
-- **TODO C6 outdated note** - Removed outdated "Update Makefile to install templates" note since templates are now embedded.
-
-### Added
-
+- **Sudoers cross-check test** - Added `TestSudoersCrossCheck` that uses `go/ast` to verify every `deploy.Sudo()` call site uses a binary with a corresponding sudoers rule. Prevents drift between Go code and sudoers rules.
 - **SHA256 image verification (X2)** - Downloaded rootfs images are now verified against `SHA256SUMS` from the image server before extraction. Prevents use of corrupted or tampered images from compromised mirrors.
 - **Per-machine operation lock (C6)** - `Create`, `Delete`, and `Apply` now acquire a per-machine `flock` before proceeding. Prevents race conditions where concurrent operations could destroy each other's work.
 - **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.
@@ -36,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Consolidated CI test runs (B2)** - Combined three separate test runs (short, race, cover) into single `go test -race -cover` run in test.yml.
+- **Makefile hardened (B3)** - Added `GOOS=linux` for cross-platform builds, added `-race` flag to test target.
+- **Removed `go mod tidy` from goreleaser (B1)** - Prevents dependency changes at release time. Added `go mod verify` step instead.
+- **Updated dependencies (B4)** - Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
+- **Refactored sudoers rule generation** - Extracted `generateSudoersRules()` from `installSudoersRules()` for testability.
 - **Sudoers rules tightened (P1)** - Removed LVM rules (backend disabled), fixed `chmod` to `0[0-7]{3}` (no setuid), changed `systemd-run` to use `-s$` (stdin mode), added `stop`/`kill` systemctl rules, escaped `.` in patterns. All rules now use exact argument patterns.
 - **State file permissions changed to 0660 (P5)** - `machines.json` and lock file now use 0660 permissions with group ownership set to `lxspawn`. Enables multi-user support where multiple group members can manage machines.
 - **`deploy.Sudo()` now uses `-n` flag (P3)** - All sudo calls now use non-interactive mode. Prevents TTY hangs when rules don't match and provides clear errors under Cockpit.
@@ -69,9 +63,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CPU% normalized without quota (O11)** - CPU usage percentage now normalized by `runtime.NumCPU()` when no quota is set. Prevents values above 100% on multi-core systems.
 - **Confirmation prompts skip in JSON mode (O11)** - `delete` and `rollback` commands now skip confirmation prompts when `--json` flag is set. Prevents interactive prompts in automated workflows.
 - **Boot script deduplication (O11)** - Boot provisioner now deduplicates scripts by content hash. Re-running provision doesn't create duplicate scripts. Boot service uses `set -eu` and `.done` marker for once-only execution.
+- **Documentation consolidation** - README.md reduced from 506 to 194 lines (62% reduction). Removed duplicated sections. ARCHITECTURE.md, DEVELOPMENT.md, and TODO.md also streamlined. Total reduction: 427 lines (11%).
 
 ### Fixed
 
+- **TODO C6 outdated note** - Removed outdated "Update Makefile to install templates" note since templates are now embedded.
+- **Direct sudo bypasses migrated** - `shell.go:Exec()` and `manager.go:WaitForMachine()` now use `deploy.Sudo()` instead of direct `exec.Command("sudo", ...)`. Ensures all privileged calls go through the centralized wrapper and are covered by sudoers rules.
 - **XZ close error handling (X4)** - `extractTarXz` now uses named return to properly capture and return xz reader close errors. Prevents silent failures from truncated archives.
 - **Sudoers journalctl rule syntax** - Fixed missing `$` terminator in journalctl rule that caused visudo validation to fail.
 - **Snapshot/rollback operations work correctly (D1/D2/D3)** - All btrfs snapshot operations now match sudoers rules. Rollback properly executes recovery commands and refuses to proceed if leftover directories exist.
@@ -385,7 +382,9 @@ Initial public release of lxspawn - a daemonless, lightweight "Light VM" orchest
 - **machinectl shell PTY errors** - Intermittent issues with interactive shell (exec uses nsenter as workaround)
 - **Macvlan host visibility** - Host cannot ping macvlan containers (kernel limitation, solved with host_access feature)
 
-[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Inoriol/lxspawn/compare/v0.1.3...v0.2.0
+[0.1.3]: https://github.com/Inoriol/lxspawn/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.0

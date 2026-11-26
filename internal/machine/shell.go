@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
+	"github.com/Inoriol/lxspawn/internal/deploy"
 )
 
 func (m *Manager) Shell(name string) error {
@@ -31,8 +32,8 @@ func (m *Manager) Exec(name string, command []string) error {
 	shellCmd := shellQuoteArgs(command)
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
 
-	args := []string{"-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-s"}
-	cmd := exec.Command("sudo", args...)
+	args := []string{"systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-s"}
+	cmd := deploy.Sudo(args...)
 	cmd.Stdin = strings.NewReader(envScript)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

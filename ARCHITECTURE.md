@@ -1086,72 +1086,9 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 - **Under load:** Native performance (no virtualization overhead)
 - **Optimization:** Use `cpus` for hard limits, `CPUWeight` for soft priorities
 
-## Testing Strategy
+## Testing
 
-### Unit Tests
-
-**340+ tests across 23 test files, all passing (1 skipped, requires root):**
-
-- `internal/config/parser_test.go` - Config parsing and validation (64 tests)
-- `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
-- `internal/deploy/state_test.go` - State management: register, unregister, persistence, list sorting (18 tests)
-- `internal/deploy/filesystem_test.go` - Path helpers, WriteFileAtomic, RemoveAll (21 tests)
-- `internal/provision/template_test.go` - Template rendering with all variables, params, edge cases (20 tests)
-- `internal/provision/yq_test.go` - YQ provisioner: expression parsing, format detection, value types (20 tests)
-- `internal/provision/boot_test.go` - Boot provisioner: script writing, service install, numbering (8 tests)
-- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions, path validation (18 tests)
-- `internal/provision/file_test.go` - File handler: digest validation, local file resolution (12 tests)
-- `internal/provision/exec_test.go` - Exec provisioner: env export, provisioner modes, param handling (13 tests)
-- `internal/image/fetcher_test.go` - Image fetcher: URL building, tar extraction, path traversal (8 tests)
-- `internal/image/cleanup_test.go` - Rootfs cleanup: machine-id, resolv.conf, securetty (7 tests)
-- `internal/image/validate_test.go` - Init system detection at multiple paths (7 tests)
-- `internal/image/network_test.go` - Network config injection for all modes (10 tests)
-- `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
-- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests)
-- `internal/machine/manager_integration_test.go` - Lifecycle integration tests with fakes: Start, Stop, Restart, Delete, GetStatus, ListMachines, ListMachinesWithState, Close (20 tests)
-- `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
-- `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
-- `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
-- `internal/snapshot/manager_test.go` - Snapshot state serialization, JSON fields (5 tests)
-- `internal/kernel/version_test.go` - Kernel version detection, btrfs detection (5 tests)
-- `internal/kernel/systemd_test.go` - Systemd version detection, PrivateUsers=identity support (2 tests)
-- `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests)
-
-### Integration Tests
-
-Integration tests use fake implementations (`FakeSystemdClient`, `FakeStorageBackend`) from `internal/testutil` to test the `Manager` lifecycle methods without requiring real systemd, root privileges, or actual storage backends.
-
-**Covered scenarios:**
-- Start/Stop/Restart lifecycle with state verification
-- Delete with state cleanup and storage deletion
-- GetStatus with machine state from fake systemd
-- ListMachines and ListMachinesWithState with running machine detection
-- Error paths (machine not found, systemd failures)
-- NewManagerWithDeps constructor injection
-
-**Test infrastructure:**
-- `deploy.SetPaths()` / `deploy.ResetPaths()` configure filesystem paths per-test using `t.TempDir()`
-- `FakeSystemdClient` records all method calls for assertion
-- `FakeStorageBackend` tracks machine creation/deletion
-- `FakeSystemdClient.MachineState` map controls reported machine states
-
-### Manual E2E Tests
-
-- Full lifecycle (create → start → shell → stop → delete)
-- Networking modes (host, private, bridge, zone)
-- Resource limits (verify cgroup values)
-- Volume mounts (read-only, read-write, tmpfs)
-- Host-side hooks (pre_start, post_start, post_stop)
-- Snapshot lifecycle (create → list → rollback → delete)
-- Snapshot rollback preserves pre-snapshot state
-- Machine delete with snapshots (recursive subvolume cleanup)
-
-### Manual Testing
-
-- Test on multiple distros (Fedora, Ubuntu, Arch)
-- Test with different images (Debian, Ubuntu, Fedora, Arch)
-- Test edge cases (large rootfs, many machines, concurrent operations)
-- GPU pass-through tested on Intel iGPU (Gemini Lake UHD Graphics 600)
+See [DEVELOPMENT.md](DEVELOPMENT.md) for how to run tests, write integration tests, and the testing checklist.
 
 ## Troubleshooting
 
@@ -1176,18 +1113,6 @@ Integration tests use fake implementations (`FakeSystemdClient`, `FakeStorageBac
 **"bridge not found"**
 - Bridge doesn't exist on host
 - Create bridge first: `ip link add name br0 type bridge`
-
-### Debug Mode
-
-```bash
-lxspawn --verbose launch myserver.yaml
-```
-
-Shows:
-- YAML parsing details
-- Generated file contents
-- systemd D-Bus calls
-- Image download progress
 
 ## References
 

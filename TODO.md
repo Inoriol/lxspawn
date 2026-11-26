@@ -17,6 +17,7 @@ Completed phases:
 - Phase 4.21 (V2) - Code Review 2 security fixes (SUGGESTIONS-2.md)
 - Phase 4.22 (V2) - Code Review 2 remaining fixes (SUGGESTIONS-2.md)
 - Phase 4.23 (V2) - CI/CD and build system hardening (SUGGESTIONS-2.md Section 8)
+- Phase 4.24 (V2) - Sudoers cross-check test (SUGGESTIONS-2.md Section 9)
 
 ### Phase 4.21 - Code Review 2 Fixes (2026-01-25)
 
@@ -92,6 +93,42 @@ Final items from SUGGESTIONS-2.md (Section 8: CI, release, build, dependencies):
 ### Known Issues (Open)
 
 - **Data/Boot provisioner permission bug** - Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
+
+---
+
+## Phase 4.24 - Sudoers Cross-Check Test
+
+Automated test that validates every `deploy.Sudo()` call site matches a generated sudoers rule.
+
+**Scope:**
+- 69 `deploy.Sudo()` call sites across 14 files
+- 3 direct `exec.Command("sudo", ...)` bypasses (2 need attention)
+- ~40 sudoers rules generated dynamically
+- LVM/ZFS calls (~20) have no matching rules (disabled backends)
+
+**Implementation plan:**
+
+1. **Refactor `installSudoersRules()`** in `cmd/lxspawn/setup.go`
+   - Extract testable `generateSudoersRules(binaries map[string]string) []string`
+   - Currently `findBinary()` is called inline, making rules non-deterministic in tests
+
+2. **Static analysis test** in `cmd/lxspawn/sudoers_test.go`
+   - Use `go/ast` to parse all `.go` files
+   - Find every `deploy.Sudo(...)` call and extract command shape
+   - Find every `exec.Command("sudo", ...)` bypass
+   - Assert each call shape matches a generated sudoers rule
+
+3. **Handle known gaps**
+   - LVM/ZFS backends: disabled, no rules - test must exclude
+   - `sudoOrDirectForRootfs` wrappers: conditional sudo - handle specially
+   - Direct `exec.Command("sudo", ...)` bypasses in `shell.go:35` and `manager.go:611`
+
+**Status:** Complete
+
+- [x] Refactor `installSudoersRules()` to extract `generateSudoersRules()`
+- [x] Create `sudoers_test.go` with go/ast parsing
+- [x] Migrate direct sudo bypasses to `deploy.Sudo()` or whitelist
+- [x] Test passes on all active (non-LVM/ZFS) call sites
 
 ---
 
@@ -206,29 +243,11 @@ Final items from SUGGESTIONS-2.md (Section 8: CI, release, build, dependencies):
 
 ## Known Issues
 
-### Data/Boot Provisioner Permission Bug
-
-**Status:** Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
-
-When running `lxspawn provision` on a machine with rootfs owned by root (typical after image extraction), the data and boot provisioners previously failed with "permission denied" when trying to write files to the rootfs. This has been fixed by using `deploy.Sudo()` for all privileged rootfs writes.
-
 ### machinectl Shell PTY Errors
 
-Intermittent "Failed to get shell PTY: Protocol error" or "There is no system bus in container" when using `lxspawn shell` or post-boot provisioning.
+Intermittent "Failed to get shell PTY: Protocol error" or "There is no system bus in container" when using `lxspawn shell`.
 
-**Status:** Partially fixed. Post-boot provisioning, readiness probes, and `lxspawn exec` now use `systemd-run -M` for non-interactive execution, which avoids PTY allocation issues entirely. Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic for reliability.
-
-### Macvlan Host Visibility
-
-Host cannot ping macvlan containers (expected limitation of macvlan). Container can communicate with other network devices on the LAN.
-
-**Workaround:** Use `host_access` configuration or `adaptive` network mode to create a host-side macvlan interface.
-
-### Container Network Interface Naming
-
-- macvlan creates `mv-<interface>` in container
-- ipvlan creates `iv-<interface>` in container
-- Network config must match these names
+**Status:** Partially fixed. Post-boot provisioning, readiness probes, and `lxspawn exec` use `systemd-run -M` which avoids PTY issues. Interactive shell (`lxspawn shell`) still uses `machinectl shell` with retry logic.
 
 ---
 

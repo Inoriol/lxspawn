@@ -59,29 +59,7 @@ go tool cover -html=coverage.out
 
 ### Package Organization
 
-```
-cmd/lxspawn/          # CLI commands (one file per command)
-templates/            # Embedded machine templates (go:embed *.yaml)
-internal/
-├── config/           # YAML parsing and validation
-├── compiler/         # Generate systemd files (.nspawn, slice, drop-in)
-├── provision/        # Provisioning engine (boot, data, yq, system, user)
-├── image/            # Rootfs image management (download, extract, cleanup)
-├── machine/          # Machine lifecycle management
-│   ├── manager.go    # Core lifecycle (Create, Launch, Start, Stop, Delete, Apply)
-│   ├── stats.go      # Runtime CPU/memory/disk stats (cgroup readers)
-│   └── shell.go      # Shell, exec, logs, log quoting
-├── storage/          # Storage backend abstraction (btrfs, lvm, directory)
-├── snapshot/         # Snapshot management
-├── network/          # Network detection and configuration
-├── gpu/              # GPU detection and pass-through
-├── errors/           # Structured error types and exit codes
-├── progress/         # Progress event streaming (newline-delimited JSON)
-├── deploy/           # Systemd integration (D-Bus, state, filesystem, paths)
-├── testutil/         # Test fakes (FakeSystemdClient, FakeStorageBackend)
-├── logger/           # Logging utilities
-└── output/           # JSON formatting
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md#package-structure) for the full package tree.
 
 ### Key Interfaces
 
@@ -796,6 +774,39 @@ func TestGetStatus_Running(t *testing.T) {
     assert.Equal(t, "running", status.State)
 }
 ```
+
+## Sudoers Cross-Check Test
+
+The `cmd/lxspawn/sudoers_test.go` file contains a cross-check test that validates every `deploy.Sudo()` call site uses a binary with a corresponding sudoers rule. This prevents drift between the Go code and the generated sudoers rules.
+
+### How It Works
+
+The test uses `go/ast` to parse all `.go` files in the project and:
+1. Find every `deploy.Sudo(...)` call and extract the binary name (first argument)
+2. Find every `sudoOrDirectForRootfs(...)` wrapper call (which may call `deploy.Sudo()`)
+3. Generate sudoers rules with dummy binary paths
+4. Verify each binary used in the code has a corresponding rule
+
+### Running the Test
+
+```bash
+go test ./cmd/lxspawn -run TestSudoersCrossCheck
+```
+
+### Adding New Sudo Calls
+
+When adding new `deploy.Sudo()` calls:
+1. Ensure the binary is in the list checked by `findAvailableBinaries()` in `setup.go`
+2. Add a corresponding rule in `generateSudoersRules()`
+3. The cross-check test will fail if the rule is missing
+
+### Excluded Files
+
+The test excludes disabled backends (LVM, ZFS) which have `deploy.Sudo()` calls but no sudoers rules:
+- `internal/snapshot/lvm.go`
+- `internal/snapshot/zfs.go`
+- `internal/storage/lvm_thin.go`
+- `internal/storage/detector.go`
 
 ## Code Review Guidelines
 

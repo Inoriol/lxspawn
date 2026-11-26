@@ -197,79 +197,75 @@ func findBinary(name string) string {
 	return path
 }
 
-func installSudoersRules() error {
-	sudoersPath := "/etc/sudoers.d/lxspawn"
-	if err := os.MkdirAll(filepath.Dir(sudoersPath), 0755); err != nil {
-		return err
+func findAvailableBinaries() map[string]string {
+	binaries := make(map[string]string)
+	for _, name := range []string{"rm", "chown", "chmod", "mv", "mkdir", "tar", "tee", "ln", "systemd-run", "journalctl", "systemctl", "btrfs"} {
+		if bin := findBinary(name); bin != "" {
+			binaries[name] = bin
+		}
 	}
+	return binaries
+}
 
-	// Check sudo version - regex arguments require sudo 1.9.10+
-	sudoVersion, err := getSudoVersion()
-	if err != nil {
-		return fmt.Errorf("failed to check sudo version: %w", err)
-	}
-	if !sudoVersionSupportsRegex(sudoVersion) {
-		return fmt.Errorf("sudo version %s does not support regex arguments (requires 1.9.10+). Please upgrade sudo.", sudoVersion)
-	}
-
+func generateSudoersRules(binaries map[string]string) []string {
 	var rules []string
 	namePat := `[a-zA-Z0-9][a-zA-Z0-9_-]*`
 	machinesDir := `/var/lib/machines/`
 	rootfsInsidePat := machinesDir + namePat + `/.+`
 
 	rules = append(rules, "# Core operations (always needed)")
-	if bin := findBinary("rm"); bin != "" {
+	if bin := binaries["rm"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-rf %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-f %s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("chown"); bin != "" {
+	if bin := binaries["chown"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^root\\:lxspawn %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-R 0\\:0 %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ %s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("chmod"); bin != "" {
+	if bin := binaries["chmod"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^0[0-7]{3} %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^0[0-7]{3} %s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("mv"); bin != "" {
+	if bin := binaries["mv"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s %s%s\\.rollback-old$", bin, machinesDir, namePat, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s\\.rollback-temp %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s\\.rollback-old %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
 	}
-	if bin := findBinary("mkdir"); bin != "" {
+	if bin := binaries["mkdir"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s%s$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s%s\\.snapshots$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("tar"); bin != "" {
+	if bin := binaries["tar"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--xattrs --xattrs-include=\\* -xJf /var/lib/lxspawn/cache/rootfs-[a-zA-Z0-9]+\\.tar\\.xz -C %s%s$", bin, machinesDir, namePat))
 	}
-	if bin := findBinary("tee"); bin != "" {
+	if bin := binaries["tee"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("ln"); bin != "" {
+	if bin := binaries["ln"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-s /dev/null %s$", bin, rootfsInsidePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-s \\.\\./lxspawn-boot\\.service %s$", bin, rootfsInsidePat))
 	}
-	if bin := findBinary("systemd-run"); bin != "" {
+	if bin := binaries["systemd-run"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --pipe --wait --property=RuntimeMaxSec=[0-9]+ -- /bin/bash -s$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --pipe --wait -- /bin/bash -s$", bin, namePat))
 	}
-	if bin := findBinary("journalctl"); bin != "" {
+	if bin := binaries["journalctl"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --no-pager -o short-iso$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s -f$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-u systemd-nspawn@%s\\.service -n [0-9]+ -o short-iso$", bin, namePat))
 	}
-	if bin := findBinary("systemctl"); bin != "" {
+	if bin := binaries["systemctl"]; bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^enable systemd-nspawn@%s\\.service$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^disable systemd-nspawn@%s\\.service$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^stop systemd-nspawn@%s\\.service$", bin, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^kill -s SIGKILL systemd-nspawn@%s\\.service$", bin, namePat))
 	}
 
-	if bin := findBinary("btrfs"); bin != "" {
+	if bin := binaries["btrfs"]; bin != "" {
 		rules = append(rules, "")
 		rules = append(rules, "# btrfs operations")
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume create %s%s$", bin, machinesDir, namePat))
@@ -288,6 +284,24 @@ func installSudoersRules() error {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^filesystem usage -b %s$", bin, machinesDir))
 	}
 
+	return rules
+}
+
+func installSudoersRules() error {
+	sudoersPath := "/etc/sudoers.d/lxspawn"
+	if err := os.MkdirAll(filepath.Dir(sudoersPath), 0755); err != nil {
+		return err
+	}
+
+	sudoVersion, err := getSudoVersion()
+	if err != nil {
+		return fmt.Errorf("failed to check sudo version: %w", err)
+	}
+	if !sudoVersionSupportsRegex(sudoVersion) {
+		return fmt.Errorf("sudo version %s does not support regex arguments (requires 1.9.10+). Please upgrade sudo.", sudoVersion)
+	}
+
+	rules := generateSudoersRules(findAvailableBinaries())
 	content := strings.Join(rules, "\n") + "\n"
 	
 	// Validate sudoers syntax before installing
