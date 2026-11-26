@@ -4,7 +4,7 @@ go 1.26.11
 
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/godbus/dbus/v5 v5.1.0
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/jedib0t/go-pretty/v6 v6.6.1
 	github.com/spf13/cobra v1.10.2
 	gopkg.in/yaml.v3 v3.0.1
