@@ -73,6 +73,12 @@ probes:
     description: "Docker daemon to be running"
     script: |
       #!/bin/bash
-      until systemctl is-active --quiet docker; do sleep 2; done
+      set -eu
+      for i in $(seq 1 30); do
+        systemctl is-active --quiet docker 2>/dev/null && exit 0
+        sleep 2
+      done
+      echo "Docker did not become ready in time" >&2
+      exit 1
     hint: |
       Docker may not have started. Check: journalctl -M {{.Name}} -u docker

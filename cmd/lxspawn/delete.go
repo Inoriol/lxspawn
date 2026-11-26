@@ -19,7 +19,7 @@ var deleteCmd = &cobra.Command{
 	Short: "Delete a machine and all its data",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !deleteYes && isStdinTerminal() {
+		if !deleteYes && isStdinTerminal() && !output.IsJSONMode() {
 			fmt.Printf("Are you sure you want to delete machine '%s'? [y/N]: ", args[0])
 			reader := bufio.NewReader(os.Stdin)
 			response, _ := reader.ReadString('\n')

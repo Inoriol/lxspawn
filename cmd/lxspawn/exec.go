@@ -14,7 +14,6 @@ var execCmd = &cobra.Command{
 	Args:  cobra.MinimumNArgs(2),
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Find the -- separator
 		sepIdx := -1
 		for i, arg := range args {
 			if arg == "--" {
@@ -27,12 +26,14 @@ var execCmd = &cobra.Command{
 		var command []string
 
 		if sepIdx == -1 {
-			// No -- separator, assume first arg is machine name
 			machineName = args[0]
 			command = args[1:]
 		} else {
 			machineName = args[0]
-			command = args[sepIdx+1:]
+			for i := 1; i < sepIdx; i++ {
+				command = append(command, args[i])
+			}
+			command = append(command, args[sepIdx+1:]...)
 		}
 
 		if len(command) == 0 {

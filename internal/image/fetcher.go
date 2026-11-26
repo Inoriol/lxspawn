@@ -325,6 +325,21 @@ func (f *Fetcher) verifyDownload(filePath, imageURL string) error {
 }
 
 func extractTarXz(tarXzPath, targetDir string) (err error) {
+	if os.Geteuid() != 0 {
+		return extractTarXzWithSudo(tarXzPath, targetDir)
+	}
+	return extractTarXzDirect(tarXzPath, targetDir)
+}
+
+func extractTarXzWithSudo(tarXzPath, targetDir string) error {
+	cmd := deploy.Sudo("tar", "--xattrs", "--xattrs-include=*", "-xJf", tarXzPath, "-C", targetDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tar extraction failed: %w (%s)", err, string(output))
+	}
+	return nil
+}
+
+func extractTarXzDirect(tarXzPath, targetDir string) (err error) {
 	f, err := os.Open(tarXzPath)
 	if err != nil {
 		return err

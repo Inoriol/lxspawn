@@ -86,5 +86,12 @@ func SetSELinuxContext(path, context string) error {
 	if !SELinuxEnforcing() {
 		return nil
 	}
-	return exec.Command("chcon", "-t", context, path).Run()
+
+	dir := filepath.Dir(path)
+	cmd := exec.Command("semanage", "fcontext", "-a", "-t", context, dir+"/.*")
+	if err := cmd.Run(); err != nil {
+		return exec.Command("chcon", "-t", context, path).Run()
+	}
+
+	return exec.Command("restorecon", "-R", dir).Run()
 }

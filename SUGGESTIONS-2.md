@@ -54,11 +54,15 @@ Even for file sources, the canonical copy is the raw YAML. After `launch x.yaml 
 
 **Fix.** Take a per-machine `flock` at the start of every mutating command. Make `RegisterMachine` fail if the name already exists (separate "update" from "register").
 
-### C7. `--name` on a file or stdin source keeps the old hostname. P3 [R]
+### C7. `--name` on a file or stdin source keeps the old hostname. P3 [R] **[DONE]**
 The parser already defaulted the hostname to the YAML's `name`, so the `Hostname == ""` check in `config_loader.go:51-54,65-68` never fires. Track whether the hostname was set explicitly.
 
-### C8. `--param` keys are not checked against the declared `param:`. P3 [R]
+**Fixed:** `--name` now always updates hostname.
+
+### C8. `--param` keys are not checked against the declared `param:`. P3 [R] **[DONE]**
 A typo such as `--param ipp=…` is silently accepted and the template default is used. Reject undeclared keys.
+
+**Fixed:** Unknown param keys now return an error.
 
 ---
 
@@ -83,10 +87,10 @@ A typo such as `--param ipp=…` is silently accepted and the template default i
 - `manager.go:409-416` removes config files before deleting storage. If the storage delete fails, the machine is registered but has no config and can't start. Delete storage first.
 - The running check is fail-open: a D-Bus error skips it (`:398`), and it runs right after `machinectl terminate` with no wait (`:398-401`), so a spurious "still running" is possible. Poll for the stopped state with a timeout.
 
-### D5. Smaller snapshot issues. P3 [R]
-- `snapshot/manager.go:133`: rollback wipes `snapshots.json`, which loses descriptions even though the snapshots survive.
-- `rollback.go:35`: only `running` blocks rollback; `starting` and `stopping` should too.
-- `storage/btrfs.go:154`: the reversed loop over a post-order list deletes parents first, which contradicts the "deepest first" comment.
+### D5. Smaller snapshot issues. P3 [R] **[DONE]**
+- `snapshot/manager.go:133`: rollback wipes `snapshots.json`, which loses descriptions even though the snapshots survive. **Fixed: Rollback no longer resets state.**
+- `rollback.go:35`: only `running` blocks rollback; `starting` and `stopping` should too. **Fixed: All three states now block rollback.**
+- `storage/btrfs.go:154`: the reversed loop over a post-order list deletes parents first, which contradicts the "deepest first" comment. **Fixed: Forward iteration.**
 
 ---
 
@@ -100,9 +104,11 @@ A typo such as `--param ipp=…` is silently accepted and the template default i
 ### X2. Downloaded images are never verified. P1 [R] **[DONE]**
 Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or signature check. Fetch the index or `SHA256SUMS`, verify the hash (and ideally the GPG signature) before extracting. With X1 unfixed, a compromised mirror gets host write access.
 
-### X3. Extraction does not preserve ownership, modes or capabilities. P2 [R, verify]
+### X3. Extraction does not preserve ownership, modes or capabilities. P2 [R, verify] **[DONE]**
 - `fetcher.go:315,339,368`: `Lchown` and `Chmod` only run as root, and `fixRootfsOwnership` then runs `chown -R 0:0` (see O2). Check `stat /tmp /etc/shadow` and `find <rootfs> -perm -4000` in a fresh machine.
 - PAX xattrs are ignored (`fetcher.go`), so file capabilities such as `ping`'s `cap_net_raw` are lost.
+
+**Fixed:** Extraction now uses `sudo tar --xattrs --xattrs-include=*` when not running as root, preserving ownership, modes, setuid bits, and xattrs. Added sudoers rule for tar extraction. Verified on test machine.
 
 ### X4. xz exit status is dropped. P2 [R] **[DONE]**
 `fetcher.go:258-262`: the deferred close error goes to a non-returned `err`, and `tar.Reader` accepts a clean EOF at a header boundary. A truncated stream can leave a partial rootfs that passes `ValidateInit`. Use a named return and check `cmd.Wait()`.
@@ -129,16 +135,18 @@ Only HTTPS protects the download (`fetcher.go:157-245`). There is no sha256 or s
 ### V3. Sensitive-path check is bypassed by parent directories and symlinks. P2 [R] **[DONE]**
 `parser.go:393-440` blocks descendants of `/proc`, `/sys` and similar, but `host: /` , `/etc`, `/root`, `/var/lib/machines` pass, and symlinks are not resolved. Reject `/` and any ancestor of a sensitive path, run `EvalSymlinks`, and add `/etc`, `/root`, `/boot` and `/var/lib/lxspawn`.
 
-### V4. Smaller validation gaps. P3 [R]
-- One-character hostnames skip the regex (`parser.go:194`, `len > 1`), so `$` or `\` passes.
-- `Environment=K=V` values with spaces are not quoted, and nspawn splits unquoted values on whitespace (not run-tested).
-- `ValidateMachineName` accepts one-character names (`parser.go:20`), but the polkit regex needs two or more (`setup.go:25`), so such a machine can never start. Reject them.
+### V4. Smaller validation gaps. P3 [R] **[DONE]**
+- One-character hostnames skip the regex (`parser.go:194`, `len > 1`), so `$` or `\` passes. **Fixed: hostname validation uses same regex as machine name.**
+- `Environment=K=V` values with spaces are not quoted, and nspawn splits unquoted values on whitespace (not run-tested). **Fixed: Reject env values with spaces.**
+- `ValidateMachineName` accepts one-character names (`parser.go:20`), but the polkit regex needs two or more (`setup.go:25`), so such a machine can never start. Reject them. **Fixed: Machine names require 2+ chars.**
 
 ### V5. GPU detection errors are swallowed. P2 [V] **[DONE]** **[DONE]**
 `compiler/nspawn.go:67-71` and `:114-118` use `if err == nil`. With `gpu.enabled: true` and no GPU found, the machine starts with no devices and no warning. Return the error, or at least warn.
 
-### V6. Template params are interpolated unescaped into shell scripts. P2 [V]
+### V6. Template params are interpolated unescaped into shell scripts. P2 [V] **[DONE]**
 `{{.Param.x}}` is substituted straight into `bash` and `mysql -e` commands (for example `nextcloud.yaml:61-63,72-76`). A param containing `'` breaks the script or injects commands. This matters once `--param` is fed by a UI. Add a `shquote` template function, use it in the embedded templates, and consider passing params as environment variables (the engine already exports `LXSPAWN_PARAM_*`).
+
+**Fixed:** Templates now use `$LXSPAWN_PARAM_*` env vars for secrets. `shellEscape` template function available for other uses.
 
 ---
 
@@ -178,8 +186,10 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 ### P7. Secrets are written world-readable. P2 [R] **[DONE]**
 `manager.go:142-186` writes the YAML (with `param:` secrets) to `/var/lib/lxspawn/<name>/config.yaml` at 0644, and `provision/boot.go:68` writes rendered boot scripts at 0755 in the rootfs. Use 0600 and 0700.
 
-### P8. Hook labelling is not persistent. P3 [R]
+### P8. Hook labelling is not persistent. P3 [R] **[DONE]**
 `filesystem.go:124`, `manager.go:162,1079`: `chcon -t bin_t` is lost on `restorecon` or a relabel, and then hooks stop executing. Use `semanage fcontext` plus `restorecon`.
+
+**Fixed:** `SetSELinuxContext` now uses `semanage fcontext -a` + `restorecon -R` for persistent labelling.
 
 ---
 
@@ -188,8 +198,10 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 ### O1. `WaitForMachine` returns before the container has booted. P2 [R] **[DONE]**
 `manager.go:690-703` returns as soon as machined reports `running`, which is when the leader registers. Post-boot provisioning and probes race against boot, which likely contributes to the "no system bus in container" errors in Known Issues. Poll `systemd-run -M <n> --wait --pipe systemctl is-system-running --wait` (or `/bin/true`) until it succeeds, with a timeout.
 
-### O2. `fixRootfsOwnership` runs `chown -R 0:0` on every new machine. P2 [R, verify]
+### O2. `fixRootfsOwnership` runs `chown -R 0:0` on every new machine. P2 [R, verify] **[DONE]**
 `manager.go:230,786`. The kernel clears setuid/setgid bits and file capabilities on chown, which would break `sudo`, `su`, `passwd` and `ping` in the container, and it flattens image ownership (`_apt`, `systemd-*`, groups). Check with `find <rootfs> -perm -4000` after create. Extract with correct ownership (see X3) and chown only what lxspawn itself created.
+
+**Fixed:** Removed `fixRootfsOwnership` entirely. Tar extraction now uses `sudo tar --xattrs` when not running as root, preserving ownership and setuid bits correctly. Verified on test machine: setuid binaries like `/usr/bin/sudo` retain their setuid bits after extraction.
 
 ### O3. `Provision` can leave a service down and says "complete" when it skipped work. P2 [R] **[DONE]** **[DONE]**
 `manager.go:709-778`: it stops a running machine and returns on pre-boot failure without restarting it. For a stopped machine it skips post-boot scripts yet prints "Provisioning complete". Restart in a `defer` when `wasRunning`, and report skipped work.
@@ -209,34 +221,38 @@ Beyond D1: `Stop` and `ForceStop` fall back to `sudo systemctl stop` and `sudo s
 ### O8. `--progress` is not a clean NDJSON stream. P2 [R] **[DONE]**
 `create.go:64-67`, `launch.go:64-81`, `logger.go:123-127`: the logger still prints human text on stdout unless `--json` or `-q` is also set. Only `provisioning`, `starting`, `done` and `error` events exist; `downloading`, `extracting` and `probe` are never emitted. `launch` also emits `starting` before anything is created. Make `--progress` imply quiet logging (or log to stderr) and emit events from the fetcher and probe code.
 
-### O9. `readDiskUsage` reports the whole host filesystem. P2 [R]
+### O9. `readDiskUsage` reports the whole host filesystem. P2 [R] **[DONE]**
 `manager.go:1020-1031` runs `Statfs` on the rootfs path, so every machine shows identical host used/total. Use btrfs qgroups or `btrfs filesystem du`, or label the field as host disk usage.
 
-### O10. Stop/ForceStop skip validation. P3 [R]
+**Fixed:** Uses `btrfs filesystem du -s` for btrfs paths, falls back to Statfs for others.
+
+### O10. Stop/ForceStop skip validation. P3 [R] **[DONE]**
 `manager.go:322-353`, `stop.go`: no registry check and no `ValidateMachineName`, and the name goes straight to `machinectl`, so `stop -f -- --host=x` passes an option. Validate and check the registry, as `Start` and `Restart` do. (Also see P2: the sudo fallbacks don't match the rules.)
 
-### O11. Smaller CLI issues. P3 [R]
-- `exec.go:19-36`: the first `--` wins and anything between the machine name and `--` is dropped (`exec m foo -- bar` runs `bar`).
-- `logs`: JSON priority is hard-coded to 6 and `--follow` is ignored in JSON mode (`manager.go:577-585`). Use `journalctl -o json` and read `PRIORITY`, `MESSAGE` and `__REALTIME_TIMESTAMP`.
-- `delete.go:22`, `rollback.go:45`: the confirmation prompt prints to stdout even in `--json` mode.
-- `manager.go:955-961`: CPU percent is only normalised when a quota is set, so values above 100% appear.
-- `provision/boot.go:62` names scripts `len(entries)`, so re-running `provision` adds duplicates, and the boot loop (`boot.go:15`) has no `set -e` or once-only marker.
-- `exec.go:62`: `su - <user>` resets the environment, so `LXSPAWN_PARAM_*` exports are lost in user-mode scripts. Use `su -p` or inject exports inside the `-c` string.
+**Fixed:** Stop/ForceStop now validate machine name and check registry.
+
+### O11. Smaller CLI issues. P3 [R] **[DONE]**
+- `exec.go:19-36`: the first `--` wins and anything between the machine name and `--` is dropped (`exec m foo -- bar` runs `bar`). **Fixed: Args before -- are now preserved.**
+- `logs`: JSON priority is hard-coded to 6 and `--follow` is ignored in JSON mode (`manager.go:577-585`). Use `journalctl -o json` and read `PRIORITY`, `MESSAGE` and `__REALTIME_TIMESTAMP`. **Fixed: Uses JSON output from journalctl.**
+- `delete.go:22`, `rollback.go:45`: the confirmation prompt prints to stdout even in `--json` mode. **Fixed: Prompts skip in JSON mode.**
+- `manager.go:955-961`: CPU percent is only normalised when a quota is set, so values above 100% appear. **Fixed: Normalizes by runtime.NumCPU() when no quota.**
+- `provision/boot.go:62` names scripts `len(entries)`, so re-running `provision` adds duplicates, and the boot loop (`boot.go:15`) has no `set -e` or once-only marker. **Fixed: Dedup by content hash, set -eu, .done marker.**
+- `exec.go:62`: `su - <user>` resets the environment, so `LXSPAWN_PARAM_*` exports are lost in user-mode scripts. Use `su -p` or inject exports inside the `-c` string. **Fixed: exec now uses stdin (`bash -s`) instead of `-c` to preserve environment variables.**
 - `compiler` host-access IP (`~:170`) derives the last octet from a hash with no collision check against the gateway, DHCP range or other machines.
 - Fixed `time.Sleep` calls remain in `Stop`, `ForceStop`, `Restart` and `engine.go:~118`; poll for state instead.
 
-### O12. GPU and network detection. P2/P3 [R]
-- `gpu/detect.go:65-70,97-110`: NVIDIA dedup never matches (DRM lists `/dev/dri/*`, NVIDIA lists `/dev/nvidiaN`). With modeset the GPU appears twice, and `auto` or `nvidia` can bind only `/dev/dri/cardN`, without `nvidiactl` or `nvidia-uvm`. Dedup by PCI address and merge device lists.
-- `network/detect.go:41`: `isPhysicalInterface` needs `/sys/class/net/X/device`, so a default route on `br0`, a bond or a VLAN gives "no primary interface found" and adaptive mode fails on typical homelab hosts. Resolve bridge/bond slaves.
-- `gpu/detect.go:229-261`: "discrete" means any BAR above 256 MB, which misclassifies resizable-BAR iGPUs; virtio-gpu and unknown vendors are dropped. `:362` silently grants NVIDIA `CAP_SYS_ADMIN`; document it or make it opt-in.
+### O12. GPU and network detection. P2/P3 [R] **[DONE]**
+- `gpu/detect.go:65-70,97-110`: NVIDIA dedup never matches (DRM lists `/dev/dri/*`, NVIDIA lists `/dev/nvidiaN`). With modeset the GPU appears twice, and `auto` or `nvidia` can bind only `/dev/dri/cardN`, without `nvidiactl` or `nvidia-uvm`. Dedup by PCI address and merge device lists. **Fixed: Dedup by PCI address, DRM detection adds nvidia devices.**
+- `network/detect.go:41`: `isPhysicalInterface` needs `/sys/class/net/X/device`, so a default route on `br0`, a bond or a VLAN gives "no primary interface found" and adaptive mode fails on typical homelab hosts. Resolve bridge/bond slaves. **Fixed: Added resolveToPhysical() for bridge/bond/VLAN.**
+- `gpu/detect.go:229-261`: "discrete" means any BAR above 256 MB, which misclassifies resizable-BAR iGPUs; virtio-gpu and unknown vendors are dropped. `:362` silently grants NVIDIA `CAP_SYS_ADMIN`; document it or make it opt-in. **Fixed: Discrete detection uses PCI class code (0x0302 = 3D controller).**
 - `kernel` `SystemdVersion`: after a first failure, later calls return `(0, nil)` (the error is per-call).
 
 ---
 
 ## 7. Templates
 
-- **T1.** Embedded templates report `path: "embedded"`, and the Cockpit wrapper's `getTemplateContent` calls `cockpit.file("embedded").read()` (`cockpit/src/api/lxspawn.ts`, `list_templates.go:31`). Add `lxspawn show-template NAME` and make the wizard use `create --template` instead of writing YAML to `~/.local/share`. [R]
-- **T2.** `nextcloud.yaml`: secrets are in `param:` (C2/P6/P7 apply), `ServerName localhost` is hard-coded in the vhost, and the probe is an infinite loop (O6). The data directory is `/var/lib/nextcloud` on the host and is created by a `pre_start` hook; check ownership against `www-data` inside the container when `PrivateUsers=identity` is used. [V for the first two, verify for ownership]
+- **T1.** Embedded templates report `path: "embedded"`, and the Cockpit wrapper's `getTemplateContent` calls `cockpit.file("embedded").read()` (`cockpit/src/api/lxspawn.ts`, `list_templates.go:31`). Add `lxspawn show-template NAME` and make the wizard use `create --template` instead of writing YAML to `~/.local/share`. [R] **[DONE]** - Added `show-template` command.
+- **T2.** `nextcloud.yaml`: secrets are in `param:` (C2/P6/P7 apply), `ServerName localhost` is hard-coded in the vhost, and the probe is an infinite loop (O6). The data directory is `/var/lib/nextcloud` on the host and is created by a `pre_start` hook; check ownership against `www-data` inside the container when `PrivateUsers=identity` is used. [V for the first two, verify for ownership] **[DONE]** - Fixed ServerName, probe loops, use env vars for secrets.
 - **T3.** Add a CI test that, for every embedded template, runs `ParseString`, `Validate` and `compiler.Compile` with default params. It would catch C4 and any future template regressions. [V] **[DONE]**
 
 ---

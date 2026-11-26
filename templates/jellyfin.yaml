@@ -77,6 +77,12 @@ probes:
     description: "Jellyfin web interface"
     script: |
       #!/bin/bash
-      until curl -sf http://localhost:8096/health; do sleep 2; done
+      set -eu
+      for i in $(seq 1 60); do
+        curl -sf http://localhost:8096/health > /dev/null 2>&1 && exit 0
+        sleep 2
+      done
+      echo "Jellyfin did not become ready in time" >&2
+      exit 1
     hint: |
       Jellyfin may not have started. Check: journalctl -M {{.Name}} -u jellyfin

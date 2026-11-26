@@ -21,11 +21,8 @@ func ValidateMachineName(name string) error {
 	if name == "" {
 		return fmt.Errorf("machine name cannot be empty")
 	}
-	if len(name) == 1 {
-		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(name) {
-			return fmt.Errorf("machine name must be alphanumeric")
-		}
-		return nil
+	if len(name) < 2 {
+		return fmt.Errorf("machine name must be at least 2 characters (polkit rules require 2+ characters)")
 	}
 	if !validMachineNameRegex.MatchString(name) {
 		return fmt.Errorf("machine name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, and underscores, and be between 2 and 64 characters")
@@ -109,12 +106,10 @@ func Validate(cfg *Config) error {
 	if cfg.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if len(cfg.Name) == 1 {
-		// Single character names are allowed if alphanumeric
-		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(cfg.Name) {
-			return fmt.Errorf("name must start and end with an alphanumeric character")
-		}
-	} else if !validMachineNameRegex.MatchString(cfg.Name) {
+	if len(cfg.Name) < 2 {
+		return fmt.Errorf("name must be at least 2 characters")
+	}
+	if !validMachineNameRegex.MatchString(cfg.Name) {
 		return fmt.Errorf("name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, and underscores, and be between 2 and 64 characters")
 	}
 	if isReservedName(cfg.Name) {
@@ -169,7 +164,7 @@ func validateAdvanced(cfg *Config) error {
 		if strings.ContainsAny(cfg.Advanced.Hostname, "\n\r") {
 			return fmt.Errorf("advanced.hostname cannot contain newlines")
 		}
-		if !validMachineNameRegex.MatchString(cfg.Advanced.Hostname) && len(cfg.Advanced.Hostname) > 1 {
+		if !validMachineNameRegex.MatchString(cfg.Advanced.Hostname) {
 			return fmt.Errorf("advanced.hostname contains invalid characters")
 		}
 	}
@@ -180,6 +175,9 @@ func validateAdvanced(cfg *Config) error {
 		}
 		if strings.ContainsAny(v, "\n\r") {
 			return fmt.Errorf("environment variable %q value cannot contain newlines", k)
+		}
+		if strings.ContainsAny(v, " \t") {
+			return fmt.Errorf("environment variable %q value %q contains spaces (not supported in .nspawn Environment=)", k, v)
 		}
 	}
 

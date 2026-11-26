@@ -212,36 +212,31 @@ func TestIsDiscreteGPU(t *testing.T) {
 	devicePath := filepath.Join(tmpDir, "device")
 	os.MkdirAll(devicePath, 0755)
 
-	// Write a VGA class code (0x0300)
-	os.WriteFile(filepath.Join(devicePath, "class"), []byte("0x030000\n"), 0644)
-
 	tests := []struct {
 		name         string
-		resourceData string
+		classCode    string
 		wantDiscrete bool
 	}{
 		{
-			name: "large VRAM (discrete)",
-			// start end flags - 1GB region (0xe0000000 to 0x11fffffff)
-			resourceData:   "0x00000000e0000000 0x000000011fffffff 0x000000000004020c\n",
-			wantDiscrete:   true,
+			name:         "VGA controller (integrated)",
+			classCode:    "0x030000\n",
+			wantDiscrete: false,
 		},
 		{
-			name: "small VRAM (integrated)",
-			// start end flags - 16MB region
-			resourceData:   "0x00000000e0000000 0x00000000e0ffffff 0x000000000004020c\n",
-			wantDiscrete:   false,
+			name:         "3D controller (discrete)",
+			classCode:    "0x030200\n",
+			wantDiscrete: true,
 		},
 		{
-			name: "invalid resource format",
-			resourceData:   "invalid\n",
-			wantDiscrete:   false,
+			name:         "unknown class",
+			classCode:    "0x010000\n",
+			wantDiscrete: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			os.WriteFile(filepath.Join(devicePath, "resource"), []byte(tt.resourceData), 0644)
+			os.WriteFile(filepath.Join(devicePath, "class"), []byte(tt.classCode), 0644)
 			
 			d := &Detector{drmPath: tmpDir, pciPath: tmpDir}
 			got := d.isDiscreteGPU(devicePath)
@@ -314,26 +309,42 @@ func TestIsNVIDIAGPUDetected(t *testing.T) {
 		want     bool
 	}{
 		{
-			name: "NVIDIA already detected via DRM",
+			name: "NVIDIA already detected via DRM (same PCI address)",
 			existing: []GPUInfo{
-				{Vendor: VendorNVIDIA, Devices: []string{"/dev/dri/card0", "/dev/dri/renderD128"}},
+				{Vendor: VendorNVIDIA, PCIAddr: "0000:01:00.0", Devices: []string{"/dev/dri/card0", "/dev/dri/renderD128"}},
 			},
-			nvGPU: GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0", "/dev/dri/card0"}},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, PCIAddr: "0000:01:00.0", Devices: []string{"/dev/nvidia0"}},
 			want:  true,
 		},
 		{
-			name: "NVIDIA not detected",
+			name: "NVIDIA not detected (different PCI address)",
 			existing: []GPUInfo{
-				{Vendor: VendorIntel, Devices: []string{"/dev/dri/card0"}},
+				{Vendor: VendorNVIDIA, PCIAddr: "0000:01:00.0", Devices: []string{"/dev/dri/card0"}},
 			},
-			nvGPU: GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0"}},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, PCIAddr: "0000:02:00.0", Devices: []string{"/dev/nvidia0"}},
+			want:  false,
+		},
+		{
+			name: "NVIDIA not detected (Intel GPU)",
+			existing: []GPUInfo{
+				{Vendor: VendorIntel, PCIAddr: "0000:00:02.0", Devices: []string{"/dev/dri/card0"}},
+			},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, PCIAddr: "0000:01:00.0", Devices: []string{"/dev/nvidia0"}},
 			want:  false,
 		},
 		{
 			name:     "empty existing list",
 			existing: []GPUInfo{},
-			nvGPU:    GPUInfo{Vendor: VendorNVIDIA, Devices: []string{"/dev/nvidia0"}},
+			nvGPU:    GPUInfo{Vendor: VendorNVIDIA, PCIAddr: "0000:01:00.0", Devices: []string{"/dev/nvidia0"}},
 			want:     false,
+		},
+		{
+			name: "no PCI addresses (cannot dedup)",
+			existing: []GPUInfo{
+				{Vendor: VendorNVIDIA, PCIAddr: "", Devices: []string{"/dev/dri/card0"}},
+			},
+			nvGPU: GPUInfo{Vendor: VendorNVIDIA, PCIAddr: "", Devices: []string{"/dev/nvidia0"}},
+			want:  false,
 		},
 	}
 	

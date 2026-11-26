@@ -34,8 +34,8 @@ func TestBootProvisionerWritesScript(t *testing.T) {
 		t.Fatalf("expected 1 script, got %d", len(entries))
 	}
 
-	if entries[0].Name() != "00-script.sh" {
-		t.Errorf("script name = %q, want %q", entries[0].Name(), "00-script.sh")
+	if !strings.HasSuffix(entries[0].Name(), ".sh") {
+		t.Errorf("script name %q should end with .sh", entries[0].Name())
 	}
 
 	content, err := os.ReadFile(filepath.Join(bootDir, entries[0].Name()))
@@ -48,7 +48,7 @@ func TestBootProvisionerWritesScript(t *testing.T) {
 	}
 }
 
-func TestBootProvisionerScriptNumbering(t *testing.T) {
+func TestBootProvisionerScriptDedup(t *testing.T) {
 	rootfs := t.TempDir()
 	provisioner := NewBootProvisioner(rootfs)
 	ctx := testContext()
@@ -71,14 +71,41 @@ func TestBootProvisionerScriptNumbering(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if len(entries) != 1 {
+		t.Errorf("expected 1 script (dedup), got %d", len(entries))
+	}
+}
+
+func TestBootProvisionerMultipleScripts(t *testing.T) {
+	rootfs := t.TempDir()
+	provisioner := NewBootProvisioner(rootfs)
+	ctx := testContext()
+	fh := &FileHandler{CacheDir: t.TempDir()}
+	baseDir := t.TempDir()
+
+	for i := 0; i < 3; i++ {
+		prov := config.Provision{
+			Mode:   config.ProvisionBoot,
+			Script: "#!/bin/bash\necho script " + string(rune('0'+i)),
+		}
+		if err := provisioner.Provision(prov, ctx, fh, baseDir); err != nil {
+			t.Fatalf("Provision[%d] failed: %v", i, err)
+		}
+	}
+
+	bootDir := filepath.Join(rootfs, "etc", "lxspawn", "boot")
+	entries, err := os.ReadDir(bootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if len(entries) != 3 {
 		t.Fatalf("expected 3 scripts, got %d", len(entries))
 	}
 
-	expected := []string{"00-script.sh", "01-script.sh", "02-script.sh"}
-	for i, e := range expected {
-		if entries[i].Name() != e {
-			t.Errorf("entries[%d] = %q, want %q", i, entries[i].Name(), e)
+	for i, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".sh") {
+			t.Errorf("entries[%d] = %q, should end with .sh", i, e.Name())
 		}
 	}
 }
@@ -113,6 +140,12 @@ func TestBootProvisionerInstallsService(t *testing.T) {
 	}
 	if !strings.Contains(string(content), "WantedBy=multi-user.target") {
 		t.Error("service missing WantedBy")
+	}
+	if !strings.Contains(string(content), "set -eu") {
+		t.Error("service missing set -eu in ExecStart")
+	}
+	if !strings.Contains(string(content), ".done") {
+		t.Error("service missing .done condition for once-only execution")
 	}
 }
 
@@ -182,7 +215,15 @@ func TestBootProvisionerTemplateRendering(t *testing.T) {
 	}
 
 	bootDir := filepath.Join(rootfs, "etc", "lxspawn", "boot")
-	content, err := os.ReadFile(filepath.Join(bootDir, "00-script.sh"))
+	entries, err := os.ReadDir(bootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no scripts found")
+	}
+
+	content, err := os.ReadFile(filepath.Join(bootDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +251,16 @@ func TestBootProvisionerScriptIsExecutable(t *testing.T) {
 		t.Fatalf("Provision failed: %v", err)
 	}
 
-	scriptPath := filepath.Join(rootfs, "etc", "lxspawn", "boot", "00-script.sh")
+	bootDir := filepath.Join(rootfs, "etc", "lxspawn", "boot")
+	entries, err := os.ReadDir(bootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no scripts found")
+	}
+
+	scriptPath := filepath.Join(bootDir, entries[0].Name())
 	info, err := os.Stat(scriptPath)
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +295,15 @@ func TestBootProvisionerWithFileRef(t *testing.T) {
 	}
 
 	bootDir := filepath.Join(rootfs, "etc", "lxspawn", "boot")
-	content, err := os.ReadFile(filepath.Join(bootDir, "00-script.sh"))
+	entries, err := os.ReadDir(bootDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no scripts found")
+	}
+
+	content, err := os.ReadFile(filepath.Join(bootDir, entries[0].Name()))
 	if err != nil {
 		t.Fatal(err)
 	}

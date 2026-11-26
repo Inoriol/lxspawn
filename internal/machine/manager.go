@@ -268,10 +268,6 @@ func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error
 		}
 	}
 
-	if err := fixRootfsOwnership(rootfsPath); err != nil {
-		logger.Warn(fmt.Sprintf("rootfs ownership fix warning: %v", err))
-	}
-
 	logger.Success(fmt.Sprintf("Machine '%s' created successfully", cfg.Name))
 	return filesWritten, nil
 }
@@ -334,6 +330,14 @@ func (m *Manager) Start(name string) error {
 }
 
 func (m *Manager) Stop(name string) error {
+	if err := config.ValidateMachineName(name); err != nil {
+		return err
+	}
+
+	if _, exists := m.state.GetMachine(name); !exists {
+		return lxerrors.NewMachineNotFoundError(name)
+	}
+
 	logger.Action(fmt.Sprintf("Stopping machine '%s'", name))
 
 	unitName := fmt.Sprintf("systemd-nspawn@%s.service", name)
@@ -360,6 +364,14 @@ func (m *Manager) Stop(name string) error {
 }
 
 func (m *Manager) ForceStop(name string) error {
+	if err := config.ValidateMachineName(name); err != nil {
+		return err
+	}
+
+	if _, exists := m.state.GetMachine(name); !exists {
+		return lxerrors.NewMachineNotFoundError(name)
+	}
+
 	logger.Action(fmt.Sprintf("Force stopping machine '%s'", name))
 
 	poweroffCmd := exec.Command("machinectl", "poweroff", name)
@@ -696,14 +708,6 @@ func isPopulatedRootfs(path string) bool {
 	osRelease := filepath.Join(path, "etc", "os-release")
 	_, err := os.Stat(osRelease)
 	return err == nil
-}
-
-func fixRootfsOwnership(rootfsPath string) error {
-	cmd := deploy.Sudo("chown", "-R", "0:0", rootfsPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("chown failed: %w (%s)", err, string(output))
-	}
-	return nil
 }
 
 func (m *Manager) Apply(cfg *config.Config, sourcePath string) error {

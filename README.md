@@ -153,6 +153,7 @@ lxspawn provision-status <name>  # Show provisioning status
 ```bash
 lxspawn list-distros             # List available distributions
 lxspawn list-templates           # List available machine templates
+lxspawn show-template <name>     # Display embedded template content
 lxspawn validate <yaml>          # Validate YAML configuration
 lxspawn version                  # Show version and system info
 lxspawn doctor                   # Check system configuration and dependencies

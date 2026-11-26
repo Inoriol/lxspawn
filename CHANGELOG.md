@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.
 - **HTTPS redirect validation (X5)** - HTTP clients now reject redirects to insecure HTTP URLs. Prevents https-to-http downgrade attacks during image downloads.
 - **Sudoers rules for rootfs operations** - Added sudoers rules for `tee`, `ln`, `rm`, `mkdir`, `chmod`, `chown` on files inside machine rootfs. Enables non-root users to run provision commands on root-owned rootfs.
+- **`lxspawn show-template` command (T1)** - New command to display embedded template content. Useful for Cockpit integration and template inspection.
+- **Sudoers rule for tar extraction** - Added sudoers rule for `tar --xattrs` extraction to preserve ownership and setuid bits when running as non-root user.
 
 ### Changed
 
@@ -35,6 +37,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GPU detection errors propagated (V5)** - `compiler/nspawn.go` now returns errors when GPU detection fails with `gpu.enabled: true`. Previously silently ignored errors, leading to machines starting without GPU access.
 - **Delete cleans up completely (D4)** - `lxspawn delete` now removes sibling snapshots directory, runs `systemctl disable` to prevent autostart issues, and polls for stopped state with timeout before deletion.
 - **Rootfs writes use secure paths and sudo (X5)** - All rootfs writes (boot, data, yq provisioners, cleanup) now use `secureJoin` for path resolution and `deploy.Sudo()` for privileged operations. Prevents permission errors when provisioning root-owned rootfs and closes symlink escape vulnerability.
+- **Templates use environment variables for secrets (V6)** - Templates now use `$LXSPAWN_PARAM_*` environment variables instead of direct template interpolation for sensitive values. Prevents shell injection through parameter values.
+- **`--name` override always updates hostname (C7)** - When using `--name` flag, hostname is now always set to match the machine name. Previously only updated if hostname was empty or matched template name.
+- **`--param` validates keys (C8)** - `--param` flag now validates that keys exist in the template's `param:` section. Prevents typos from silently using default values.
+- **Disk usage uses btrfs-specific methods (O9)** - `readDiskUsage` now uses `btrfs filesystem du -s` for btrfs paths to get accurate per-subvolume usage. Falls back to `Statfs` for other filesystems.
+- **GPU detection improved (O12)** - GPU deduplication now uses PCI addresses instead of device node overlap. Discrete GPU detection uses PCI class codes (0x0302) instead of BAR size heuristics.
+- **Network detection resolves bridge/bond slaves (O12)** - `DetectPrimaryInterface` now resolves bridge and bond slaves to find the actual physical interface. Works correctly when default route is on a bridge or bond.
+- **Rollback preserves snapshot state (D5)** - Rollback no longer wipes `snapshots.json`, preserving snapshot descriptions. Also checks for `starting` and `stopping` states in addition to `running`.
+- **Validation improvements (V4)** - Machine names now require minimum 2 characters (polkit regex requirement). Environment variable values reject spaces (not supported in .nspawn). Hostname validation uses same regex as machine name.
+- **SELinux hook labelling persistent (P8)** - `SetSELinuxContext` now uses `semanage fcontext` + `restorecon` for persistent labelling. Survives `restorecon -R` and filesystem relabels.
+- **Stop/ForceStop validate machine (O10)** - `Stop` and `ForceStop` now validate machine name and check registry before proceeding. Returns proper error for nonexistent machines.
+- **Exec uses stdin for environment preservation (O11)** - `lxspawn exec` now uses `bash -s` with script on stdin instead of `bash -c`. Preserves `LXSPAWN_PARAM_*` environment variables in user-mode scripts.
+- **Logs use JSON output (O11)** - `GetLogsWithOptions` now uses `journalctl -o json` to read actual priority from `PRIORITY` field. Previously hard-coded to 6 (info).
+- **CPU% normalized without quota (O11)** - CPU usage percentage now normalized by `runtime.NumCPU()` when no quota is set. Prevents values above 100% on multi-core systems.
+- **Confirmation prompts skip in JSON mode (O11)** - `delete` and `rollback` commands now skip confirmation prompts when `--json` flag is set. Prevents interactive prompts in automated workflows.
+- **Boot script deduplication (O11)** - Boot provisioner now deduplicates scripts by content hash. Re-running provision doesn't create duplicate scripts. Boot service uses `set -eu` and `.done` marker for once-only execution.
 
 ### Fixed
 
@@ -44,6 +61,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Template and stdin machines have usable config (C1/C2)** - Canonical config is now properly serialized and written for machines created with `--template` or `-` (stdin).
 - **Injection vulnerabilities fixed (V1/V2/V3)** - GPU device paths, tmpfs options, and volume paths now validated against strict patterns. Sensitive path check expanded to include more system directories.
 - **Data/Boot provisioner permission bug** - Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs. Previously failed with "permission denied" when writing to directories owned by root.
+- **Setuid bits preserved during extraction (O2/X3)** - Removed `fixRootfsOwnership` which was breaking setuid bits. Tar extraction now uses `sudo tar --xattrs` when not running as root, preserving ownership, modes, and setuid bits correctly. Verified with `/usr/bin/sudo`, `/usr/bin/su`, and `/usr/bin/passwd`.
+- **Template probe loops bounded (T2)** - All template probes now use bounded loops with timeout instead of infinite `until` loops. Prevents orphaned probe processes from piling up.
+- **Nextcloud ServerName fixed (T2)** - Nextcloud template now uses `$LXSPAWN_PARAM_trusted_domain` for ServerName instead of hard-coded `localhost`. Enables proper LAN access.
 
 ### Security
 
@@ -53,6 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Tar extraction prevents symlink escapes (X1)** - Real filesystem checks prevent symlink-based attacks during extraction.
 - **Sudoers rules use exact patterns (P1)** - Removed overly permissive patterns, added exact argument matching for all privileged operations.
 - **Rootfs writes use secure paths** - All rootfs writes now use `secureJoin` to prevent symlink escape attacks. Combined with sudo for proper permission handling.
+- **Templates use environment variables for secrets (V6)** - Templates now use `$LXSPAWN_PARAM_*` environment variables instead of direct template interpolation for sensitive values. Prevents shell injection through parameter values.
+- **Setuid bits preserved (O2/X3)** - Removed `fixRootfsOwnership` which was clearing setuid bits. Tar extraction now preserves ownership and special permission bits correctly.
 
 ## [0.1.3] - 2026-11-21
 

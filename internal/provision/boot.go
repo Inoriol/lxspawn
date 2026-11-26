@@ -1,8 +1,11 @@
 package provision
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -11,12 +14,13 @@ import (
 const bootServiceContent = `[Unit]
 Description=lxspawn boot provisioning
 ConditionPathExists=/etc/lxspawn/boot/
+ConditionPathExists=!/etc/lxspawn/boot/.done
 Before=multi-user.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/bash -c 'for f in /etc/lxspawn/boot/*.sh; do "$f"; done'
+ExecStart=/bin/bash -c 'set -eu; for f in /etc/lxspawn/boot/*.sh; do [ -f "$f" ] && "$f"; done; touch /etc/lxspawn/boot/.done'
 
 [Install]
 WantedBy=multi-user.target
@@ -66,8 +70,27 @@ func (b *BootProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		return fmt.Errorf("failed to read boot dir: %w", err)
 	}
 
-	scriptNum := len(entries)
-	scriptName := fmt.Sprintf("%02d-script.sh", scriptNum)
+	hash := sha256.Sum256([]byte(rendered))
+	shortHash := hex.EncodeToString(hash[:4])
+
+	existingName := ""
+	for _, e := range entries {
+		if strings.HasSuffix(e, ".sh") {
+			content, readErr := rootfsReadFile(b.rootfsPath, "/etc/lxspawn/boot/"+e)
+			if readErr == nil && string(content) == rendered {
+				existingName = e
+				break
+			}
+		}
+	}
+
+	var scriptName string
+	if existingName != "" {
+		scriptName = existingName
+	} else {
+		scriptNum := len(entries)
+		scriptName = fmt.Sprintf("%02d-%s.sh", scriptNum, shortHash[:8])
+	}
 	scriptRelPath := fmt.Sprintf("/etc/lxspawn/boot/%s", scriptName)
 
 	if err := rootfsWriteFile(b.rootfsPath, scriptRelPath, []byte(rendered), 0700); err != nil {

@@ -3,7 +3,9 @@ package machine
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -189,6 +191,16 @@ func readCPUUsage(cgroupPath string) (float64, error) {
 			if numCPUs > 0 {
 				cpuPercent = cpuPercent / numCPUs
 			}
+		} else {
+			numCPUs := float64(runtime.NumCPU())
+			if numCPUs > 0 {
+				cpuPercent = cpuPercent / numCPUs
+			}
+		}
+	} else {
+		numCPUs := float64(runtime.NumCPU())
+		if numCPUs > 0 {
+			cpuPercent = cpuPercent / numCPUs
 		}
 	}
 
@@ -238,6 +250,16 @@ func readMemoryUsage(cgroupPath string) (int64, int64, error) {
 }
 
 func readDiskUsage(path string) (int64, int64, error) {
+	if isBtrfsPath(path) {
+		used, err := btrfsSubvolumeUsage(path)
+		if err == nil {
+			total, totalErr := btrfsFilesystemTotal(path)
+			if totalErr == nil {
+				return used, total, nil
+			}
+		}
+	}
+
 	var stat syscall.Statfs_t
 	if err := syscall.Statfs(path, &stat); err != nil {
 		return 0, 0, fmt.Errorf("failed to stat filesystem: %w", err)
@@ -248,4 +270,87 @@ func readDiskUsage(path string) (int64, int64, error) {
 	used := total - free
 
 	return used, total, nil
+}
+
+func isBtrfsPath(path string) bool {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return false
+	}
+	return stat.Type == 0x9123683e
+}
+
+func btrfsSubvolumeUsage(path string) (int64, error) {
+	cmd := exec.Command("btrfs", "filesystem", "du", "-s", path)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) < 2 {
+		return 0, fmt.Errorf("unexpected output from btrfs filesystem du")
+	}
+
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(fields) < 2 {
+		return 0, fmt.Errorf("unexpected output format")
+	}
+
+	return parseBtrfsSize(fields[1])
+}
+
+func btrfsFilesystemTotal(path string) (int64, error) {
+	cmd := exec.Command("btrfs", "filesystem", "usage", "-b", path)
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Device size:") {
+			parts := strings.Fields(line)
+			if len(parts) >= 3 {
+				var total int64
+				fmt.Sscanf(parts[2], "%d", &total)
+				return total, nil
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("could not determine total size")
+}
+
+func parseBtrfsSize(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	multipliers := map[string]int64{
+		"KiB": 1024,
+		"MiB": 1024 * 1024,
+		"GiB": 1024 * 1024 * 1024,
+		"TiB": 1024 * 1024 * 1024 * 1024,
+		"K":   1000,
+		"M":   1000 * 1000,
+		"G":   1000 * 1000 * 1000,
+		"T":   1000 * 1000 * 1000 * 1000,
+		"B":   1,
+	}
+
+	for suffix, mult := range multipliers {
+		if strings.HasSuffix(s, suffix) {
+			numStr := strings.TrimSuffix(s, suffix)
+			numStr = strings.TrimSpace(numStr)
+			var num float64
+			if _, err := fmt.Sscanf(numStr, "%f", &num); err == nil {
+				return int64(num * float64(mult)), nil
+			}
+		}
+	}
+
+	var bytes int64
+	if _, err := fmt.Sscanf(s, "%d", &bytes); err == nil {
+		return bytes, nil
+	}
+
+	return 0, fmt.Errorf("cannot parse size: %s", s)
 }

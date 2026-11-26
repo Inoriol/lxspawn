@@ -78,7 +78,9 @@ func TestStart_Success(t *testing.T) {
 }
 
 func TestStop_Success(t *testing.T) {
-	mgr, _, systemd, _ := setupTestManager(t)
+	mgr, state, systemd, _ := setupTestManager(t)
+
+	state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
 
 	err := mgr.Stop("testbox")
 	if err != nil {

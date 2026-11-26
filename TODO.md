@@ -47,6 +47,25 @@ All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs
 - [x] **X4: XZ error handling** - Named return captures close errors
 - [x] **X5: HTTPS validation** - Reject redirects to HTTP
 
+### Phase 4.22 - Code Review 2 Remaining Fixes (2026-01-25)
+
+Additional fixes from SUGGESTIONS-2.md:
+
+- [x] **O2/X3: Rootfs ownership** - Removed `fixRootfsOwnership` chown -R 0:0 which broke setuid/capabilities. Tar extraction now preserves ownership correctly.
+- [x] **V6: Template param injection** - Templates now use `$LXSPAWN_PARAM_*` env vars for secrets instead of direct interpolation. Added bounded probe loops.
+- [x] **O9: Disk usage** - `readDiskUsage` now uses btrfs qgroups for accurate per-machine usage on btrfs.
+- [x] **O12: GPU/Network detection** - NVIDIA dedup by PCI address, discrete detection by PCI class code, network detection resolves bridge/bond slaves.
+- [x] **T1: Show-template command** - Added `lxspawn show-template <name>` command for Cockpit integration.
+- [x] **T2: Template fixes** - Fixed ServerName, probe infinite loops in all templates.
+- [x] **C7: --name hostname** - `--name` override now always updates hostname.
+- [x] **C8: Param validation** - `--param` keys validated against declared `param:` section.
+- [x] **D5: Snapshot fixes** - Rollback no longer wipes descriptions, checks starting/stopping states, btrfs delete order fixed.
+- [x] **V4: Validation gaps** - Machine names require 2+ chars, env values reject spaces, hostname validation fixed.
+- [x] **P8: SELinux persistence** - Hook labelling uses `semanage fcontext` + `restorecon` for persistence.
+- [x] **O10: Stop validation** - Stop/ForceStop now validate machine name and check registry.
+- [x] **O11: CLI fixes** - exec preserves args before --, logs use JSON output with proper priority, CPU% normalized without quota, confirmation prompts skip in JSON mode.
+- [x] **Boot scripts** - Dedup by content hash, `set -e` in service, once-only marker.
+
 ### Known Issues (Open)
 
 - **Data/Boot provisioner permission bug** - Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
@@ -166,16 +185,9 @@ All critical security issues from SUGGESTIONS-2.md addressed and tested on btrfs
 
 ### Data/Boot Provisioner Permission Bug
 
-**Status:** Open. Discovered during testing on btrfs test machine.
+**Status:** Fixed. Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs.
 
-When running `lxspawn provision` on a machine with rootfs owned by root (typical after image extraction), the data and boot provisioners fail with "permission denied" when trying to write files to the rootfs. This happens because:
-- Image extraction creates rootfs directories owned by root:root
-- Provisioners run as the invoking user (not root)
-- `os.WriteFile()` and `os.MkdirAll()` fail when trying to create files in root-owned directories
-
-**Workaround:** Run `lxspawn provision` with sudo, or manually chown the rootfs before provisioning.
-
-**Fix needed:** Provisioners should use `deploy.Sudo()` for writes to the rootfs, similar to how storage backends handle privileged operations.
+When running `lxspawn provision` on a machine with rootfs owned by root (typical after image extraction), the data and boot provisioners previously failed with "permission denied" when trying to write files to the rootfs. This has been fixed by using `deploy.Sudo()` for all privileged rootfs writes.
 
 ### machinectl Shell PTY Errors
 

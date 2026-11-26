@@ -587,7 +587,7 @@ ExecStopPost=/var/lib/lxspawn/myserver/.hooks/post_stop.sh
 
 Hook scripts are written to `/var/lib/lxspawn/<name>/.hooks/` and executed by systemd.
 On SELinux-enforcing systems, these scripts must have the `bin_t` context to be executable.
-The deploy package automatically applies this context when writing hook scripts.
+The deploy package uses `semanage fcontext` to add persistent file context rules and `restorecon` to apply them. This ensures the context survives filesystem relabels and `restorecon -R` operations.
 
 ### 11. D-Bus Machine Name Escaping
 
@@ -647,8 +647,8 @@ share the host kernel, so we bind-mount device nodes and configure cgroup device
 - `internal/gpu/detect.go` - Detects GPUs by parsing `/sys/class/drm/card*` and `/dev/nvidia*`
 - Identifies vendor (Intel/AMD/NVIDIA/ARM) by reading PCI vendor IDs
 - Render nodes read from sysfs (`/sys/class/drm/cardN/device/drm/renderD*`) instead of calculated from card index (handles unrecognized GPUs)
-- Discrete GPU detection uses PCI resource file (computes size as `end - start + 1`)
-- NVIDIA GPUs deduplicated (DRM scan and `/dev/nvidia*` scan)
+- Discrete GPU detection uses PCI class code (0x0302 = 3D controller) instead of BAR size heuristics
+- NVIDIA GPUs deduplicated by PCI address (DRM scan and `/dev/nvidia*` scan)
 - For AMD GPUs, `/dev/kfd` is bind-mounted for ROCm compute support
 - Prioritizes discrete GPUs over integrated GPUs (stable sort)
 - Generates bind mounts for device nodes in `.nspawn` file

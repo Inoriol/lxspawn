@@ -243,6 +243,9 @@ func installSudoersRules() error {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s%s\\.snapshots$", bin, machinesDir, namePat))
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s$", bin, rootfsInsidePat))
 	}
+	if bin := findBinary("tar"); bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--xattrs --xattrs-include=\\* -xJf /var/lib/lxspawn/cache/rootfs-[a-zA-Z0-9]+\\.tar\\.xz -C %s%s$", bin, machinesDir, namePat))
+	}
 	if bin := findBinary("tee"); bin != "" {
 		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s$", bin, rootfsInsidePat))
 	}

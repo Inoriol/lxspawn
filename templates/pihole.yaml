@@ -5,27 +5,23 @@ resources:
   cpus: 1
   memory: 512M
 
-# Network: Uses adaptive mode (falls back to macvlan if no bridge exists)
-# The container will get a static IP on your LAN for DNS service
-# Adjust the IP/gateway in params below to match your network
 network:
   mode: adaptive
   interface: auto
 
 param:
-  pihole_ip: "192.168.0.100/24"  # Static IP for Pi-hole (customize for your network)
-  gateway: "192.168.0.1"          # Your network gateway
+  pihole_ip: "192.168.0.100/24"
+  gateway: "192.168.0.1"
   dns1: "8.8.8.8"
   dns2: "8.8.4.4"
-  web_password: "CHANGE_ME"       # Required: change before launch
-  version: "v5.18.3"              # Pi-hole v5 (uses setupVars.conf); v6 uses pihole.toml (not yet supported)
+  web_password: "CHANGE_ME"
+  version: "v5.18.3"
 
 provision:
   - mode: data
     path: /etc/systemd/network/10-eth.network
     content: |
       [Match]
-      # Match any ethernet or macvlan interface (works with adaptive mode)
       Name=eth* mv-*
       
       [Network]
@@ -39,7 +35,7 @@ provision:
       #!/bin/bash
       set -eu -o pipefail
 
-      if [ "{{.Param.web_password}}" = "CHANGE_ME" ]; then
+      if [ "$LXSPAWN_PARAM_web_password" = "CHANGE_ME" ]; then
         echo "ERROR: Set web_password param before launching"
         exit 1
       fi
@@ -47,28 +43,24 @@ provision:
       apt-get update
       apt-get install -y curl iproute2 dnsutils
       
-      # Detect actual network interface (works with adaptive mode)
       INTERFACE=$(ip -o link show | grep -E 'eth|mv-' | head -1 | awk '{print $2}' | tr -d ':')
       if [ -z "$INTERFACE" ]; then
         echo "WARNING: Could not detect network interface, using eth0"
         INTERFACE="eth0"
       fi
       
-      # Write Pi-hole config with detected interface
-      # Note: Pi-hole v5 uses setupVars.conf; v6 uses pihole.toml (future migration)
       mkdir -p /etc/pihole
       cat > /etc/pihole/setupVars.conf <<EOF
       PIHOLE_INTERFACE=${INTERFACE}
-      IPV4_ADDRESS={{.Param.pihole_ip}}
-      PIHOLE_DNS_1={{.Param.dns1}}
-      PIHOLE_DNS_2={{.Param.dns2}}
-      WEBPASSWORD={{.Param.web_password}}
+      IPV4_ADDRESS=${LXSPAWN_PARAM_pihole_ip}
+      PIHOLE_DNS_1=${LXSPAWN_PARAM_dns1}
+      PIHOLE_DNS_2=${LXSPAWN_PARAM_dns2}
+      WEBPASSWORD=${LXSPAWN_PARAM_web_password}
       INSTALL_WEB_INTERFACE=true
       LIGHTTPD_ENABLED=true
       EOF
       
-      # Install Pi-hole unattended (pinned version)
-      export PIHOLE_BRANCH={{.Param.version}}
+      export PIHOLE_BRANCH="${LXSPAWN_PARAM_version}"
       curl -sSL https://install.pi-hole.net | bash /dev/stdin --unattended
       
       systemctl enable --now pihole-FTL
@@ -78,6 +70,12 @@ probes:
     description: "Pi-hole to be serving DNS"
     script: |
       #!/bin/bash
-      until dig @localhost example.com +short | grep -q .; do sleep 2; done
+      set -eu
+      for i in $(seq 1 30); do
+        dig @localhost example.com +short 2>/dev/null | grep -q . && exit 0
+        sleep 2
+      done
+      echo "Pi-hole did not become ready in time" >&2
+      exit 1
     hint: |
       Pi-hole may not have started. Check: journalctl -M {{.Name}} -u pihole-FTL

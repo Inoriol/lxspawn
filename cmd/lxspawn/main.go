@@ -82,6 +82,7 @@ func main() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(applyCmd)
+	rootCmd.AddCommand(showTemplateCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		if output.IsJSONMode() {

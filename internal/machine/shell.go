@@ -1,9 +1,11 @@
 package machine
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 
 	lxerrors "github.com/Inoriol/lxspawn/internal/errors"
@@ -29,9 +31,9 @@ func (m *Manager) Exec(name string, command []string) error {
 	shellCmd := shellQuoteArgs(command)
 	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", shellCmd)
 
-	args := []string{"-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
+	args := []string{"-n", "systemd-run", "-M", name, "--pipe", "--wait", "--", "/bin/bash", "-s"}
 	cmd := exec.Command("sudo", args...)
-	cmd.Stdin = os.Stdin
+	cmd.Stdin = strings.NewReader(envScript)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -130,7 +132,7 @@ func (m *Manager) GetLogsWithOptions(name string, opts LogOptions) ([]LogEntry, 
 		return nil, lxerrors.NewMachineNotFoundError(name)
 	}
 
-	args := []string{"-M", name, "--no-pager", "-o", "short-iso"}
+	args := []string{"-M", name, "--no-pager", "-o", "json"}
 
 	if opts.Lines > 0 {
 		args = append(args, "-n", fmt.Sprintf("%d", opts.Lines))
@@ -152,22 +154,37 @@ func (m *Manager) GetLogsWithOptions(name string, opts LogOptions) ([]LogEntry, 
 
 	var entries []LogEntry
 	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
-		parts := strings.SplitN(line, " ", 3)
-		if len(parts) < 3 {
+		var jsonEntry struct {
+			RealtimeTimestamp string `json:"__REALTIME_TIMESTAMP"`
+			Priority          string `json:"PRIORITY"`
+			Message           string `json:"MESSAGE"`
+		}
+		if err := json.Unmarshal([]byte(line), &jsonEntry); err != nil {
 			continue
 		}
 
-		entry := LogEntry{
-			Timestamp: parts[0],
-			Priority:  6,
-			Message:   parts[2],
+		priority := 6
+		if jsonEntry.Priority != "" {
+			if p, err := strconv.Atoi(jsonEntry.Priority); err == nil {
+				priority = p
+			}
 		}
 
-		entries = append(entries, entry)
+		timestamp := jsonEntry.RealtimeTimestamp
+		if timestamp == "" {
+			timestamp = ""
+		}
+
+		entries = append(entries, LogEntry{
+			Timestamp: timestamp,
+			Priority:  priority,
+			Message:   jsonEntry.Message,
+		})
 	}
 
 	return entries, nil

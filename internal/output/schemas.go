@@ -248,3 +248,8 @@ type ApplyData struct {
 	DryRun          bool   `json:"dry_run"`
 	RestartRequired bool   `json:"restart_required"`
 }
+
+type TemplateData struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
