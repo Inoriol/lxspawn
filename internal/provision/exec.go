@@ -1,7 +1,6 @@
 package provision
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -38,10 +37,6 @@ func NewExecProvisioner(machineName string) *ExecProvisioner {
 func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext, fileHandler *FileHandler, baseDir string) error {
 	script := prov.Script
 
-	// Security note: Scripts should come from trusted sources only.
-	// File references are validated (HTTPS-only, digest verification).
-	// Scripts execute inside the container as root.
-
 	envExport := buildEnvExport(ctx.Param)
 
 	logger.Info(fmt.Sprintf("Executing %s provision script", prov.Mode))
@@ -53,73 +48,65 @@ func (e *ExecProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		switch prov.Mode {
 		case config.ProvisionSystem:
 			fullScript := fmt.Sprintf("%s\n%s", envExport, script)
-			retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
+			retryCmd, err = e.buildSystemdRunCommand("root", fullScript, e.timeout)
 			if err != nil {
 				return fmt.Errorf("failed to build systemd-run command: %w", err)
 			}
-	case config.ProvisionUser:
-		user := prov.User
-		if user == "" {
-			logger.Warn("user mode has no 'user' field set, defaulting to 'root'. Set the 'user' field to specify a container user.")
-			user = "root"
-		}
-		escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
-		fullScript := fmt.Sprintf("%s\nsu - %s -c '%s'", envExport, user, escapedScript)
-		retryCmd, err = e.buildSystemdRunCommand("root", fullScript)
-		if err != nil {
-			return fmt.Errorf("failed to build systemd-run command: %w", err)
-		}
+		case config.ProvisionUser:
+			user := prov.User
+			if user == "" {
+				logger.Warn("user mode has no 'user' field set, defaulting to 'root'. Set the 'user' field to specify a container user.")
+				user = "root"
+			}
+			escapedScript := strings.ReplaceAll(script, "'", "'\"'\"'")
+			fullScript := fmt.Sprintf("%s\nsu -p %s -c '%s'", envExport, user, escapedScript)
+			retryCmd, err = e.buildSystemdRunCommand("root", fullScript, e.timeout)
+			if err != nil {
+				return fmt.Errorf("failed to build systemd-run command: %w", err)
+			}
 		default:
 			return fmt.Errorf("unsupported provision mode for exec: %s", prov.Mode)
 		}
 		retryCmd.Stdout = os.Stdout
 		retryCmd.Stderr = os.Stderr
 
-		ctx, cancel := context.WithTimeout(context.Background(), e.timeout)
-		err = retryCmd.Start()
-		if err != nil {
-			cancel()
-			if attempt < maxAttempts-1 {
-				logger.Warn(fmt.Sprintf("Attempt %d failed to start, retrying in 2 seconds...", attempt+1))
-				time.Sleep(2 * time.Second)
-				continue
-			}
-			return fmt.Errorf("exec failed after %d attempts: %w", maxAttempts, err)
+		err = retryCmd.Run()
+		if err == nil {
+			return nil
 		}
 
-		done := make(chan error, 1)
-		go func() { done <- retryCmd.Wait() }()
-
-		select {
-		case <-ctx.Done():
-			cancel()
-			if retryCmd.Process != nil {
-				retryCmd.Process.Kill()
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode := exitErr.ExitCode()
+			if exitCode == 137 || exitCode == 143 {
+				return fmt.Errorf("exec timed out after %v", e.timeout)
 			}
-			return fmt.Errorf("exec timed out after %v", e.timeout)
-		case err := <-done:
-			cancel()
-			if err != nil {
-				if attempt < maxAttempts-1 {
-					logger.Warn(fmt.Sprintf("Attempt %d failed, retrying in 2 seconds...", attempt+1))
-					time.Sleep(2 * time.Second)
-					continue
-				}
-				return fmt.Errorf("exec failed after %d attempts: %w", maxAttempts, err)
-			}
+			return fmt.Errorf("script exited with code %d", exitCode)
 		}
-		break
+
+		if attempt < maxAttempts-1 {
+			logger.Warn(fmt.Sprintf("Attempt %d failed (connection error), retrying in 2 seconds...", attempt+1))
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		return fmt.Errorf("exec failed after %d attempts: %w", maxAttempts, err)
 	}
 
 	return nil
 }
 
-func (e *ExecProvisioner) buildSystemdRunCommand(user string, script string) (*exec.Cmd, error) {
-	// Set environment variables for D-Bus and systemd
-	envScript := fmt.Sprintf("export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n%s", script)
-	
-	args := []string{"systemd-run", "-M", e.machineName, "--pipe", "--wait", "--", "/bin/bash", "-c", envScript}
-	return deploy.Sudo(args...), nil
+func (e *ExecProvisioner) buildSystemdRunCommand(user string, script string, timeout time.Duration) (*exec.Cmd, error) {
+	envPrefix := "export DBUS_SYSTEM_BUS_ADDRESS=unix:path=/run/dbus/system_bus_socket\nexport XDG_RUNTIME_DIR=/run/user/0\n"
+	fullScript := envPrefix + script
+
+	timeoutSec := int(timeout.Seconds())
+	args := []string{
+		"systemd-run", "-M", e.machineName, "--pipe", "--wait",
+		fmt.Sprintf("--property=RuntimeMaxSec=%d", timeoutSec),
+		"--", "/bin/bash", "-s",
+	}
+	cmd := deploy.Sudo(args...)
+	cmd.Stdin = strings.NewReader(fullScript)
+	return cmd, nil
 }
 
 func buildEnvExport(params map[string]string) string {

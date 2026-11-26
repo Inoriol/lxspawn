@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -113,7 +112,7 @@ func isBtrfsSubvolume(path string) bool {
 }
 
 func getBtrfsSubvolumeCreatedAt(path string) *time.Time {
-	cmd := exec.Command("sudo", "btrfs", "subvolume", "show", path)
+	cmd := deploy.Sudo("btrfs", "subvolume", "show", path)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
@@ -194,17 +193,11 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName, rootfsPath string) er
 	oldPath := filepath.Join(parentDir, b.machineName+".rollback-old")
 
 	if _, err := os.Stat(tempPath); err == nil {
-		logger.Info("Cleaning up leftover rollback temp")
-		if err := b.deleteSubvolumeTree(tempPath); err != nil {
-			return fmt.Errorf("failed to clean up leftover temp: %w", err)
-		}
+		return fmt.Errorf("leftover rollback temp found at %s - a previous rollback may have failed. Please inspect and remove manually", tempPath)
 	}
 
 	if _, err := os.Stat(oldPath); err == nil {
-		logger.Info("Cleaning up leftover rollback old")
-		if err := b.deleteSubvolumeTree(oldPath); err != nil {
-			return fmt.Errorf("failed to clean up leftover old: %w", err)
-		}
+		return fmt.Errorf("leftover rollback old found at %s - a previous rollback may have failed. Please inspect and remove manually", oldPath)
 	}
 
 	cmd := deploy.Sudo("btrfs", "subvolume", "snapshot", snapPath, tempPath)
@@ -214,23 +207,24 @@ func (b *BtrfsBackend) RollbackSnapshot(machine, snapName, rootfsPath string) er
 
 	cmd = deploy.Sudo("mv", rootfsPath, oldPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		deploy.Sudo("btrfs", "subvolume", "delete", tempPath)
+		deleteCmd := deploy.Sudo("btrfs", "subvolume", "delete", tempPath)
+		if deleteOutput, deleteErr := deleteCmd.CombinedOutput(); deleteErr != nil {
+			logger.Warn(fmt.Sprintf("failed to clean up temp after mv failure: %v (%s)", deleteErr, string(deleteOutput)))
+		}
 		return fmt.Errorf("failed to move old rootfs aside: %w (%s)", err, string(output))
 	}
 
 	cmd = deploy.Sudo("mv", tempPath, rootfsPath)
 	if output, err := cmd.CombinedOutput(); err != nil {
-		deploy.Sudo("mv", oldPath, rootfsPath)
-		return fmt.Errorf("failed to rename restored snapshot: %w (%s)", err, string(output))
+		recoveryCmd := deploy.Sudo("mv", oldPath, rootfsPath)
+		if recoveryOutput, recoveryErr := recoveryCmd.CombinedOutput(); recoveryErr != nil {
+			return fmt.Errorf("failed to rename restored snapshot (%v: %s) AND failed to recover old rootfs (%v: %s). Original rootfs is at %s - please recover manually", err, string(output), recoveryErr, string(recoveryOutput), oldPath)
+		}
+		return fmt.Errorf("failed to rename restored snapshot (old rootfs recovered to %s): %w (%s)", rootfsPath, err, string(output))
 	}
 
 	if err := b.deleteSubvolumeTree(oldPath); err != nil {
 		logger.Warn(fmt.Sprintf("failed to delete old rootfs (can be cleaned up manually): %v", err))
-	}
-
-	cmd = deploy.Sudo("chown", "-R", "0:0", rootfsPath)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		logger.Warn(fmt.Sprintf("chown warning: %v (%s)", err, string(output)))
 	}
 
 	logger.Success(fmt.Sprintf("Machine '%s' rolled back to snapshot '%s'", machine, snapName))

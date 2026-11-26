@@ -41,7 +41,7 @@ var versionCmd = &cobra.Command{
 			data.KernelVersion = kernelVer
 		}
 
-		if backend, err := storage.DetectBackend(deploy.MachinesDir); err == nil {
+		if backend, err := storage.DetectBackend(deploy.MachinesDirPath()); err == nil {
 			data.StorageBackend = string(backend.Type())
 		}
 
@@ -92,5 +92,5 @@ func getKernelVersion() (string, error) {
 }
 
 func isBtrfs() bool {
-	return kernel.IsBtrfs(deploy.MachinesDir)
+	return kernel.IsBtrfs(deploy.MachinesDirPath())
 }

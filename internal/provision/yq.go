@@ -3,10 +3,8 @@ package provision
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -22,12 +20,12 @@ func NewYQProvisioner(rootfsPath string) *YQProvisioner {
 }
 
 func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, fileHandler *FileHandler, baseDir string) error {
-	targetPath, err := validatePath(y.rootfsPath, prov.Path)
-	if err != nil {
-		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
+	relPath := prov.Path
+	if !filepath.IsAbs(relPath) {
+		return fmt.Errorf("path must be absolute: %s", relPath)
 	}
 
-	data, err := os.ReadFile(targetPath)
+	data, err := rootfsReadFile(y.rootfsPath, relPath)
 	if err != nil {
 		return fmt.Errorf("failed to read %s: %w", prov.Path, err)
 	}
@@ -71,15 +69,9 @@ func (y *YQProvisioner) Provision(prov config.Provision, ctx *TemplateContext, f
 		return fmt.Errorf("failed to marshal output: %w", err)
 	}
 
-	f, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", prov.Path, err)
-	}
-	if _, err := f.Write(output); err != nil {
-		f.Close()
+	if err := rootfsWriteFile(y.rootfsPath, relPath, output, 0644); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
 	}
-	f.Close()
 
 	logger.Debug(fmt.Sprintf("Modified %s", prov.Path))
 	return nil
@@ -93,15 +85,13 @@ func detectFormat(path string) string {
 	case ".yaml", ".yml":
 		return "yaml"
 	default:
-		return "yaml" // Default to YAML
+		return "yaml"
 	}
 }
 
 func applyExpression(content interface{}, expression string, format string) error {
 	expression = strings.TrimSpace(expression)
-	
-	// Parse operators more carefully to avoid false matches
-	// Order matters: check |= and += before = 
+
 	path, operator, value, err := parseOperator(expression)
 	if err != nil {
 		return err
@@ -119,30 +109,25 @@ func applyExpression(content interface{}, expression string, format string) erro
 	}
 }
 
-// parseOperator extracts the path, operator, and value from an expression
 func parseOperator(expression string) (path, operator, value string, err error) {
-	// Find the first unquoted operator
 	operators := []string{"|=", "+=", "="}
-	
+
 	for i := 0; i < len(expression); i++ {
 		c := expression[i]
-		// Skip quoted strings
 		if c == '"' || c == '\'' {
 			quote := c
 			i++
 			for i < len(expression) && expression[i] != quote {
 				if expression[i] == '\\' {
-					i++ // Skip escaped character
+					i++
 				}
 				i++
 			}
 			continue
 		}
-		
-		// Check for operators at this position
+
 		for _, op := range operators {
 			if i+len(op) <= len(expression) && expression[i:i+len(op)] == op {
-				// Make sure we don't match == as =
 				if op == "=" && i+1 < len(expression) && expression[i+1] == '=' {
 					continue
 				}
@@ -152,7 +137,7 @@ func parseOperator(expression string) (path, operator, value string, err error) 
 			}
 		}
 	}
-	
+
 	return "", "", "", fmt.Errorf("no operator found in expression: %s", expression)
 }
 
@@ -213,14 +198,13 @@ func applyUpdateExpression(content interface{}, path string, updateExpr string) 
 	finalKey := components[len(components)-1]
 	currentValue := current[finalKey]
 
-	// Only support ". +" syntax for update
 	if !strings.HasPrefix(updateExpr, ". +") {
 		return fmt.Errorf("unsupported update expression (only '. +' is supported): %s", updateExpr)
 	}
 
 	valuePart := strings.TrimSpace(strings.TrimPrefix(updateExpr, ". +"))
 	newValue := parseValue(valuePart)
-	
+
 	if arr, ok := currentValue.([]interface{}); ok {
 		if newArr, ok := newValue.([]interface{}); ok {
 			current[finalKey] = append(arr, newArr...)
@@ -288,7 +272,6 @@ func applyAppendExpression(content interface{}, path string, value string) error
 }
 
 func parseValue(value string) interface{} {
-	// Try to parse as different types
 	if value == "true" {
 		return true
 	}
@@ -299,36 +282,29 @@ func parseValue(value string) interface{} {
 		return nil
 	}
 
-	// Remove quotes if present (check before number parsing)
 	if (strings.HasPrefix(value, "\"") && strings.HasSuffix(value, "\"")) ||
 		(strings.HasPrefix(value, "'") && strings.HasSuffix(value, "'")) {
 		return value[1 : len(value)-1]
 	}
 
-	// Try as integer first (no decimal point)
 	if !strings.Contains(value, ".") {
 		var num int64
 		if _, err := fmt.Sscanf(value, "%d", &num); err == nil {
-			// Verify the entire string was consumed
 			if fmt.Sprintf("%d", num) == value {
 				return num
 			}
 		}
 	}
 
-	// Try as float (must have exactly one decimal point and be a valid number)
 	if strings.Count(value, ".") == 1 {
 		var num float64
 		if _, err := fmt.Sscanf(value, "%f", &num); err == nil {
-			// Verify it's not something like "10.0.0.1" (IP address)
-			// by checking that the string representation matches
 			if fmt.Sprintf("%g", num) == value || fmt.Sprintf("%f", num) == value {
 				return num
 			}
 		}
 	}
 
-	// Try as JSON array/object
 	if strings.HasPrefix(value, "[") || strings.HasPrefix(value, "{") {
 		var parsed interface{}
 		if err := json.Unmarshal([]byte(value), &parsed); err == nil {
@@ -336,6 +312,5 @@ func parseValue(value string) interface{} {
 		}
 	}
 
-	// Return as string
 	return value
 }

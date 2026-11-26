@@ -6,6 +6,7 @@ import (
 )
 
 var JSONMode bool
+var ProgressMode bool
 
 func SetJSONMode(enabled bool) {
 	JSONMode = enabled
@@ -13,6 +14,14 @@ func SetJSONMode(enabled bool) {
 
 func IsJSONMode() bool {
 	return JSONMode
+}
+
+func SetProgressMode(enabled bool) {
+	ProgressMode = enabled
+}
+
+func IsProgressMode() bool {
+	return ProgressMode
 }
 
 func PrintJSON(data interface{}) error {

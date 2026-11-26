@@ -239,8 +239,8 @@ func TestSaveFilePermissions(t *testing.T) {
 		t.Fatalf("stat failed: %v", err)
 	}
 
-	if info.Mode().Perm() != 0600 {
-		t.Errorf("permissions = %o, want 0600", info.Mode().Perm())
+	if info.Mode().Perm() != 0660 {
+		t.Errorf("permissions = %o, want 0660", info.Mode().Perm())
 	}
 }
 
@@ -393,8 +393,8 @@ func TestStateFilePermissions(t *testing.T) {
 		t.Fatalf("failed to stat state file: %v", err)
 	}
 
-	// File should be 0600 (owner read/write only)
-	expectedPerm := os.FileMode(0600)
+	// File should be 0660 (owner and group read/write)
+	expectedPerm := os.FileMode(0660)
 	if info.Mode().Perm() != expectedPerm {
 		t.Errorf("state file permissions = %o, want %o", info.Mode().Perm(), expectedPerm)
 	}

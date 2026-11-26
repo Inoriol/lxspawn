@@ -150,9 +150,7 @@ func (b *BtrfsBackend) deleteChildSubvolumes(parentPath string) error {
 		return err
 	}
 
-	// Delete children (deepest first - they're already sorted by depth)
-	for i := len(children) - 1; i >= 0; i-- {
-		childPath := children[i]
+	for _, childPath := range children {
 		deleteCmd := deploy.Sudo("btrfs", "subvolume", "delete", childPath)
 		if deleteOutput, deleteErr := deleteCmd.CombinedOutput(); deleteErr != nil {
 			logger.Warn(fmt.Sprintf("failed to delete child subvolume %s: %v (%s)", childPath, deleteErr, string(deleteOutput)))

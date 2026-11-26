@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -19,16 +20,15 @@ type InterfaceInfo struct {
 
 // DetectPrimaryInterface returns the primary network interface
 // Logic: Parse `ip route show default`, filter virtual interfaces,
-// return first physical interface with carrier
+// return first physical interface with carrier.
+// Resolves bridge/bond slaves to find the actual physical interface.
 func DetectPrimaryInterface() (string, error) {
-	// Get default route interface
 	cmd := exec.Command("ip", "route", "show", "default")
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get default route: %w", err)
 	}
 
-	// Parse output: "default via 192.168.0.1 dev enp2s0 ..."
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -37,7 +37,10 @@ func DetectPrimaryInterface() (string, error) {
 			for i, field := range fields {
 				if field == "dev" && i+1 < len(fields) {
 					iface := fields[i+1]
-					// Check if it's a physical interface with carrier
+					resolved := resolveToPhysical(iface)
+					if resolved != "" && hasCarrier(resolved) {
+						return resolved, nil
+					}
 					if isPhysicalInterface(iface) && hasCarrier(iface) {
 						return iface, nil
 					}
@@ -49,54 +52,103 @@ func DetectPrimaryInterface() (string, error) {
 	return "", fmt.Errorf("no primary interface found")
 }
 
+// resolveToPhysical resolves bridge/bond/vlan slaves to the underlying physical interface
+func resolveToPhysical(iface string) string {
+	if isPhysicalInterface(iface) {
+		return iface
+	}
+
+	slavePath := fmt.Sprintf("/sys/class/net/%s/lower_%s", iface, iface)
+	if _, err := os.Stat(slavePath); err == nil {
+		link, err := os.Readlink(slavePath)
+		if err == nil {
+			slave := filepath.Base(link)
+			return resolveToPhysical(slave)
+		}
+	}
+
+	bondSlavesPath := fmt.Sprintf("/sys/class/net/%s/bonding/slaves", iface)
+	if data, err := os.ReadFile(bondSlavesPath); err == nil {
+		slaves := strings.Fields(strings.TrimSpace(string(data)))
+		if len(slaves) > 0 {
+			return resolveToPhysical(slaves[0])
+		}
+	}
+
+	brPortPath := fmt.Sprintf("/sys/class/net/%s/brport", iface)
+	if _, err := os.Stat(brPortPath); err == nil {
+		return iface
+	}
+
+	masterPath := fmt.Sprintf("/sys/class/net/%s/master", iface)
+	if link, err := os.Readlink(masterPath); err == nil {
+		master := filepath.Base(link)
+		return resolveToPhysical(master)
+	}
+
+	return ""
+}
+
 // ListPhysicalInterfaces returns all physical interfaces
 func ListPhysicalInterfaces() ([]InterfaceInfo, error) {
 	var interfaces []InterfaceInfo
 
-	// Get all interfaces
 	cmd := exec.Command("ip", "-o", "link", "show")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list interfaces: %w", err)
 	}
 
-	// Get primary interface
 	primary, _ := DetectPrimaryInterface()
 
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Parse: "2: enp2s0: <BROADCAST,MULTICAST,UP,LOWER_UP> ..."
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
 		}
 
-		// Extract interface name (remove trailing colon and @... suffix)
 		name := strings.TrimSuffix(fields[1], ":")
 		if idx := strings.Index(name, "@"); idx != -1 {
 			name = name[:idx]
 		}
 
-		// Skip virtual interfaces
 		if isVirtualInterface(name) {
 			continue
 		}
 
-		// Skip if not physical
-		if !isPhysicalInterface(name) {
+		resolved := resolveToPhysical(name)
+		if resolved == "" && !isPhysicalInterface(name) {
 			continue
 		}
 
-		iface := InterfaceInfo{
-			Name:    name,
-			Type:    getInterfaceType(name),
-			IP:      getInterfaceIP(name),
-			Carrier: hasCarrier(name),
-			Primary: name == primary,
+		effectiveName := name
+		if resolved != "" {
+			effectiveName = resolved
 		}
 
-		interfaces = append(interfaces, iface)
+		iface := InterfaceInfo{
+			Name:    effectiveName,
+			Type:    getInterfaceType(effectiveName),
+			IP:      getInterfaceIP(name),
+			Carrier: hasCarrier(effectiveName),
+			Primary: effectiveName == primary,
+		}
+
+		found := false
+		for i, existing := range interfaces {
+			if existing.Name == iface.Name {
+				found = true
+				if iface.Primary {
+					interfaces[i].Primary = true
+				}
+				break
+			}
+		}
+		if !found {
+			interfaces = append(interfaces, iface)
+		}
 	}
 
 	return interfaces, nil

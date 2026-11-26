@@ -23,14 +23,8 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Unit tests (short)
-        run: go test -short -count=1 -timeout 2m ./...
-
-      - name: Unit tests with race detector
-        run: go test -race -count=1 -timeout 3m ./...
-
-      - name: Unit tests with coverage
-        run: go test -cover -coverprofile=coverage.out -count=1 -timeout 2m ./...
+      - name: Test with race detector and coverage
+        run: go test -race -cover -coverprofile=coverage.out -count=1 -timeout 5m ./...
 
       - name: Coverage summary
         run: go tool cover -func=coverage.out

@@ -6,7 +6,6 @@ import (
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/spf13/cobra"
 
-	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/machine"
 	"github.com/Inoriol/lxspawn/internal/output"
 )
@@ -27,25 +26,9 @@ var configCmd = &cobra.Command{
 			return fmt.Errorf("machine '%s' not found", args[0])
 		}
 
-		configPath := info.ConfigPath
-		if configPath == "" {
-			configPath = info.SourcePath
-		}
-
-		if configPath == "" {
-			return fmt.Errorf("machine '%s' has no config path", args[0])
-		}
-
-		cfg, err := config.Parse(configPath)
+		cfg, err := machine.LoadMachineConfig(info)
 		if err != nil {
-			if info.SourcePath != "" && info.SourcePath != configPath {
-				cfg, err = config.Parse(info.SourcePath)
-				if err != nil {
-					return fmt.Errorf("failed to parse config: %w", err)
-				}
-			} else {
-				return fmt.Errorf("failed to parse config: %w", err)
-			}
+			return fmt.Errorf("failed to load config: %w", err)
 		}
 
 		if output.IsJSONMode() {

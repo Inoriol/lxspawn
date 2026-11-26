@@ -34,7 +34,7 @@ provision:
     content: |
       [global]
       workgroup = WORKGROUP
-      server string = LXSpawn File Server
+      server_string = LXSpawn File Server
       security = user
       map to guest = Never
 
@@ -53,7 +53,7 @@ provision:
       #!/bin/bash
       set -eu -o pipefail
 
-      if [ "{{.Param.smb_pass}}" = "CHANGE_ME" ]; then
+      if [ "$LXSPAWN_PARAM_smb_pass" = "CHANGE_ME" ]; then
         echo "ERROR: Set smb_pass param before launching"
         exit 1
       fi
@@ -61,13 +61,13 @@ provision:
       apt-get update
       apt-get install -y samba samba-common-bin
 
-      useradd -M -s /sbin/nologin {{.Param.smb_user}} 2>/dev/null || true
+      useradd -M -s /sbin/nologin "$LXSPAWN_PARAM_smb_user" 2>/dev/null || true
 
       set +x
-      (echo "{{.Param.smb_pass}}"; echo "{{.Param.smb_pass}}") | smbpasswd -s -a {{.Param.smb_user}}
+      (echo "$LXSPAWN_PARAM_smb_pass"; echo "$LXSPAWN_PARAM_smb_pass") | smbpasswd -s -a "$LXSPAWN_PARAM_smb_user"
       set -x
 
-      chown {{.Param.smb_user}}: /data
+      chown "$LXSPAWN_PARAM_smb_user": /data
 
       systemctl enable --now smbd nmbd
 
@@ -76,6 +76,12 @@ probes:
     description: "Samba to be serving"
     script: |
       #!/bin/bash
-      until (echo > /dev/tcp/localhost/445) 2>/dev/null; do sleep 2; done
+      set -eu
+      for i in $(seq 1 30); do
+        (echo > /dev/tcp/localhost/445) 2>/dev/null && exit 0
+        sleep 2
+      done
+      echo "Samba did not become ready in time" >&2
+      exit 1
     hint: |
       Samba may not have started. Check: journalctl -M {{.Name}} -u smbd

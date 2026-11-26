@@ -38,11 +38,11 @@ var rollbackCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to get machine status: %w", err)
 		}
-		if status.State == "running" {
-			return fmt.Errorf("machine '%s' is running; stop it before rolling back", machineName)
+		if status.State == "running" || status.State == "starting" || status.State == "stopping" {
+			return fmt.Errorf("machine '%s' is %s; stop it before rolling back", machineName, status.State)
 		}
 
-		if !rollbackYes && isStdinTerminal() {
+		if !rollbackYes && isStdinTerminal() && !output.IsJSONMode() {
 			fmt.Printf("WARNING: This will discard all changes to machine '%s' since snapshot '%s' was taken.\n", machineName, snapName)
 			fmt.Printf("Are you sure you want to rollback? [y/N]: ")
 			reader := bufio.NewReader(os.Stdin)

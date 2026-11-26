@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"github.com/Inoriol/lxspawn/internal/config"
 	"github.com/Inoriol/lxspawn/internal/logger"
@@ -39,9 +38,9 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		return fmt.Errorf("failed to render template: %w", err)
 	}
 
-	targetPath, err := validatePath(d.rootfsPath, prov.Path)
-	if err != nil {
-		return fmt.Errorf("invalid path %q: %w", prov.Path, err)
+	relPath := prov.Path
+	if !filepath.IsAbs(relPath) {
+		return fmt.Errorf("path must be absolute: %s", relPath)
 	}
 
 	overwrite := true
@@ -49,13 +48,14 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		overwrite = *prov.Overwrite
 	}
 
-	if _, err := os.Stat(targetPath); err == nil && !overwrite {
-		logger.Info(fmt.Sprintf("Skipping %s (already exists, overwrite=false)", prov.Path))
-		return nil
+	exists, err := rootfsFileExists(d.rootfsPath, relPath)
+	if err != nil {
+		return fmt.Errorf("failed to check if file exists: %w", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("failed to create parent dirs: %w", err)
+	if exists && !overwrite {
+		logger.Info(fmt.Sprintf("Skipping %s (already exists, overwrite=false)", prov.Path))
+		return nil
 	}
 
 	perm := os.FileMode(0644)
@@ -67,24 +67,14 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 		perm = os.FileMode(parsed)
 	}
 
-	f, err := openFileNoFollow(targetPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return fmt.Errorf("failed to open file %s: %w", prov.Path, err)
-	}
-	if _, err := f.Write([]byte(rendered)); err != nil {
-		f.Close()
+	if err := rootfsWriteFile(d.rootfsPath, relPath, []byte(rendered), perm); err != nil {
 		return fmt.Errorf("failed to write file %s: %w", prov.Path, err)
-	}
-	f.Close()
-
-	if err := os.Chmod(targetPath, perm); err != nil {
-		return fmt.Errorf("failed to chmod %s to %o: %w", prov.Path, perm, err)
 	}
 
 	logger.Debug(fmt.Sprintf("Wrote %s", prov.Path))
 
 	if prov.Owner != "" {
-		if err := setOwnership(targetPath, prov.Owner, d.rootfsPath); err != nil {
+		if err := setOwnership(d.rootfsPath, relPath, prov.Owner); err != nil {
 			return fmt.Errorf("failed to set ownership on %s: %w", prov.Path, err)
 		}
 	}
@@ -92,7 +82,7 @@ func (d *DataProvisioner) Provision(prov config.Provision, ctx *TemplateContext,
 	return nil
 }
 
-func setOwnership(path string, owner string, rootfsPath string) error {
+func setOwnership(rootfsPath, relPath string, owner string) error {
 	parts := strings.SplitN(owner, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("invalid owner format: %s (expected user:group)", owner)
@@ -119,17 +109,16 @@ func setOwnership(path string, owner string, rootfsPath string) error {
 		}
 	}
 
-	if err := os.Chown(path, uid, gid); err != nil {
-		return fmt.Errorf("failed to chown %s to %d:%d: %w", path, uid, gid, err)
+	if err := rootfsChown(rootfsPath, relPath, uid, gid); err != nil {
+		return fmt.Errorf("failed to chown %s to %d:%d: %w", relPath, uid, gid, err)
 	}
 
-	logger.Info(fmt.Sprintf("Set ownership of %s to %d:%d", path, uid, gid))
+	logger.Info(fmt.Sprintf("Set ownership of %s to %d:%d", relPath, uid, gid))
 	return nil
 }
 
 func lookupUIDInRootfs(name string, rootfsPath string) int {
-	passwdPath := filepath.Join(rootfsPath, "etc", "passwd")
-	data, err := os.ReadFile(passwdPath)
+	data, err := rootfsReadFile(rootfsPath, "/etc/passwd")
 	if err != nil {
 		return lookupUID(name)
 	}
@@ -147,8 +136,7 @@ func lookupUIDInRootfs(name string, rootfsPath string) int {
 }
 
 func lookupGIDInRootfs(name string, rootfsPath string) int {
-	groupPath := filepath.Join(rootfsPath, "etc", "group")
-	data, err := os.ReadFile(groupPath)
+	data, err := rootfsReadFile(rootfsPath, "/etc/group")
 	if err != nil {
 		return lookupGID(name)
 	}
@@ -185,111 +173,4 @@ func lookupGID(name string) int {
 	default:
 		return -1
 	}
-}
-
-func validatePath(rootfsPath, relativePath string) (string, error) {
-	if !filepath.IsAbs(relativePath) {
-		return "", fmt.Errorf("path must be absolute: %s", relativePath)
-	}
-
-	targetPath := filepath.Join(rootfsPath, relativePath)
-	cleanTarget := filepath.Clean(targetPath)
-	cleanRootfs := filepath.Clean(rootfsPath)
-
-	if !strings.HasPrefix(cleanTarget, cleanRootfs+string(os.PathSeparator)) && cleanTarget != cleanRootfs {
-		return "", fmt.Errorf("path %q escapes rootfs directory %s", relativePath, rootfsPath)
-	}
-
-	resolvedPath, err := secureJoin(cleanRootfs, relativePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve path %q: %w", relativePath, err)
-	}
-
-	if !strings.HasPrefix(resolvedPath, cleanRootfs+string(os.PathSeparator)) && resolvedPath != cleanRootfs {
-		return "", fmt.Errorf("path %q resolves outside rootfs (via symlink)", relativePath)
-	}
-
-	return resolvedPath, nil
-}
-
-func secureJoin(root, path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		return "", fmt.Errorf("path must be absolute: %s", path)
-	}
-
-	cleanRoot := filepath.Clean(root)
-
-	relPath := strings.TrimPrefix(filepath.Clean(path), "/")
-	if relPath == "" || relPath == "." {
-		return cleanRoot, nil
-	}
-
-	parts := strings.Split(relPath, string(os.PathSeparator))
-	current := cleanRoot
-
-	for i, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		next := filepath.Join(current, part)
-
-		fi, err := os.Lstat(next)
-		if err != nil {
-			if os.IsNotExist(err) {
-				remaining := parts[i+1:]
-				if len(remaining) > 0 {
-					return filepath.Join(next, filepath.Join(remaining...)), nil
-				}
-				return next, nil
-			}
-			return "", err
-		}
-
-		// Resolve symlinks, including chained symlinks
-		for fi.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err := os.Readlink(next)
-			if err != nil {
-				return "", err
-			}
-
-			var resolved string
-			if filepath.IsAbs(linkTarget) {
-				// If the symlink target is already under the root, use it directly
-				if strings.HasPrefix(linkTarget, cleanRoot+string(os.PathSeparator)) || linkTarget == cleanRoot {
-					resolved = linkTarget
-				} else {
-					// Otherwise, it's trying to escape
-					return "", fmt.Errorf("symlink %q points outside root: %s", next, linkTarget)
-				}
-			} else {
-				resolved = filepath.Join(filepath.Dir(next), linkTarget)
-			}
-			resolved = filepath.Clean(resolved)
-
-			if !strings.HasPrefix(resolved, cleanRoot+string(os.PathSeparator)) && resolved != cleanRoot {
-				return "", fmt.Errorf("symlink %q points outside root: %s", next, linkTarget)
-			}
-
-			next = resolved
-			fi, err = os.Lstat(next)
-			if err != nil {
-				if os.IsNotExist(err) {
-					remaining := parts[i+1:]
-					if len(remaining) > 0 {
-						return filepath.Join(next, filepath.Join(remaining...)), nil
-					}
-					return next, nil
-				}
-				return "", err
-			}
-		}
-
-		current = next
-	}
-
-	return current, nil
-}
-
-func openFileNoFollow(path string, flag int, perm os.FileMode) (*os.File, error) {
-	return os.OpenFile(path, flag|syscall.O_NOFOLLOW, perm)
 }

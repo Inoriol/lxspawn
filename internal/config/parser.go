@@ -11,17 +11,18 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func ToYAML(cfg *Config) ([]byte, error) {
+	return yaml.Marshal(cfg)
+}
+
 var validMachineNameRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}[a-zA-Z0-9]$`)
 
 func ValidateMachineName(name string) error {
 	if name == "" {
 		return fmt.Errorf("machine name cannot be empty")
 	}
-	if len(name) == 1 {
-		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(name) {
-			return fmt.Errorf("machine name must be alphanumeric")
-		}
-		return nil
+	if len(name) < 2 {
+		return fmt.Errorf("machine name must be at least 2 characters (polkit rules require 2+ characters)")
 	}
 	if !validMachineNameRegex.MatchString(name) {
 		return fmt.Errorf("machine name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, and underscores, and be between 2 and 64 characters")
@@ -71,46 +72,6 @@ func parseString(data string, strict bool) (*Config, error) {
 		cfg.Security.NoNewPrivileges = &t
 	}
 
-	return &cfg, nil
-}
-
-func parse(filename string, strict bool) (*Config, error) {
-	absPath, err := filepath.Abs(filename)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve path: %w", err)
-	}
-
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config file: %w", err)
-	}
-
-	var cfg Config
-	if strict {
-		decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-	} else {
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse YAML: %w", err)
-		}
-	}
-
-	if cfg.Network.Mode == "" {
-		cfg.Network.Mode = NetworkHost
-	}
-
-	if cfg.Advanced.Hostname == "" {
-		cfg.Advanced.Hostname = cfg.Name
-	}
-
-	if cfg.Security.NoNewPrivileges == nil {
-		t := true
-		cfg.Security.NoNewPrivileges = &t
-	}
-
 	if cfg.Security.Seccomp == nil {
 		t := true
 		cfg.Security.Seccomp = &t
@@ -127,16 +88,28 @@ func parse(filename string, strict bool) (*Config, error) {
 	return &cfg, nil
 }
 
+func parse(filename string, strict bool) (*Config, error) {
+	absPath, err := filepath.Abs(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve path: %w", err)
+	}
+
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	return parseString(string(data), strict)
+}
+
 func Validate(cfg *Config) error {
 	if cfg.Name == "" {
 		return fmt.Errorf("name is required")
 	}
-	if len(cfg.Name) == 1 {
-		// Single character names are allowed if alphanumeric
-		if !regexp.MustCompile(`^[a-zA-Z0-9]$`).MatchString(cfg.Name) {
-			return fmt.Errorf("name must start and end with an alphanumeric character")
-		}
-	} else if !validMachineNameRegex.MatchString(cfg.Name) {
+	if len(cfg.Name) < 2 {
+		return fmt.Errorf("name must be at least 2 characters")
+	}
+	if !validMachineNameRegex.MatchString(cfg.Name) {
 		return fmt.Errorf("name must start and end with an alphanumeric character, contain only alphanumeric characters, hyphens, and underscores, and be between 2 and 64 characters")
 	}
 	if isReservedName(cfg.Name) {
@@ -191,7 +164,7 @@ func validateAdvanced(cfg *Config) error {
 		if strings.ContainsAny(cfg.Advanced.Hostname, "\n\r") {
 			return fmt.Errorf("advanced.hostname cannot contain newlines")
 		}
-		if !validMachineNameRegex.MatchString(cfg.Advanced.Hostname) && len(cfg.Advanced.Hostname) > 1 {
+		if !validMachineNameRegex.MatchString(cfg.Advanced.Hostname) {
 			return fmt.Errorf("advanced.hostname contains invalid characters")
 		}
 	}
@@ -202,6 +175,9 @@ func validateAdvanced(cfg *Config) error {
 		}
 		if strings.ContainsAny(v, "\n\r") {
 			return fmt.Errorf("environment variable %q value cannot contain newlines", k)
+		}
+		if strings.ContainsAny(v, " \t") {
+			return fmt.Errorf("environment variable %q value %q contains spaces (not supported in .nspawn Environment=)", k, v)
 		}
 	}
 
@@ -389,17 +365,30 @@ func validatePort(port string) error {
 }
 
 func validateVolumes(cfg *Config) error {
-	// Sensitive paths that should not be exposed to containers
 	sensitivePaths := []string{
+		"/bin",
+		"/boot",
+		"/dev",
+		"/etc",
 		"/etc/shadow",
 		"/etc/gshadow",
 		"/etc/master.passwd",
+		"/lib",
+		"/lib64",
+		"/opt",
 		"/proc",
-		"/sys",
-		"/dev",
+		"/root",
 		"/run",
+		"/sbin",
+		"/srv",
+		"/sys",
+		"/usr",
+		"/var/lib/lxspawn",
+		"/var/lib/machines",
 		"/var/run",
 	}
+
+	validTmpfsOptionsRegex := regexp.MustCompile(`^[A-Za-z0-9=,._-]*$`)
 
 	for i, v := range cfg.Volumes {
 		if v.Type == "tmpfs" {
@@ -408,6 +397,9 @@ func validateVolumes(cfg *Config) error {
 			}
 			if strings.ContainsAny(v.Mount, "\n\r") {
 				return fmt.Errorf("volumes[%d]: mount point cannot contain newlines", i)
+			}
+			if v.Options != "" && !validTmpfsOptionsRegex.MatchString(v.Options) {
+				return fmt.Errorf("volumes[%d]: tmpfs options %q contains invalid characters", i, v.Options)
 			}
 			continue
 		}
@@ -423,6 +415,12 @@ func validateVolumes(cfg *Config) error {
 		if strings.ContainsAny(v.Mount, "\n\r") {
 			return fmt.Errorf("volumes[%d]: mount point cannot contain newlines", i)
 		}
+		if strings.Contains(v.Host, ":") {
+			return fmt.Errorf("volumes[%d]: host path cannot contain colons: %s", i, v.Host)
+		}
+		if strings.Contains(v.Mount, ":") {
+			return fmt.Errorf("volumes[%d]: mount path cannot contain colons: %s", i, v.Mount)
+		}
 		if !filepath.IsAbs(v.Host) {
 			return fmt.Errorf("volumes[%d]: host path must be absolute: %s", i, v.Host)
 		}
@@ -430,7 +428,6 @@ func validateVolumes(cfg *Config) error {
 			return fmt.Errorf("volumes[%d]: mount point must be absolute: %s", i, v.Mount)
 		}
 
-		// Check for sensitive paths
 		cleanHost := filepath.Clean(v.Host)
 		for _, sensitive := range sensitivePaths {
 			if cleanHost == sensitive || strings.HasPrefix(cleanHost, sensitive+"/") {
@@ -526,16 +523,17 @@ func validateGPU(cfg *Config) error {
 		return fmt.Errorf("gpu.type must be one of: auto, intel, amd, nvidia, mali, adreno")
 	}
 
+	validDeviceRegex := regexp.MustCompile(`^/dev/[A-Za-z0-9._/-]+$`)
+
 	for i, device := range cfg.GPU.Devices {
 		if device == "" {
 			return fmt.Errorf("gpu.devices[%d]: device path cannot be empty", i)
 		}
-		if !strings.HasPrefix(device, "/dev/") {
-			return fmt.Errorf("gpu.devices[%d]: device path must start with /dev/: %s", i, device)
+		if !validDeviceRegex.MatchString(device) {
+			return fmt.Errorf("gpu.devices[%d]: device path %q contains invalid characters (only alphanumeric, dots, underscores, hyphens, and slashes allowed)", i, device)
 		}
-		cleanDevice := filepath.Clean(device)
-		if cleanDevice != device {
-			return fmt.Errorf("gpu.devices[%d]: device path must be clean (no '..' or extra slashes): %s", i, device)
+		if strings.Contains(device, ":") {
+			return fmt.Errorf("gpu.devices[%d]: device path cannot contain colons: %s", i, device)
 		}
 		if strings.Contains(device, "..") {
 			return fmt.Errorf("gpu.devices[%d]: device path cannot contain '..': %s", i, device)

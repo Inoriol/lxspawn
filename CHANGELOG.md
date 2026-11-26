@@ -7,6 +7,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-26
+
+### Added
+
+- **Dependabot configuration** - Added `.github/dependabot.yml` for weekly dependency updates (gomod and github-actions).
+- **CI/CD test gate (B1)** - Release workflow now runs tests with `go mod verify`, `go vet`, `go test -race -cover`, and `govulncheck` before publishing.
+- **Regression tests for injection fixes (V1/V2)** - Added `TestValidateGPUDeviceWithNewline`, `TestValidateVolumeTmpfsOptionsInvalid`, and `TestValidateVolumeTmpfsOptionsWithColon` to prevent regression of injection vulnerabilities.
+- **Sudoers cross-check test** - Added `TestSudoersCrossCheck` that uses `go/ast` to verify every `deploy.Sudo()` call site uses a binary with a corresponding sudoers rule. Prevents drift between Go code and sudoers rules.
+- **SHA256 image verification (X2)** - Downloaded rootfs images are now verified against `SHA256SUMS` from the image server before extraction. Prevents use of corrupted or tampered images from compromised mirrors.
+- **Per-machine operation lock (C6)** - `Create`, `Delete`, and `Apply` now acquire a per-machine `flock` before proceeding. Prevents race conditions where concurrent operations could destroy each other's work.
+- **Progress mode for clean NDJSON output (O8)** - Added `output.ProgressMode` flag that suppresses all logger output during `--progress` operations. Ensures clean newline-delimited JSON streams without interleaved human-readable messages.
+- **HTTPS redirect validation (X5)** - HTTP clients now reject redirects to insecure HTTP URLs. Prevents https-to-http downgrade attacks during image downloads.
+- **Sudoers rules for rootfs operations** - Added sudoers rules for `tee`, `ln`, `rm`, `mkdir`, `chmod`, `chown` on files inside machine rootfs. Enables non-root users to run provision commands on root-owned rootfs.
+- **`lxspawn show-template` command (T1)** - New command to display embedded template content. Useful for Cockpit integration and template inspection.
+- **Sudoers rule for tar extraction** - Added sudoers rule for `tar --xattrs` extraction to preserve ownership and setuid bits when running as non-root user.
+
+### Changed
+
+- **Consolidated CI test runs (B2)** - Combined three separate test runs (short, race, cover) into single `go test -race -cover` run in test.yml.
+- **Makefile hardened (B3)** - Added `GOOS=linux` for cross-platform builds, added `-race` flag to test target.
+- **Removed `go mod tidy` from goreleaser (B1)** - Prevents dependency changes at release time. Added `go mod verify` step instead.
+- **Updated dependencies (B4)** - Updated cobra v1.8.0 → v1.10.2, golang.org/x/sys v0.17.0 → v0.50.0.
+- **Refactored sudoers rule generation** - Extracted `generateSudoersRules()` from `installSudoersRules()` for testability.
+- **Sudoers rules tightened (P1)** - Removed LVM rules (backend disabled), fixed `chmod` to `0[0-7]{3}` (no setuid), changed `systemd-run` to use `-s$` (stdin mode), added `stop`/`kill` systemctl rules, escaped `.` in patterns. All rules now use exact argument patterns.
+- **State file permissions changed to 0660 (P5)** - `machines.json` and lock file now use 0660 permissions with group ownership set to `lxspawn`. Enables multi-user support where multiple group members can manage machines.
+- **`deploy.Sudo()` now uses `-n` flag (P3)** - All sudo calls now use non-interactive mode. Prevents TTY hangs when rules don't match and provides clear errors under Cockpit.
+- **Provision scripts passed via stdin (P6)** - `systemd-run` commands now use `bash -s` with script on stdin instead of `bash -c` with script in argv. Secrets no longer visible in `/proc/<pid>/cmdline` or sudo logs.
+- **`WaitForMachine` polls for actual boot (O1)** - Now verifies container is ready by running `systemd-run -- /bin/true` instead of just checking machined state. Prevents race conditions with post-boot provisioning.
+- **Tar extraction hardened (X1)** - Replaced lexical symlink tracking with `checkNoSymlinkInPath()` that Lstats every parent component on the real filesystem. Prevents symlink-based escape attacks during extraction.
+- **Boot scripts written with 0700 permissions (P7)** - Boot provisioner scripts now use 0700 instead of 0755, protecting sensitive data that might be embedded in scripts.
+- **Edit commands are transactional (C3)** - `edit-resources` now backs up config before writing, restores on `Apply` failure. Prevents leaving invalid configs when apply fails.
+- **`Apply` preserves metadata and cleans stale files (C5)** - Now preserves `CreatedAt` timestamp from existing machine info. Removes stale slice and hook files when no longer needed.
+- **Typed errors used throughout (O7)** - All "machine not found" errors in manager now use `NewMachineNotFoundError`. JSON output returns proper error codes (`MACHINE_NOT_FOUND`, `MACHINE_EXISTS`) with distinct exit codes (2, 3).
+- **Setup fails loudly on errors (P4)** - `lxspawn setup` now returns non-zero exit code and lists failures when sudoers/polkit installation fails. Previously reported success even when critical components failed.
+- **Provision restarts machine after completion (O3)** - `lxspawn provision` now restarts the machine if it was running before provisioning. Uses defer to ensure restart happens even if provisioning fails.
+- **Exec provisioner only retries on connection errors (O4)** - Script execution no longer retries on non-zero exit codes. Only retries when `systemd-run` fails to connect (D-Bus not ready). Prevents repeating partially-completed scripts.
+- **Script hashes saved incrementally (O5)** - Provision state now saved after each script succeeds, not just at the end. Prevents re-running completed scripts if a later script fails.
+- **Probe and exec timeouts use RuntimeMaxSec (O6)** - Timeouts now use `--property=RuntimeMaxSec=` to terminate in-container processes properly. Previously, killing the sudo process left orphaned processes running inside the container.
+- **GPU detection errors propagated (V5)** - `compiler/nspawn.go` now returns errors when GPU detection fails with `gpu.enabled: true`. Previously silently ignored errors, leading to machines starting without GPU access.
+- **Delete cleans up completely (D4)** - `lxspawn delete` now removes sibling snapshots directory, runs `systemctl disable` to prevent autostart issues, and polls for stopped state with timeout before deletion.
+- **Rootfs writes use secure paths and sudo (X5)** - All rootfs writes (boot, data, yq provisioners, cleanup) now use `secureJoin` for path resolution and `deploy.Sudo()` for privileged operations. Prevents permission errors when provisioning root-owned rootfs and closes symlink escape vulnerability.
+- **Templates use environment variables for secrets (V6)** - Templates now use `$LXSPAWN_PARAM_*` environment variables instead of direct template interpolation for sensitive values. Prevents shell injection through parameter values.
+- **`--name` override always updates hostname (C7)** - When using `--name` flag, hostname is now always set to match the machine name. Previously only updated if hostname was empty or matched template name.
+- **`--param` validates keys (C8)** - `--param` flag now validates that keys exist in the template's `param:` section. Prevents typos from silently using default values.
+- **Disk usage uses btrfs-specific methods (O9)** - `readDiskUsage` now uses `btrfs filesystem du -s` for btrfs paths to get accurate per-subvolume usage. Falls back to `Statfs` for other filesystems.
+- **GPU detection improved (O12)** - GPU deduplication now uses PCI addresses instead of device node overlap. Discrete GPU detection uses PCI class codes (0x0302) instead of BAR size heuristics.
+- **Network detection resolves bridge/bond slaves (O12)** - `DetectPrimaryInterface` now resolves bridge and bond slaves to find the actual physical interface. Works correctly when default route is on a bridge or bond.
+- **Rollback preserves snapshot state (D5)** - Rollback no longer wipes `snapshots.json`, preserving snapshot descriptions. Also checks for `starting` and `stopping` states in addition to `running`.
+- **Validation improvements (V4)** - Machine names now require minimum 2 characters (polkit regex requirement). Environment variable values reject spaces (not supported in .nspawn). Hostname validation uses same regex as machine name.
+- **SELinux hook labelling persistent (P8)** - `SetSELinuxContext` now uses `semanage fcontext` + `restorecon` for persistent labelling. Survives `restorecon -R` and filesystem relabels.
+- **Stop/ForceStop validate machine (O10)** - `Stop` and `ForceStop` now validate machine name and check registry before proceeding. Returns proper error for nonexistent machines.
+- **Exec uses stdin for environment preservation (O11)** - `lxspawn exec` now uses `bash -s` with script on stdin instead of `bash -c`. Preserves `LXSPAWN_PARAM_*` environment variables in user-mode scripts.
+- **Logs use JSON output (O11)** - `GetLogsWithOptions` now uses `journalctl -o json` to read actual priority from `PRIORITY` field. Previously hard-coded to 6 (info).
+- **CPU% normalized without quota (O11)** - CPU usage percentage now normalized by `runtime.NumCPU()` when no quota is set. Prevents values above 100% on multi-core systems.
+- **Confirmation prompts skip in JSON mode (O11)** - `delete` and `rollback` commands now skip confirmation prompts when `--json` flag is set. Prevents interactive prompts in automated workflows.
+- **Boot script deduplication (O11)** - Boot provisioner now deduplicates scripts by content hash. Re-running provision doesn't create duplicate scripts. Boot service uses `set -eu` and `.done` marker for once-only execution.
+- **Documentation consolidation** - README.md reduced from 506 to 194 lines (62% reduction). Removed duplicated sections. ARCHITECTURE.md, DEVELOPMENT.md, and TODO.md also streamlined. Total reduction: 427 lines (11%).
+
+### Fixed
+
+- **TODO C6 outdated note** - Removed outdated "Update Makefile to install templates" note since templates are now embedded.
+- **Direct sudo bypasses migrated** - `shell.go:Exec()` and `manager.go:WaitForMachine()` now use `deploy.Sudo()` instead of direct `exec.Command("sudo", ...)`. Ensures all privileged calls go through the centralized wrapper and are covered by sudoers rules.
+- **XZ close error handling (X4)** - `extractTarXz` now uses named return to properly capture and return xz reader close errors. Prevents silent failures from truncated archives.
+- **Sudoers journalctl rule syntax** - Fixed missing `$` terminator in journalctl rule that caused visudo validation to fail.
+- **Snapshot/rollback operations work correctly (D1/D2/D3)** - All btrfs snapshot operations now match sudoers rules. Rollback properly executes recovery commands and refuses to proceed if leftover directories exist.
+- **Template and stdin machines have usable config (C1/C2)** - Canonical config is now properly serialized and written for machines created with `--template` or `-` (stdin).
+- **Injection vulnerabilities fixed (V1/V2/V3)** - GPU device paths, tmpfs options, and volume paths now validated against strict patterns. Sensitive path check expanded to include more system directories.
+- **Data/Boot provisioner permission bug** - Provisioners now use `deploy.Sudo()` for writes to root-owned rootfs. Previously failed with "permission denied" when writing to directories owned by root.
+- **Setuid bits preserved during extraction (O2/X3)** - Removed `fixRootfsOwnership` which was breaking setuid bits. Tar extraction now uses `sudo tar --xattrs` when not running as root, preserving ownership, modes, and setuid bits correctly. Verified with `/usr/bin/sudo`, `/usr/bin/su`, and `/usr/bin/passwd`.
+- **Template probe loops bounded (T2)** - All template probes now use bounded loops with timeout instead of infinite `until` loops. Prevents orphaned probe processes from piling up.
+- **Nextcloud ServerName fixed (T2)** - Nextcloud template now uses `$LXSPAWN_PARAM_trusted_domain` for ServerName instead of hard-coded `localhost`. Enables proper LAN access.
+
+### Security
+
+- **Secrets no longer exposed in process list (P6)** - Provision scripts passed via stdin instead of argv prevent secret leakage through `/proc/<pid>/cmdline`.
+- **State file accessible to group (P5)** - Changed from 0600 to 0660 with lxspawn group, enabling multi-user scenarios while maintaining security.
+- **Image integrity verification (X2)** - SHA256 verification prevents use of tampered rootfs images.
+- **Tar extraction prevents symlink escapes (X1)** - Real filesystem checks prevent symlink-based attacks during extraction.
+- **Sudoers rules use exact patterns (P1)** - Removed overly permissive patterns, added exact argument matching for all privileged operations.
+- **Rootfs writes use secure paths** - All rootfs writes now use `secureJoin` to prevent symlink escape attacks. Combined with sudo for proper permission handling.
+- **Templates use environment variables for secrets (V6)** - Templates now use `$LXSPAWN_PARAM_*` environment variables instead of direct template interpolation for sensitive values. Prevents shell injection through parameter values.
+- **Setuid bits preserved (O2/X3)** - Removed `fixRootfsOwnership` which was clearing setuid bits. Tar extraction now preserves ownership and special permission bits correctly.
+
+## [0.1.3] - 2026-11-21
+
 ### Added
 
 - **Snapshot description (C12)** - `lxspawn snapshot` now accepts `--description` flag to store a description with the snapshot. Description is included in JSON output from `list-snapshots`.
@@ -297,7 +382,9 @@ Initial public release of lxspawn - a daemonless, lightweight "Light VM" orchest
 - **machinectl shell PTY errors** - Intermittent issues with interactive shell (exec uses nsenter as workaround)
 - **Macvlan host visibility** - Host cannot ping macvlan containers (kernel limitation, solved with host_access feature)
 
-[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/Inoriol/lxspawn/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Inoriol/lxspawn/compare/v0.1.3...v0.2.0
+[0.1.3]: https://github.com/Inoriol/lxspawn/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.2
 [0.1.1]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.1
 [0.1.0]: https://github.com/Inoriol/lxspawn/releases/tag/v0.1.0

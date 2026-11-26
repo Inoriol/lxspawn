@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -34,6 +33,7 @@ type GPUInfo struct {
 	Driver    string
 	IsPrimary bool
 	Index     int
+	PCIAddr   string
 }
 
 type Detector struct {
@@ -93,17 +93,12 @@ func (d *Detector) DetectGPUs() ([]GPUInfo, error) {
 	return gpus, nil
 }
 
-// isNVIDIAGPUDetected checks if an NVIDIA GPU was already detected via DRM
+// isNVIDIAGPUDetected checks if an NVIDIA GPU was already detected via DRM by comparing PCI addresses
 func (d *Detector) isNVIDIAGPUDetected(existing []GPUInfo, nvGPU GPUInfo) bool {
 	for _, gpu := range existing {
-		if gpu.Vendor == VendorNVIDIA {
-			// Check if any device nodes overlap
-			for _, existingDev := range gpu.Devices {
-				for _, nvDev := range nvGPU.Devices {
-					if existingDev == nvDev {
-						return true
-					}
-				}
+		if gpu.Vendor == VendorNVIDIA && gpu.PCIAddr != "" && nvGPU.PCIAddr != "" {
+			if gpu.PCIAddr == nvGPU.PCIAddr {
+				return true
 			}
 		}
 	}
@@ -140,17 +135,26 @@ func (d *Detector) detectDRMGPUs() ([]GPUInfo, error) {
 			fmt.Sprintf("/dev/dri/%s", name),
 		}
 
-		// Read render node from sysfs instead of calculating from cardIndex
-		// This handles cases where some cardN entries are not recognized GPUs
 		renderNode := d.findRenderNode(cardPath)
 		if renderNode != "" {
 			devices = append(devices, renderNode)
 		}
 
-		// For AMD GPUs, also include /dev/kfd for ROCm support
 		if vendor == VendorAMD {
 			if _, err := os.Stat("/dev/kfd"); err == nil {
 				devices = append(devices, "/dev/kfd")
+			}
+		}
+
+		if vendor == VendorNVIDIA {
+			if _, err := os.Stat("/dev/nvidiactl"); err == nil {
+				devices = append(devices, "/dev/nvidiactl")
+			}
+			if _, err := os.Stat("/dev/nvidia-uvm"); err == nil {
+				devices = append(devices, "/dev/nvidia-uvm")
+			}
+			if _, err := os.Stat("/dev/nvidia-modeset"); err == nil {
+				devices = append(devices, "/dev/nvidia-modeset")
 			}
 		}
 
@@ -159,18 +163,29 @@ func (d *Detector) detectDRMGPUs() ([]GPUInfo, error) {
 			gpuType = TypeDiscrete
 		}
 
+		pciAddr := d.getPCIAddress(devicePath)
+
 		gpus = append(gpus, GPUInfo{
 			Vendor:  vendor,
 			Type:    gpuType,
 			Devices: devices,
 			Driver:  driver,
 			Index:   cardIndex,
+			PCIAddr: pciAddr,
 		})
 
 		cardIndex++
 	}
 
 	return gpus, nil
+}
+
+func (d *Detector) getPCIAddress(devicePath string) string {
+	resolved, err := filepath.EvalSymlinks(devicePath)
+	if err != nil {
+		return ""
+	}
+	return filepath.Base(resolved)
 }
 
 // findRenderNode reads the render node for a card from sysfs
@@ -235,27 +250,15 @@ func (d *Detector) isDiscreteGPU(devicePath string) bool {
 	classCode := strings.TrimSpace(string(pciClass))
 	classCode = strings.TrimPrefix(classCode, "0x")
 
-	if len(classCode) >= 4 && classCode[:4] == "0300" {
-		resourcePath := filepath.Join(devicePath, "resource")
-		resources, err := os.ReadFile(resourcePath)
-		if err != nil {
-			return false
-		}
-
-		// PCI resource file format: start end flags (one per line)
-		// Size = end - start + 1
-		lines := strings.Split(string(resources), "\n")
-		for _, line := range lines {
-			fields := strings.Fields(line)
-			if len(fields) >= 3 {
-				start, errStart := strconv.ParseInt(fields[0], 0, 64)
-				end, errEnd := strconv.ParseInt(fields[1], 0, 64)
-				if errStart == nil && errEnd == nil && end > start {
-					size := end - start + 1
-					if size > 256*1024*1024 {
-						return true
-					}
-				}
+	if len(classCode) >= 6 {
+		baseClass := classCode[:2]
+		if baseClass == "03" {
+			subClass := classCode[2:4]
+			if subClass == "00" {
+				return false
+			}
+			if subClass == "02" {
+				return true
 			}
 		}
 	}
@@ -271,6 +274,8 @@ func (d *Detector) detectNVIDIAGPUs() ([]GPUInfo, error) {
 		return nil, err
 	}
 
+	pciToGPU := d.mapNVIDIAPCIAddresses()
+
 	for i, device := range nvidiaDevices {
 		devices := []string{device}
 
@@ -284,16 +289,53 @@ func (d *Detector) detectNVIDIAGPUs() ([]GPUInfo, error) {
 			devices = append(devices, "/dev/nvidia-modeset")
 		}
 
+		devNum := strings.TrimPrefix(device, "/dev/nvidia")
+		pciAddr := ""
+		if addr, ok := pciToGPU[devNum]; ok {
+			pciAddr = addr
+		}
+
 		gpus = append(gpus, GPUInfo{
 			Vendor:  VendorNVIDIA,
 			Type:    TypeDiscrete,
 			Devices: devices,
 			Driver:  "nvidia",
 			Index:   i,
+			PCIAddr: pciAddr,
 		})
 	}
 
 	return gpus, nil
+}
+
+func (d *Detector) mapNVIDIAPCIAddresses() map[string]string {
+	result := make(map[string]string)
+
+	nvidiaCardEntries, err := filepath.Glob("/proc/driver/nvidia/gpus/*/information")
+	if err != nil {
+		return result
+	}
+
+	for _, infoPath := range nvidiaCardEntries {
+		dir := filepath.Dir(infoPath)
+		pciAddr := filepath.Base(dir)
+
+		_, err := os.ReadFile(infoPath)
+		if err != nil {
+			continue
+		}
+
+		nvidiaEntries, _ := filepath.Glob("/dev/nvidia[0-9]*")
+		for _, entry := range nvidiaEntries {
+			cardLink := fmt.Sprintf("/proc/driver/nvidia/gpus/%s", pciAddr)
+			if info, err := os.Stat(cardLink); err == nil && !info.IsDir() {
+				result[strings.TrimPrefix(entry, "/dev/nvidia")] = pciAddr
+				break
+			}
+		}
+	}
+
+	return result
 }
 
 func (d *Detector) detectARMGPUs() ([]GPUInfo, error) {

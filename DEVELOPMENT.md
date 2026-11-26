@@ -32,11 +32,13 @@ The binary will be built as `lxspawn` in the project root.
 ## Running Tests
 
 ```bash
-# Run all tests
-go test ./...
+# Run all tests (recommended: with race detector)
+make test
+# or
+go test -race ./...
 
 # Run tests with verbose output
-go test -v ./...
+go test -race -v ./...
 
 # Run specific package tests
 go test ./internal/config/...
@@ -44,55 +46,96 @@ go test ./internal/compiler/...
 go test ./internal/provision/...
 
 # Run tests with coverage
-go test -cover ./...
+go test -race -cover ./...
 
 # Run tests and generate HTML coverage report
-go test -coverprofile=coverage.out ./...
+go test -race -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-**Note:** Some tests require root privileges and will be skipped if not run as root.
+**Note:** Some tests require root privileges and will be skipped if not run as root. The `-race` flag enables the race detector to catch data races.
 
 ## Code Structure
 
 ### Package Organization
 
-```
-cmd/lxspawn/          # CLI commands (one file per command)
-templates/            # Embedded machine templates (go:embed *.yaml)
-internal/
-├── config/           # YAML parsing and validation
-├── compiler/         # Generate systemd files (.nspawn, slice, drop-in)
-├── provision/        # Provisioning engine (boot, data, yq, system, user)
-├── image/            # Rootfs image management (download, extract, cleanup)
-├── machine/          # Machine lifecycle management
-├── storage/          # Storage backend abstraction (btrfs, lvm, directory)
-├── snapshot/         # Snapshot management
-├── network/          # Network detection and configuration
-├── gpu/              # GPU detection and pass-through
-├── errors/           # Structured error types and exit codes
-├── progress/         # Progress event streaming (newline-delimited JSON)
-├── deploy/           # Systemd integration (D-Bus, state, filesystem)
-├── logger/           # Logging utilities
-└── output/           # JSON formatting
-```
+See [ARCHITECTURE.md](ARCHITECTURE.md#package-structure) for the full package tree.
 
 ### Key Interfaces
 
 **StorageBackend** (`internal/storage/backend.go`):
 ```go
 type StorageBackend interface {
+    Type() BackendType
     CreateMachine(name string, sizeGB int) error
     DeleteMachine(name string) error
     MachineExists(name string) (bool, error)
     GetMachinePath(name string) string
-    CreateSnapshot(machine, snapshot string) error
-    DeleteSnapshot(machine, snapshot string) error
-    ListSnapshots(machine string) ([]SnapshotInfo, error)
-    RollbackSnapshot(machine, snapshot string) error
-    GetUsage() (uint64, uint64, error) // used, total bytes
-    Close() error
+    GetUsage() (int64, int64, error) // used, total bytes
 }
+```
+
+**SystemdClient** (`internal/deploy/interfaces.go`):
+```go
+type SystemdClient interface {
+    Close() error
+    ReloadDaemon() error
+    StartUnit(unitName string) error
+    StopUnit(unitName string) error
+    RestartUnit(unitName string) error
+    ResetFailedUnit(unitName string) error
+    ListUnitsByNames(unitNames []string) ([]systemdbus.UnitStatus, error)
+    ListAllUnits() ([]systemdbus.UnitStatus, error)
+    GetUnitProperties(unitName string) (map[string]interface{}, error)
+    ListRunningMachines() ([]RunningMachineInfo, error)
+    GetMachineState(name string) (string, []string, error)
+    GetMachineLeader(name string) (int, error)
+}
+```
+
+**StateStore** (`internal/deploy/interfaces.go`):
+```go
+type StateStore interface {
+    GetMachine(name string) (MachineInfo, bool)
+    GetStateFilePath() string
+    ListMachines() []MachineInfo
+    RegisterMachine(machine MachineInfo) error
+    UnregisterMachine(name string) error
+    Save() error
+}
+```
+
+**PathConfig** (`internal/deploy/paths.go`):
+```go
+type PathConfig struct {
+    NspawnDir      string  // .nspawn files (default: /etc/systemd/nspawn)
+    SystemdDir     string  // slice/drop-in units (default: /etc/systemd/system)
+    MachinesDir    string  // machine rootfs (default: /var/lib/machines)
+    LxspawnDataDir string  // lxspawn metadata (default: /var/lib/lxspawn)
+}
+
+// Configure paths (useful for testing or non-standard layouts like NixOS)
+func SetPaths(cfg PathConfig)
+func GetPaths() PathConfig
+func ResetPaths()  // restore defaults
+```
+
+**Manager** (`internal/machine/manager.go`):
+```go
+type Manager struct { ... }
+
+// Production constructor (creates real dependencies)
+func NewManager() (*Manager, error)
+
+// Test constructor (inject fakes)
+func NewManagerWithDeps(state StateStore, systemd SystemdClient, storage StorageBackend) *Manager
+
+func (m *Manager) Create(cfg *config.Config, sourcePath string) ([]string, error)
+func (m *Manager) Launch(cfg *config.Config, sourcePath string) error
+func (m *Manager) Start(name string) error
+func (m *Manager) Stop(name string) error
+func (m *Manager) Delete(name string) error
+func (m *Manager) Close()
 ```
 
 **SnapshotBackend** (`internal/snapshot/snapshot.go`):
@@ -106,7 +149,7 @@ type SnapshotBackend interface {
 }
 ```
 
-**Manager** (`internal/snapshot/manager.go`):
+**Snapshot Manager** (`internal/snapshot/manager.go`):
 ```go
 type Manager struct { ... }
 
@@ -117,19 +160,6 @@ func (m *Manager) RollbackSnapshot(snapName string) error
 func (m *Manager) DeleteSnapshot(snapName string) error
 func (m *Manager) BackendType() BackendType
 func (m *Manager) Close()
-```
-
-**SystemdClient** (`internal/deploy/interfaces.go`):
-```go
-type SystemdClient interface {
-    StartUnit(name string) error
-    StopUnit(name string) error
-    RestartUnit(name string) error
-    GetUnitProperties(name string) (map[string]interface{}, error)
-    ReloadDaemon() error
-    ResetFailedUnit(name string) error
-    Close() error
-}
 ```
 
 ## Adding a New CLI Command
@@ -647,6 +677,136 @@ Before submitting changes:
 - [ ] Documentation updated (README.md, SPEC.md, ARCHITECTURE.md)
 - [ ] Sudoers rules updated (if new privileged operations added)
 - [ ] No secrets logged or exposed
+
+## Writing Integration Tests
+
+Integration tests use fake implementations from `internal/testutil` to test `Manager` lifecycle methods without requiring real systemd, root privileges, or storage backends.
+
+### Setup Pattern
+
+```go
+func setupTestManager(t *testing.T) (*Manager, *deploy.StateManager, *testutil.FakeSystemdClient, *testutil.FakeStorageBackend) {
+    t.Helper()
+
+    tmpDir := t.TempDir()
+
+    // Configure paths for this test
+    paths := deploy.PathConfig{
+        NspawnDir:      filepath.Join(tmpDir, "nspawn"),
+        SystemdDir:     filepath.Join(tmpDir, "systemd"),
+        MachinesDir:    filepath.Join(tmpDir, "machines"),
+        LxspawnDataDir: filepath.Join(tmpDir, "lxspawn"),
+    }
+    deploy.SetPaths(paths)
+    t.Cleanup(deploy.ResetPaths)
+
+    // Create real state manager with temp path
+    state := &deploy.StateManager{
+        StateFilePath: filepath.Join(tmpDir, "machines.json"),
+        Machines:      make(map[string]deploy.MachineInfo),
+    }
+
+    // Create fakes
+    systemd := testutil.NewFakeSystemdClient()
+    storage := testutil.NewFakeStorageBackend(paths.MachinesDir)
+
+    // Inject into manager
+    mgr := machine.NewManagerWithDeps(state, systemd, storage)
+
+    return mgr, state, systemd, storage
+}
+```
+
+### Asserting on Calls
+
+```go
+func TestStart_CallsSystemd(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    err := mgr.Start("testbox")
+    require.NoError(t, err)
+
+    // Assert ReloadDaemon was called
+    reloadCalls := systemd.GetCalls("ReloadDaemon")
+    require.Len(t, reloadCalls, 1)
+
+    // Assert StartUnit was called with correct unit name
+    startCalls := systemd.GetCalls("StartUnit")
+    require.Len(t, startCalls, 1)
+    assert.Equal(t, "systemd-nspawn@testbox.service", startCalls[0].Args[0])
+}
+```
+
+### Injecting Errors
+
+```go
+func TestStart_SystemdError(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    // Make StartUnit fail
+    systemd.StartUnitFn = func(name string) error {
+        return errors.New("systemd start failed")
+    }
+
+    err := mgr.Start("testbox")
+    assert.Error(t, err)
+    assert.Contains(t, err.Error(), "failed to start machine")
+}
+```
+
+### Controlling Machine State
+
+```go
+func TestGetStatus_Running(t *testing.T) {
+    mgr, state, systemd, _ := setupTestManager(t)
+
+    state.Machines["testbox"] = deploy.MachineInfo{Name: "testbox"}
+
+    // Control what GetMachineState returns
+    systemd.MachineState["testbox"] = "running"
+
+    status, err := mgr.GetStatus("testbox")
+    require.NoError(t, err)
+    assert.Equal(t, "running", status.State)
+}
+```
+
+## Sudoers Cross-Check Test
+
+The `cmd/lxspawn/sudoers_test.go` file contains a cross-check test that validates every `deploy.Sudo()` call site uses a binary with a corresponding sudoers rule. This prevents drift between the Go code and the generated sudoers rules.
+
+### How It Works
+
+The test uses `go/ast` to parse all `.go` files in the project and:
+1. Find every `deploy.Sudo(...)` call and extract the binary name (first argument)
+2. Find every `sudoOrDirectForRootfs(...)` wrapper call (which may call `deploy.Sudo()`)
+3. Generate sudoers rules with dummy binary paths
+4. Verify each binary used in the code has a corresponding rule
+
+### Running the Test
+
+```bash
+go test ./cmd/lxspawn -run TestSudoersCrossCheck
+```
+
+### Adding New Sudo Calls
+
+When adding new `deploy.Sudo()` calls:
+1. Ensure the binary is in the list checked by `findAvailableBinaries()` in `setup.go`
+2. Add a corresponding rule in `generateSudoersRules()`
+3. The cross-check test will fail if the rule is missing
+
+### Excluded Files
+
+The test excludes disabled backends (LVM, ZFS) which have `deploy.Sudo()` calls but no sudoers rules:
+- `internal/snapshot/lvm.go`
+- `internal/snapshot/zfs.go`
+- `internal/storage/lvm_thin.go`
+- `internal/storage/detector.go`
 
 ## Code Review Guidelines
 

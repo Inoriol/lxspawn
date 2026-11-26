@@ -29,7 +29,7 @@ func GetConfigPath() string {
 	if configPathOverride != "" {
 		return configPathOverride
 	}
-	return filepath.Join(deploy.LxspawnDataDir, "config.json")
+	return filepath.Join(deploy.LxspawnDataDirPath(), "config.json")
 }
 
 // LoadNetworkConfig loads the network configuration from disk

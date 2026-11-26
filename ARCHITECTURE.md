@@ -117,7 +117,11 @@ lxspawn/
 │   │   └── network.go        # Inject systemd-networkd configs
 │   │
 │   ├── machine/              # Machine lifecycle management
-│   │   └── manager.go        # Create, start, stop, force stop, restart, delete, shell, exec, status, apply
+│   │   ├── manager.go        # Create, launch, start, stop, force stop, restart, delete, status, apply, provision
+│   │   ├── stats.go          # Runtime CPU/memory/disk stats (cgroup readers)
+│   │   ├── shell.go          # Shell, exec, logs, log quoting
+│   │   ├── manager_test.go   # Unit tests for standalone functions
+│   │   └── manager_integration_test.go  # Integration tests using fakes
 │   │
 │   ├── storage/              # Storage backend abstraction
 │   │   ├── backend.go        # StorageBackend interface
@@ -155,16 +159,20 @@ lxspawn/
 │   ├── deploy/               # Systemd integration (adapted from comquad)
 │   │   ├── dbus.go           # systemd D-Bus connection (always system bus)
 │   │   ├── state.go          # State management (machines.json)
-│   │   ├── filesystem.go     # File operations, paths, atomic writes, SELinux
+│   │   ├── filesystem.go     # File operations, atomic writes, SELinux
+│   │   ├── paths.go          # Configurable filesystem paths (PathConfig)
 │   │   ├── interfaces.go     # SystemdClient, StateStore interfaces
 │   │   └── is_rootless.go    # Root detection
 │   │
 │   ├── logger/               # Logging (adapted from comquad)
 │   │   └── logger.go         # Colored output, verbose/quiet modes
 │   │
-│   └── output/               # JSON formatting (adapted from comquad)
-│       ├── formatter.go      # JSON envelope, print helpers
-│       └── schemas.go        # Machine-specific JSON schemas
+│   ├── output/               # JSON formatting (adapted from comquad)
+│   │   ├── formatter.go      # JSON envelope, print helpers
+│   │   └── schemas.go        # Machine-specific JSON schemas
+│   │
+│   └── testutil/             # Test fakes and helpers
+│       └── fakes.go          # FakeSystemdClient, FakeStorageBackend
 │
 └── examples/                 # Example YAML configurations
     └── myserver.yaml
@@ -579,7 +587,7 @@ ExecStopPost=/var/lib/lxspawn/myserver/.hooks/post_stop.sh
 
 Hook scripts are written to `/var/lib/lxspawn/<name>/.hooks/` and executed by systemd.
 On SELinux-enforcing systems, these scripts must have the `bin_t` context to be executable.
-The deploy package automatically applies this context when writing hook scripts.
+The deploy package uses `semanage fcontext` to add persistent file context rules and `restorecon` to apply them. This ensures the context survives filesystem relabels and `restorecon -R` operations.
 
 ### 11. D-Bus Machine Name Escaping
 
@@ -639,8 +647,8 @@ share the host kernel, so we bind-mount device nodes and configure cgroup device
 - `internal/gpu/detect.go` - Detects GPUs by parsing `/sys/class/drm/card*` and `/dev/nvidia*`
 - Identifies vendor (Intel/AMD/NVIDIA/ARM) by reading PCI vendor IDs
 - Render nodes read from sysfs (`/sys/class/drm/cardN/device/drm/renderD*`) instead of calculated from card index (handles unrecognized GPUs)
-- Discrete GPU detection uses PCI resource file (computes size as `end - start + 1`)
-- NVIDIA GPUs deduplicated (DRM scan and `/dev/nvidia*` scan)
+- Discrete GPU detection uses PCI class code (0x0302 = 3D controller) instead of BAR size heuristics
+- NVIDIA GPUs deduplicated by PCI address (DRM scan and `/dev/nvidia*` scan)
 - For AMD GPUs, `/dev/kfd` is bind-mounted for ROCm compute support
 - Prioritizes discrete GPUs over integrated GPUs (stable sort)
 - Generates bind mounts for device nodes in `.nspawn` file
@@ -905,6 +913,66 @@ Disk stats are read using `syscall.Statfs()` which returns filesystem usage in b
 
 All cgroup files are world-readable, so the stats command works without sudo or special permissions.
 
+### 21. Configurable Filesystem Paths (PathConfig)
+
+All filesystem paths used by lxspawn are configurable via `deploy.PathConfig`:
+
+```go
+type PathConfig struct {
+    NspawnDir      string  // .nspawn files (default: /etc/systemd/nspawn)
+    SystemdDir     string  // slice/drop-in units (default: /etc/systemd/system)
+    MachinesDir    string  // machine rootfs (default: /var/lib/machines)
+    LxspawnDataDir string  // lxspawn metadata (default: /var/lib/lxspawn)
+}
+```
+
+**Why configurable paths?**
+
+- **NixOS support** - NixOS uses `/etc/nspawn/` and `/var/lib/lxspawn/` instead of standard paths
+- **Custom installations** - Users may want machines on a different partition
+- **Testing** - Tests use `t.TempDir()` paths without touching system directories
+
+**Implementation:**
+
+- `deploy.SetPaths(cfg)` sets global paths (thread-safe via `sync.RWMutex`)
+- `deploy.GetPaths()` returns current paths
+- `deploy.ResetPaths()` restores defaults
+- All path helper functions (`NspawnFilePath()`, `MachineRootfsPath()`, etc.) read from the global config
+- Backward-compatible constants (`deploy.NspawnDir`, `deploy.MachinesDir`) still exist and equal the defaults
+
+**Trade-offs:**
+- Global mutable state (mitigated by mutex and `ResetPaths()` for tests)
+- Tests must call `ResetPaths()` in cleanup to avoid cross-test pollution
+
+### 22. Dependency Injection for Testing
+
+The `machine.Manager` accepts its dependencies via interfaces, enabling testing without real systemd:
+
+```go
+func NewManagerWithDeps(
+    state   deploy.StateStore,      // interface
+    systemd deploy.SystemdClient,   // interface
+    storage storage.StorageBackend,  // interface
+) *Manager
+```
+
+**Why dependency injection?**
+
+- **Testability** - Tests use `FakeSystemdClient` and `FakeStorageBackend` from `internal/testutil`
+- **No root required** - Integration tests run without systemd, real state files, or storage backends
+- **Error injection** - Tests can simulate systemd failures, storage errors, etc.
+
+**Implementation:**
+
+- `NewManager()` (production) creates real dependencies via `deploy.NewStateManager()`, `deploy.NewSystemdManager()`, `storage.DetectBackend()`
+- `NewManagerWithDeps()` (testing) accepts pre-constructed fakes
+- `FakeSystemdClient` records all method calls for assertion (`GetCalls("StartUnit")`)
+- `FakeStorageBackend` tracks machine creation/deletion in a map
+
+**Trade-offs:**
+- Two constructors instead of one (but `NewManager()` is unchanged for production code)
+- Interfaces must stay in sync with concrete implementations (compile-time checks: `var _ SystemdClient = (*SystemdManager)(nil)`)
+
 ## Security Model
 
 ### Privilege Model
@@ -1018,53 +1086,9 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 - **Under load:** Native performance (no virtualization overhead)
 - **Optimization:** Use `cpus` for hard limits, `CPUWeight` for soft priorities
 
-## Testing Strategy
+## Testing
 
-### Unit Tests
-
-**320 tests across 22 test files, all passing (1 skipped, requires root):**
-
-- `internal/config/parser_test.go` - Config parsing and validation (64 tests)
-- `internal/compiler/compiler_test.go` - Compiler output for .nspawn, slice, drop-in, hooks (27 tests)
-- `internal/deploy/state_test.go` - State management: register, unregister, persistence, list sorting (18 tests)
-- `internal/deploy/filesystem_test.go` - Path helpers, WriteFileAtomic, RemoveAll (21 tests)
-- `internal/provision/template_test.go` - Template rendering with all variables, params, edge cases (20 tests)
-- `internal/provision/yq_test.go` - YQ provisioner: expression parsing, format detection, value types (20 tests)
-- `internal/provision/boot_test.go` - Boot provisioner: script writing, service install, numbering (8 tests)
-- `internal/provision/data_test.go` - Data provisioner: file writing, overwrite control, permissions, path validation (18 tests)
-- `internal/provision/file_test.go` - File handler: digest validation, local file resolution (12 tests)
-- `internal/provision/exec_test.go` - Exec provisioner: env export, provisioner modes, param handling (13 tests)
-- `internal/image/fetcher_test.go` - Image fetcher: URL building, tar extraction, path traversal (8 tests)
-- `internal/image/cleanup_test.go` - Rootfs cleanup: machine-id, resolv.conf, securetty (7 tests)
-- `internal/image/validate_test.go` - Init system detection at multiple paths (7 tests)
-- `internal/image/network_test.go` - Network config injection for all modes (10 tests)
-- `internal/gpu/detect_test.go` - GPU detection, vendor identification, device selection (10 tests)
-- `internal/machine/manager_test.go` - Shell quoting, command building, rootfs population check, ownership fix, stats functions (25 tests)
-- `internal/machine/lvm_test.go` - LVM helper functions: isMounted, IsLVM, getVGName (9 tests)
-- `internal/snapshot/snapshot_test.go` - Snapshot validation, formatting, types (10 tests)
-- `internal/snapshot/detector_test.go` - Backend creation, filesystem detection (10 tests)
-- `internal/snapshot/manager_test.go` - Snapshot state serialization, JSON fields (5 tests)
-- `internal/kernel/version_test.go` - Kernel version detection, btrfs detection (5 tests)
-- `internal/kernel/systemd_test.go` - Systemd version detection, PrivateUsers=identity support (2 tests)
-- `internal/provision/engine_test.go` - Provision engine: GetState, state serialization (2 tests)
-
-### Integration Tests
-
-- Full lifecycle (create → start → shell → stop → delete)
-- Networking modes (host, private, bridge, zone)
-- Resource limits (verify cgroup values)
-- Volume mounts (read-only, read-write, tmpfs)
-- Host-side hooks (pre_start, post_start, post_stop)
-- Snapshot lifecycle (create → list → rollback → delete)
-- Snapshot rollback preserves pre-snapshot state
-- Machine delete with snapshots (recursive subvolume cleanup)
-
-### Manual Testing
-
-- Test on multiple distros (Fedora, Ubuntu, Arch)
-- Test with different images (Debian, Ubuntu, Fedora, Arch)
-- Test edge cases (large rootfs, many machines, concurrent operations)
-- GPU pass-through tested on Intel iGPU (Gemini Lake UHD Graphics 600)
+See [DEVELOPMENT.md](DEVELOPMENT.md) for how to run tests, write integration tests, and the testing checklist.
 
 ## Troubleshooting
 
@@ -1089,18 +1113,6 @@ Sudoers wildcards (`*`) don't match `/`, so we need multiple rules for different
 **"bridge not found"**
 - Bridge doesn't exist on host
 - Create bridge first: `ip link add name br0 type bridge`
-
-### Debug Mode
-
-```bash
-lxspawn --verbose launch myserver.yaml
-```
-
-Shows:
-- YAML parsing details
-- Generated file contents
-- systemd D-Bus calls
-- Image download progress
 
 ## References
 

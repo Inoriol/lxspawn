@@ -3,6 +3,7 @@ package deploy
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -49,12 +50,12 @@ func NewStateManager() (*StateManager, error) {
 
 func (sm *StateManager) lock() error {
 	dir := filepath.Dir(sm.StateFilePath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0770); err != nil {
 		return err
 	}
 
 	lockPath := sm.StateFilePath + ".lock"
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0660)
 	if err != nil {
 		return err
 	}
@@ -107,7 +108,7 @@ func (sm *StateManager) Save() error {
 
 func (sm *StateManager) save() error {
 	dir := filepath.Dir(sm.StateFilePath)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0770); err != nil {
 		return err
 	}
 
@@ -122,7 +123,7 @@ func (sm *StateManager) save() error {
 	}
 	tmpName := tmp.Name()
 
-	if err := tmp.Chmod(0600); err != nil {
+	if err := tmp.Chmod(0660); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
 		return err
@@ -143,6 +144,12 @@ func (sm *StateManager) save() error {
 		return err
 	}
 
+	return setGroupOwnership(sm.StateFilePath, "lxspawn")
+}
+
+func setGroupOwnership(path, group string) error {
+	cmd := exec.Command("chgrp", group, path)
+	_ = cmd.Run()
 	return nil
 }
 

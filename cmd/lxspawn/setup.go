@@ -64,8 +64,10 @@ var setupCmd = &cobra.Command{
 		var groupCreated bool
 		var polkitInstalled bool
 		var sudoersInstalled bool
+		var failures []string
 
 		if err := ensureGroup(); err != nil {
+			failures = append(failures, fmt.Sprintf("group creation: %v", err))
 			logger.Warn(fmt.Sprintf("group creation: %v", err))
 		} else {
 			groupCreated = true
@@ -92,6 +94,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		if err := installPolkitRule(); err != nil {
+			failures = append(failures, fmt.Sprintf("polkit rule: %v", err))
 			logger.Warn(fmt.Sprintf("polkit rule: %v", err))
 		} else {
 			polkitInstalled = true
@@ -99,6 +102,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		if err := installSudoersRules(); err != nil {
+			failures = append(failures, fmt.Sprintf("sudoers rules: %v", err))
 			logger.Warn(fmt.Sprintf("sudoers rules: %v", err))
 		} else {
 			sudoersInstalled = true
@@ -106,6 +110,7 @@ var setupCmd = &cobra.Command{
 		}
 
 		if err := reloadPolkit(); err != nil {
+			failures = append(failures, fmt.Sprintf("polkit reload: %v", err))
 			logger.Warn(fmt.Sprintf("polkit reload: %v", err))
 		}
 
@@ -115,8 +120,20 @@ var setupCmd = &cobra.Command{
 				DirsCreated:      dirsCreated,
 				PolkitInstalled:  polkitInstalled,
 				SudoersInstalled: sudoersInstalled,
-				Success:          true,
+				Success:          len(failures) == 0,
 			})
+		}
+
+		if len(failures) > 0 {
+			fmt.Println()
+			fmt.Println("Setup completed with errors:")
+			for _, f := range failures {
+				fmt.Printf("  - %s\n", f)
+			}
+			fmt.Println()
+			fmt.Println("Without sudoers and polkit rules, lxspawn commands will require a password.")
+			fmt.Println("Please fix the above issues and re-run 'sudo lxspawn setup'.")
+			return fmt.Errorf("setup completed with %d error(s)", len(failures))
 		}
 
 		logger.Success("Setup complete.")
@@ -157,7 +174,11 @@ func ensureDir(path string) error {
 	}
 
 	cmd = exec.Command("chmod", "775", path)
-	return cmd.Run()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("chmod failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+
+	return nil
 }
 
 func installPolkitRule() error {
@@ -176,13 +197,102 @@ func findBinary(name string) string {
 	return path
 }
 
+func findAvailableBinaries() map[string]string {
+	binaries := make(map[string]string)
+	for _, name := range []string{"rm", "chown", "chmod", "mv", "mkdir", "tar", "tee", "ln", "systemd-run", "journalctl", "systemctl", "btrfs"} {
+		if bin := findBinary(name); bin != "" {
+			binaries[name] = bin
+		}
+	}
+	return binaries
+}
+
+func generateSudoersRules(binaries map[string]string) []string {
+	var rules []string
+	namePat := `[a-zA-Z0-9][a-zA-Z0-9_-]*`
+	machinesDir := `/var/lib/machines/`
+	rootfsInsidePat := machinesDir + namePat + `/.+`
+
+	rules = append(rules, "# Core operations (always needed)")
+	if bin := binaries["rm"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-rf %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-f %s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["chown"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^root\\:lxspawn %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-R 0\\:0 %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ %s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["chmod"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^0[0-7]{3} %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^0[0-7]{3} %s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["mv"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s %s%s\\.rollback-old$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s\\.rollback-temp %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s%s\\.rollback-old %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
+	}
+	if bin := binaries["mkdir"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s%s\\.snapshots$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p %s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["tar"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--xattrs --xattrs-include=\\* -xJf /var/lib/lxspawn/cache/rootfs-[a-zA-Z0-9]+\\.tar\\.xz -C %s%s$", bin, machinesDir, namePat))
+	}
+	if bin := binaries["tee"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^%s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["ln"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-s /dev/null %s$", bin, rootfsInsidePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-s \\.\\./lxspawn-boot\\.service %s$", bin, rootfsInsidePat))
+	}
+	if bin := binaries["systemd-run"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --pipe --wait --property=RuntimeMaxSec=[0-9]+ -- /bin/bash -s$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --pipe --wait -- /bin/bash -s$", bin, namePat))
+	}
+	if bin := binaries["journalctl"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s --no-pager -o short-iso$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M %s -f$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-u systemd-nspawn@%s\\.service -n [0-9]+ -o short-iso$", bin, namePat))
+	}
+	if bin := binaries["systemctl"]; bin != "" {
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^enable systemd-nspawn@%s\\.service$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^disable systemd-nspawn@%s\\.service$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^stop systemd-nspawn@%s\\.service$", bin, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^kill -s SIGKILL systemd-nspawn@%s\\.service$", bin, namePat))
+	}
+
+	if bin := binaries["btrfs"]; bin != "" {
+		rules = append(rules, "")
+		rules = append(rules, "# btrfs operations")
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume create %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete %s%s\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete %s%s\\.rollback-temp$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete %s%s\\.rollback-old$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show %s%s$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show %s%s\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume list -o %s%s\\.snapshots$", bin, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r %s%s %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r %s%s %s%s\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot %s%s %s%s$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot %s%s\\.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* %s%s\\.rollback-temp$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot %s%s %s%s\\.rollback-temp$", bin, machinesDir, namePat, machinesDir, namePat))
+		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^filesystem usage -b %s$", bin, machinesDir))
+	}
+
+	return rules
+}
+
 func installSudoersRules() error {
 	sudoersPath := "/etc/sudoers.d/lxspawn"
 	if err := os.MkdirAll(filepath.Dir(sudoersPath), 0755); err != nil {
 		return err
 	}
 
-	// Check sudo version - regex arguments require sudo 1.9.10+
 	sudoVersion, err := getSudoVersion()
 	if err != nil {
 		return fmt.Errorf("failed to check sudo version: %w", err)
@@ -191,74 +301,7 @@ func installSudoersRules() error {
 		return fmt.Errorf("sudo version %s does not support regex arguments (requires 1.9.10+). Please upgrade sudo.", sudoVersion)
 	}
 
-	var rules []string
-
-	rules = append(rules, "# Core operations (always needed)")
-	if bin := findBinary("rm"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-rf /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-	}
-	if bin := findBinary("chown"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^root\\:lxspawn /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-R 0\\:0 /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-9]+\\:[0-9]+ /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-	}
-	if bin := findBinary("chmod"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^[0-7]{3,4} /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-	}
-	if bin := findBinary("mv"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-	}
-	if bin := findBinary("mkdir"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-p /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-	}
-	if bin := findBinary("systemd-run"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-M [a-zA-Z0-9][a-zA-Z0-9_-]* --pipe --wait -- /bin/bash -c .*$", bin))
-	}
-	if bin := findBinary("journalctl"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-u systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service -n [0-9]+ -o short-iso$", bin))
-	}
-	if bin := findBinary("systemctl"); bin != "" {
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^enable systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^disable systemd-nspawn@[a-zA-Z0-9][a-zA-Z0-9_-]*.service$", bin))
-	}
-
-	if bin := findBinary("btrfs"); bin != "" {
-		rules = append(rules, "")
-		rules = append(rules, "# btrfs operations")
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume create /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume delete /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume show /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume list -o /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot -r /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^subvolume snapshot /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*.snapshots/[a-zA-Z0-9][a-zA-Z0-9_.-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^filesystem usage -b /var/lib/machines$", bin))
-	}
-
-	if lvsBin := findBinary("lvs"); lvsBin != "" {
-		rules = append(rules, "")
-		rules = append(rules, "# LVM storage operations (snapshots not yet supported)")
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--noheadings -o lv_attr .*$", lvsBin))
-		rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", lvsBin))
-		if bin := findBinary("lvcreate"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^--name lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* --virtualsize [0-9]+[gG] -T .*/lxspawn-pool$", bin))
-		}
-		if bin := findBinary("lvremove"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-f .*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		}
-		if bin := findBinary("mkfs.ext4"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^-q /dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		}
-		if bin := findBinary("mount"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/dev/.*/lxspawn-[a-zA-Z0-9][a-zA-Z0-9_-]* /var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		}
-		if bin := findBinary("umount"); bin != "" {
-			rules = append(rules, fmt.Sprintf("%%lxspawn ALL=(root) NOPASSWD: %s ^/var/lib/machines/[a-zA-Z0-9][a-zA-Z0-9_-]*$", bin))
-		}
-	}
-
+	rules := generateSudoersRules(findAvailableBinaries())
 	content := strings.Join(rules, "\n") + "\n"
 	
 	// Validate sudoers syntax before installing

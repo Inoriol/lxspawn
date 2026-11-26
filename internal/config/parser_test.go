@@ -427,6 +427,34 @@ func TestValidateVolumeTmpfsMissingMount(t *testing.T) {
 	}
 }
 
+func TestValidateVolumeTmpfsOptionsInvalid(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Type: "tmpfs", Mount: "/tmp", Options: "mode=1777\nExecStartPre=evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tmpfs options") {
+		t.Errorf("expected tmpfs options error, got: %v", err)
+	}
+}
+
+func TestValidateVolumeTmpfsOptionsWithColon(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		Volumes: []Volume{
+			{Type: "tmpfs", Mount: "/tmp", Options: "mode=1777:evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "tmpfs options") {
+		t.Errorf("expected tmpfs options error for colon, got: %v", err)
+	}
+}
+
 func TestValidateVolumeMissingHost(t *testing.T) {
 	cfg := &Config{
 		Name:   "testbox",
@@ -622,8 +650,38 @@ func TestValidateGPUDevicePathInvalid(t *testing.T) {
 		},
 	}
 	err := Validate(cfg)
-	if err == nil || !strings.Contains(err.Error(), "must start with /dev/") {
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
 		t.Errorf("expected GPU device path error, got: %v", err)
+	}
+}
+
+func TestValidateGPUDeviceWithNewline(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0\nExecStartPre=evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected GPU device newline injection to be rejected, got: %v", err)
+	}
+}
+
+func TestValidateGPUDeviceWithColon(t *testing.T) {
+	cfg := &Config{
+		Name:   "testbox",
+		Distro: "debian:bookworm",
+		GPU: GPU{
+			Enabled: true,
+			Devices: []string{"/dev/dri/card0:evil"},
+		},
+	}
+	err := Validate(cfg)
+	if err == nil || !strings.Contains(err.Error(), "invalid characters") {
+		t.Errorf("expected GPU device colon to be rejected, got: %v", err)
 	}
 }
 
@@ -1038,8 +1096,8 @@ func TestValidateMachineName(t *testing.T) {
 		{"valid simple", "testbox", false},
 		{"valid with hyphen", "test-box", false},
 		{"valid with underscore", "test_box", false},
-		{"valid single char", "a", false},
-		{"valid single digit", "1", false},
+		{"single char too short", "a", true},
+		{"single digit too short", "1", true},
 		{"empty", "", true},
 		{"starts with hyphen", "-test", true},
 		{"ends with hyphen", "test-", true},
@@ -1314,5 +1372,125 @@ network:
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestParseStringDefaults(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Network.Mode != NetworkHost {
+		t.Errorf("Network.Mode = %q, want %q", cfg.Network.Mode, NetworkHost)
+	}
+	if cfg.Advanced.Hostname != "testbox" {
+		t.Errorf("Hostname = %q, want %q", cfg.Advanced.Hostname, "testbox")
+	}
+	if cfg.Security.NoNewPrivileges == nil || !*cfg.Security.NoNewPrivileges {
+		t.Error("NoNewPrivileges should default to true")
+	}
+	if cfg.Security.Seccomp == nil || !*cfg.Security.Seccomp {
+		t.Error("Seccomp should default to true")
+	}
+	if cfg.Resources.IOWeight != 100 {
+		t.Errorf("IOWeight = %d, want 100", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "10G" {
+		t.Errorf("Storage.Size = %q, want %q", cfg.Storage.Size, "10G")
+	}
+}
+
+func TestParseStringDefaultsMatchParse(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+resources:
+  cpus: 2
+`
+	path := writeTempYAML(t, yaml)
+
+	cfgFile, err := Parse(path)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+
+	cfgString, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfgFile.Security.Seccomp == nil || cfgString.Security.Seccomp == nil {
+		t.Fatal("Seccomp should not be nil in either parser")
+	}
+	if *cfgFile.Security.Seccomp != *cfgString.Security.Seccomp {
+		t.Errorf("Seccomp mismatch: Parse=%v, ParseString=%v", *cfgFile.Security.Seccomp, *cfgString.Security.Seccomp)
+	}
+	if cfgFile.Resources.IOWeight != cfgString.Resources.IOWeight {
+		t.Errorf("IOWeight mismatch: Parse=%d, ParseString=%d", cfgFile.Resources.IOWeight, cfgString.Resources.IOWeight)
+	}
+	if cfgFile.Storage.Size != cfgString.Storage.Size {
+		t.Errorf("Storage.Size mismatch: Parse=%q, ParseString=%q", cfgFile.Storage.Size, cfgString.Storage.Size)
+	}
+}
+
+func TestParseStringPreservesExplicitValues(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+security:
+  seccomp: false
+resources:
+  io_weight: 200
+storage:
+  size: 20G
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Security.Seccomp == nil || *cfg.Security.Seccomp != false {
+		t.Error("Seccomp should be false when explicitly set")
+	}
+	if cfg.Resources.IOWeight != 200 {
+		t.Errorf("IOWeight = %d, want 200", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "20G" {
+		t.Errorf("Storage.Size = %q, want %q", cfg.Storage.Size, "20G")
+	}
+}
+
+func TestParseStringSetsAllDefaults(t *testing.T) {
+	yaml := `
+name: testbox
+distro: debian:bookworm
+`
+	cfg, err := ParseString(yaml)
+	if err != nil {
+		t.Fatalf("ParseString failed: %v", err)
+	}
+
+	if cfg.Network.Mode != NetworkHost {
+		t.Errorf("network.mode = %q, want %q", cfg.Network.Mode, NetworkHost)
+	}
+	if cfg.Advanced.Hostname != "testbox" {
+		t.Errorf("hostname = %q, want %q", cfg.Advanced.Hostname, "testbox")
+	}
+	if cfg.Security.NoNewPrivileges == nil || !*cfg.Security.NoNewPrivileges {
+		t.Error("no_new_privileges default should be true")
+	}
+	if cfg.Security.Seccomp == nil || !*cfg.Security.Seccomp {
+		t.Error("seccomp default should be true")
+	}
+	if cfg.Resources.IOWeight != 100 {
+		t.Errorf("io_weight = %d, want 100", cfg.Resources.IOWeight)
+	}
+	if cfg.Storage.Size != "10G" {
+		t.Errorf("storage.size = %q, want %q", cfg.Storage.Size, "10G")
 	}
 }

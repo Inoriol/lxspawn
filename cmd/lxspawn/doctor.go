@@ -182,7 +182,7 @@ func checkSudoers() DoctorCheck {
 }
 
 func checkStorageBackend() DoctorCheck {
-	backend, err := storage.DetectBackend(deploy.MachinesDir)
+	backend, err := storage.DetectBackend(deploy.MachinesDirPath())
 	if err != nil {
 		return DoctorCheck{Name: "storage backend", Status: "fail", Message: fmt.Sprintf("detection failed: %v", err)}
 	}
@@ -203,11 +203,11 @@ func checkNftables() DoctorCheck {
 }
 
 func checkMachinesDir() DoctorCheck {
-	if _, err := os.Stat(deploy.MachinesDir); os.IsNotExist(err) {
+	if _, err := os.Stat(deploy.MachinesDirPath()); os.IsNotExist(err) {
 		return DoctorCheck{Name: "machines directory", Status: "fail", Message: "not found. Run: sudo lxspawn setup"}
 	}
 
-	if kernel.IsBtrfs(deploy.MachinesDir) {
+	if kernel.IsBtrfs(deploy.MachinesDirPath()) {
 		ok, _ := kernel.CheckKernelVersion(5, 12)
 		if !ok {
 			return DoctorCheck{Name: "machines directory", Status: "warn", Message: "btrfs requires kernel 5.12+ for idmapped mounts"}

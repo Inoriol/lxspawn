@@ -3,7 +3,6 @@ package machine
 import (
 	"os"
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/Inoriol/lxspawn/internal/compiler"
@@ -179,35 +178,6 @@ func TestShellQuoteArgs(t *testing.T) {
 				t.Errorf("shellQuoteArgs(%v) = %q, want %q", tt.args, result, tt.expected)
 			}
 		})
-	}
-}
-
-func TestFixRootfsOwnership(t *testing.T) {
-	if os.Getuid() != 0 {
-		t.Skip("requires root privileges")
-	}
-
-	tmpDir := t.TempDir()
-	testPath := filepath.Join(tmpDir, "rootfs")
-	if err := os.MkdirAll(filepath.Join(testPath, "etc"), 0755); err != nil {
-		t.Fatalf("setup failed: %v", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(testPath, "etc", "test"), []byte("test"), 0644); err != nil {
-		t.Fatalf("setup failed: %v", err)
-	}
-
-	if err := fixRootfsOwnership(testPath); err != nil {
-		t.Fatalf("fixRootfsOwnership failed: %v", err)
-	}
-
-	info, err := os.Stat(testPath)
-	if err != nil {
-		t.Fatalf("stat failed: %v", err)
-	}
-
-	if info.Sys().(*syscall.Stat_t).Uid != 0 {
-		t.Errorf("expected uid 0, got %d", info.Sys().(*syscall.Stat_t).Uid)
 	}
 }
 

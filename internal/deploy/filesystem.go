@@ -10,50 +10,15 @@ import (
 )
 
 const (
-	NspawnDir      = "/etc/systemd/nspawn"
-	SystemdDir     = "/etc/systemd/system"
-	MachinesDir    = "/var/lib/machines"
-	LxspawnDataDir = "/var/lib/lxspawn"
+	NspawnDir      = DefaultNspawnDir
+	SystemdDir     = DefaultSystemdDir
+	MachinesDir    = DefaultMachinesDir
+	LxspawnDataDir = DefaultLxspawnDataDir
 )
 
 func Sudo(args ...string) *exec.Cmd {
-	return exec.Command("sudo", args...)
-}
-
-func NspawnFilePath(name string) string {
-	return filepath.Join(NspawnDir, name+".nspawn")
-}
-
-func SliceFilePath(name string) string {
-	return filepath.Join(SystemdDir, "machine-"+name+".slice")
-}
-
-func DropInDir(name string) string {
-	return filepath.Join(SystemdDir, "systemd-nspawn@"+name+".service.d")
-}
-
-func DropInFilePath(name string) string {
-	return filepath.Join(DropInDir(name), "lxspawn.conf")
-}
-
-func HooksDropInFilePath(name string) string {
-	return filepath.Join(DropInDir(name), "lxspawn-hooks.conf")
-}
-
-func MachineRootfsPath(name string) string {
-	return filepath.Join(MachinesDir, name)
-}
-
-func LxspawnMachineDir(name string) string {
-	return filepath.Join(LxspawnDataDir, name)
-}
-
-func HooksDir(name string) string {
-	return filepath.Join(LxspawnMachineDir(name), ".hooks")
-}
-
-func CanonicalConfigPath(name string) string {
-	return filepath.Join(LxspawnMachineDir(name), "config.yaml")
+	sudoArgs := append([]string{"-n"}, args...)
+	return exec.Command("sudo", sudoArgs...)
 }
 
 func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
@@ -121,5 +86,12 @@ func SetSELinuxContext(path, context string) error {
 	if !SELinuxEnforcing() {
 		return nil
 	}
-	return exec.Command("chcon", "-t", context, path).Run()
+
+	dir := filepath.Dir(path)
+	cmd := exec.Command("semanage", "fcontext", "-a", "-t", context, dir+"/.*")
+	if err := cmd.Run(); err != nil {
+		return exec.Command("chcon", "-t", context, path).Run()
+	}
+
+	return exec.Command("restorecon", "-R", dir).Run()
 }

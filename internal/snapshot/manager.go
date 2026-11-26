@@ -130,11 +130,6 @@ func (m *Manager) RollbackSnapshot(snapName string) error {
 		return err
 	}
 
-	m.state = NewSnapshotState()
-	if err := m.save(); err != nil {
-		logger.Warn(fmt.Sprintf("failed to reset snapshot state after rollback: %v", err))
-	}
-
 	return nil
 }
 
